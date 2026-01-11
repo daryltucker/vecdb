@@ -14,6 +14,12 @@ Uses **Qdrant** as the robust storage backend.
 
 ## 🚀 Quick Start
 
+```bash
+install.sh
+vecdb ingest ./
+docsize "How do I install use vecq?"
+```
+
 ### 1. Installation
 
 **Option A: Install via Cargo (Recommended)**
@@ -97,11 +103,51 @@ nano ~/.config/vecdb/config.toml
 
 **Ingest your documents:**
 ```bash
-# Recursively ingest a directory with chunking and overlap
-vecdb ingest ./docs --chunk-size 512 --overlap 50 --collection my_knowledge
+# Ingest a directory with concurrency control
+vecdb ingest ./docs --collection my_knowledge -P 4 -G 2
+
+# Note: Ingestion is OOM-protected. 
+# -P, --concurrency: Max parallel file processing tasks.
+# -G, --gpu-concurrency: Max GPU embedding batch size (Prevents VRAM spikes).
+```
+## ⚡ CUDA Support
+
+## ⚡ CUDA Support
+
+By default, `vecdb` is built with CUDA support enabled (via `ort` static linking).
+
+1.  **Prerequisites**:
+    *   NVIDIA Drivers (v550+ recommended)
+    *   **NVIDIA CUDA Toolkit** (`sudo apt install nvidia-cuda-toolkit`)
+    *   **NVIDIA cuDNN** (`sudo apt install nvidia-cudnn`) - Required for runtime execution.
+
+2.  **Configuration**:
+    *   Set `local_use_gpu = true` in `~/.config/vecdb/config.toml` (default).
+    *   **No manual library paths needed**: The ONNX Runtime is statically linked into the binary.
+
+### Opting Out (CPU Only)
+If you do not need GPU support or want to reduce binary size, you can disable the default CUDA features during build:
+
+```bash
+cargo install --path vecdb-cli --no-default-features
 ```
 
-> **Tip**: Use a `.vectorignore` file to exclude files. See [docs/CONFIG.md](docs/CONFIG.md).
+> **Note**: `vecdb` uses `ort` with static linking. You do **not** need to set `LD_LIBRARY_PATH` or manually manage `libonnxruntime.so` files.
+
+### File Ignoring (`.vectorignore`)
+
+`vecdb` supports two ways to exclude files:
+
+1.  **`.vectorignore`** (Always Respected):
+    *   Works exactly like `.gitignore`.
+    *   Place it in your project root or subdirectories.
+    *   Example: `vecdb-asm/` or `*.secret`.
+
+2.  **`.gitignore`** (Optional):
+    *   Use `--respect-gitignore` to also respect your git rules.
+    *   Disabled by default to allow ingesting code you might not commit (e.g., local docs).
+
+> **Tip**: See [docs/CONFIG.md](docs/CONFIG.md) for advanced ignore rules.
 
 **Search:**
 ```bash

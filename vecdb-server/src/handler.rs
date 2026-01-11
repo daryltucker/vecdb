@@ -301,7 +301,7 @@ pub async fn handle_request(core: &Arc<Core>, config: &Config, req: &JsonRpcRequ
                 let collection = args.collection.as_deref().unwrap_or(&profile.default_collection_name);
 
                 let results = if args.smart {
-                    core.search_smart(&args.query, 10).await
+                    core.search_smart(collection, &args.query, 10).await
                 } else {
                     core.search(collection, &args.query, 10, None).await
                 }.map_err(|e| JsonRpcError {
@@ -471,7 +471,20 @@ pub async fn handle_request(core: &Arc<Core>, config: &Config, req: &JsonRpcRequ
                 // Resolve final collection: explicit > profile default
                 let collection = args.collection.as_deref().unwrap_or(&profile.default_collection_name);
 
-                core.ingest(&args.path, collection, true, None, max_chunk_size, Some(chunk_overlap), None, None, false, None).await.map_err(|e| JsonRpcError {
+                core.ingest(
+                    &args.path, 
+                    collection, 
+                    true, 
+                    None, 
+                    max_chunk_size, 
+                    Some(chunk_overlap), 
+                    None, 
+                    None, 
+                    false, 
+                    None, 
+                    args.concurrency, 
+                    args.gpu_concurrency
+                ).await.map_err(|e| JsonRpcError {
                     code: -32000,
                     message: e.to_string(),
                     data: None,

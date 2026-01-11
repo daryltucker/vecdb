@@ -23,19 +23,23 @@ Initialize or show configuration status.
 Recursively ingest documents from a path into a collection.
 *   **Arguments**: `[PATH]` (defaults to `.` for current directory). Use `-` for stdin.
 *   **Options**:
-    *   `-c, --collection <NAME>`: Target collection name (defaults to profile's default).
-    *   `-m, --metadata <KEY=VALUE>`: Custom metadata for stdin ingestion (accumulates).
-    *   `--respect-gitignore`: Skips files ignored by `.gitignore` or `.vectorignore`.
-    *   `--chunk-size <INT>`: Override profile's target chunk size.
-    *   `-o, --overlap <INT>`: Override profile's chunk overlap.
+    *   `-c, --collection <NAME>`: Target collection name (created if missing).
+    *   `-m, --metadata <KEY=VALUE>`: Custom metadata (accumulates).
+    *   `--respect-gitignore`: Skips files ignored by `.gitignore`.
+    *   `--chunk-size <INT>`: Target chunk size (tokens for text, chars for default).
+    *   `-o, --overlap <INT>`: Chunk overlap.
     *   `--extensions <EXT>`: Whitelist file extensions (e.g. `rs,md`).
     *   `--excludes <GLOB>`: Exclude patterns (e.g. `*.tmp`, `target/`).
+    *   `--dry-run`: Dry run: List files without processing.
+    *   `-P, --concurrency <INT>`: Max concurrent file processing tasks.
+    *   `-G, --gpu-concurrency <INT>`: Max concurrent GPU embedding tasks.
 
 ### `search <QUERY>`
 Perform semantic search against the index.
 *   **Arguments**: `<QUERY>` (semantic natural language query).
 *   **Options**:
     *   `-c, --collection <NAME>`: Collection to search in.
+    *   `--profile <NAME>`: Profile to use.
     *   `--json`: Output results as a pure JSON array for piping.
     *   `--smart`: Enable smart routing (multi-hop reasoning and facet detection).
 
@@ -46,19 +50,32 @@ List available collections and their statistics.
 
 ### `status`
 Show system health, connectivity, and detailed collection stats.
-*   **Aesthetics**: Uses rich terminal formatting by default.
 *   **Options**:
-    *   `--json`: Output full system status and collection details as JSON.
+    *   `--json`: Output full system status as JSON.
 
 ### `delete <COLLECTION>`
 Safely delete a collection.
-*   **Security**: Requires a randomized confirmation token to prevent accidents.
+*   **Options**:
+    *   `--yes`: Skip confirmation (Danger!).
 
-### `history ingest`
+### `history ingest [REPO_PATH]`
 Ingest a specific version of a repository (Time Travel).
 *   **Options**:
     *   `-r, --git-ref <REF>`: The SHA, branch name, or tag to ingest.
     *   `-c, --collection <NAME>`: Target collection.
+
+### `snapshot`
+Manage collection snapshots (backups).
+*   **Commands**:
+    *   `create`: Create a new snapshot.
+    *   `list`: List available snapshots.
+    *   `download <NAME>`: Download a specific snapshot.
+    *   `restore <PATH>`: Restore a snapshot file.
+    *   `-C, --collection <NAME>`: Override the target collection.
+
+### `completions <SHELL>`
+Generate shell completion scripts (bash, zsh, fish, powershell, elvish).
+*   **Usage**: `source <(vecdb completions bash)`
 
 ### `man`
 Display the project manual.

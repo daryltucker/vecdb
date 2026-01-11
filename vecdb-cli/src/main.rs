@@ -1,3 +1,5 @@
+//! DOCS: docs/CLI.md
+//! COMPLIANCE: tests/tier2_cli_compliance.py
 /*
  * PURPOSE:
  *   Main entry point for vecdb-cli.
@@ -27,14 +29,13 @@ mod vecq_adapter; // Add the adapter module
 use std::sync::Arc;
 use vecq_adapter::VecqParserFactory;
 use vecq::detection::HybridDetector;
-use num_cpus;
+
 
 /// Helper: Resolve embedding model, using global local_embedding_model for local profiles
 
 
 #[derive(Parser, Debug)]
 #[command(name = "vecdb")]
-#[command(version)]
 #[command(about = "Vector Database Project CLI", long_about = None)]
 struct Cli {
     /// Profile to use from config.toml
@@ -51,7 +52,7 @@ enum Commands {
     Init,
 
     /// Recursively ingest documents from a path into a collection.
-    /// Supports .gitignore, custom chunking, and metadata tagging.
+    /// Supports .gitignore (optional) and .vectorignore (always), custom chunking, and metadata tagging.
         Ingest {
             /// Path to the directory or file to ingest
             #[arg(index = 1, default_value = ".")]
@@ -88,6 +89,14 @@ enum Commands {
             /// Dry run: List files that would be ingested without processing
             #[arg(long)]
             dry_run: bool,
+
+            /// Max concurrent file processing tasks
+            #[arg(long, short = 'P')]
+            concurrency: Option<usize>,
+
+            /// Max concurrent GPU embedding tasks (batch size)
+            #[arg(long, short = 'G')]
+            gpu_concurrency: Option<usize>,
         },
 
         /// Search the index
@@ -105,6 +114,24 @@ enum Commands {
 
         /// Delete a collection
         Delete(commands::delete::DeleteArgs),
+
+        /// Manage Collection Snapshots (Create, List, Download, Restore)
+        Snapshot {
+            #[arg(short, long)]
+            create: bool,
+
+            #[arg(short, long)]
+            list: bool,
+
+            #[arg(short, long)]
+            download: Option<String>, // Snapshot name
+
+            #[arg(long)]
+            restore: Option<String>, // File path
+
+            #[arg(short = 'C', long)]
+            collection: Option<String>, // Optional override
+        },
 
         /// Display manual
         Man(commands::man::ManArgs),
@@ -143,29 +170,44 @@ enum Commands {
 
     #[tokio::main]
     async fn main() -> anyhow::Result<()> {
-        // Initialize logging (minimal by default)
-        // tracing_subscriber::fmt::init(); 
-        
-        // CRITICAL STABILITY: Enforce Thread Limits for Math Backends
-        // ONNX/MKL/OpenMP default to using ALL cores, causing starvation.
-        // We cap this aggressively unless overridden by the user.
-        if std::env::var("ORT_INTRA_OP_NUM_THREADS").is_err() {
-            let num_cpus = num_cpus::get();
-            let safe_threads = (num_cpus / 2).clamp(1, 4).to_string(); 
-            // ORT (ONNX Runtime)
-            unsafe { std::env::set_var("ORT_INTRA_OP_NUM_THREADS", &safe_threads); }
-            // OpenMP (Torch/Many libs)
-            unsafe { std::env::set_var("OMP_NUM_THREADS", &safe_threads); }
-            // MKL (Math Kernel Library)
-            unsafe { std::env::set_var("MKL_NUM_THREADS", &safe_threads); }
-            
-            if std::env::var("VECDB_DEBUG").is_ok() {
-                eprintln!("[CLI] Auto-limited math threads to {}", safe_threads);
+        // Initialize logging (clean production default)
+    vecdb_common::logging::init_logging(); 
+    
+
+    // Build Version String
+    let app_version = env!("CARGO_PKG_VERSION");
+    let ort_version = vecdb_core::get_ort_version();
+    let long_version = format!(
+        "vecdb v{}\nONNX v{}", 
+        app_version, 
+        ort_version
+    );
+
+    // We manually build the command to inject the version
+    let long_version_static: &'static str = Box::leak(long_version.into_boxed_str());
+    let cmd = Cli::command().version(long_version_static);
+    
+    // Parse using the modified command definition
+    let matches = cmd.get_matches();
+    
+    // Convert matches back to Cli struct
+    use clap::FromArgMatches;
+    let cli = Cli::from_arg_matches(&matches)?;
+    
+    // Safety Check for Init:
+    // We must check existence BEFORE Config::load() because load() auto-creates the file.
+    if let Commands::Init = cli.command {
+            let path = Config::get_path()?;
+            if path.exists() {
+                // If it exists, we ABORT to prevent accidental overwrite or confusion.
+                // The user must manually handle the file if they want to reset.
+                eprintln!("❌ Config file already exists at: {:?}", path);
+                eprintln!("   Aborting `init` to prevent accidental overwrite.");
+                eprintln!("   To reset: backup/delete the file and run `vecdb init` again.");
+                std::process::exit(1);
             }
         }
 
-        let cli = Cli::parse();
-        
         // Load Configuration
         let config = Config::load()?;
         let base_profile_name = cli.profile.as_deref().unwrap_or(&config.default_profile);
@@ -197,16 +239,22 @@ enum Commands {
                     config.resolve_local_use_gpu(args.collection.as_deref()),
                     profile.qdrant_api_key.clone(),
                     profile.ollama_api_key.clone(),
+                    config.smart_routing_keys.clone(),
+                    config.ingestion.path_rules.clone(),
+                    config.ingestion.max_concurrent_requests, // Pass default concurrency
+                    config.ingestion.gpu_batch_size,          // Pass default GPU batch size
                     file_detector.clone(),
                     parser_factory.clone(),
                 ).await?;
                 commands::delete::run(&core, args).await?;
             }
             Commands::Init => {
-                println!("Config loaded from: ~/.config/vecdb/config.toml");
-                println!("Default Profile: {}", config.default_profile);
+                let path = Config::get_path()?; // Should exist now since load() created it
+                println!("✅ Initialized new configuration at: {:?}", path);
+                println!("   Default Profile: {}", config.default_profile);
+                println!("   Edit this file to configure your profiles and keys.");
             }
-            Commands::Ingest { path, collection, metadata: meta_args, respect_gitignore, chunk_size, overlap, extensions, excludes, dry_run } => {
+            Commands::Ingest { path, collection, metadata: meta_args, respect_gitignore, chunk_size, overlap, extensions, excludes, dry_run, concurrency, gpu_concurrency } => {
                 // Resolve profile with collection context
                 let profile = config.resolve_profile(Some(base_profile_name), collection.as_deref())?;
                 if OUTPUT.is_interactive {
@@ -223,6 +271,10 @@ enum Commands {
                     config.resolve_local_use_gpu(collection.as_deref()),
                     profile.qdrant_api_key.clone(),
                     profile.ollama_api_key.clone(),
+                    config.smart_routing_keys.clone(),
+                    config.ingestion.path_rules.clone(),
+                    config.ingestion.max_concurrent_requests, // Pass default concurrency
+                    config.ingestion.gpu_batch_size,          // Pass default GPU batch size
                     file_detector.clone(),
                     parser_factory.clone(),
                 ).await?;
@@ -284,7 +336,9 @@ enum Commands {
                         extensions,
                         excludes,
                         dry_run,
-                        if metadata.is_empty() { None } else { Some(metadata) }
+                        if metadata.is_empty() { None } else { Some(metadata) },
+                        concurrency, // Pass concurrency override
+                        gpu_concurrency, // Pass GPU concurrency override
                     ).await?;
                     if OUTPUT.is_interactive && !dry_run {
                         println!("Ingestion complete.");
@@ -293,7 +347,11 @@ enum Commands {
             }
         Commands::Search(args) => {
             let profile = config.resolve_profile(Some(base_profile_name), args.collection.as_deref())?;
-            if !args.json && OUTPUT.is_interactive { println!("Using Profile: {} (Collection: {})", base_profile_name, profile.default_collection_name); }
+            let show_progress = !args.json && OUTPUT.is_interactive;
+            
+            if show_progress {
+                println!("Using Profile: {} (Collection: {})", base_profile_name, profile.default_collection_name);
+            }
             
             let core = vecdb_core::Core::new(
                 &profile.qdrant_url,
@@ -305,15 +363,23 @@ enum Commands {
                 config.resolve_local_use_gpu(args.collection.as_deref()),
                 profile.qdrant_api_key.clone(),
                 profile.ollama_api_key.clone(),
+                config.smart_routing_keys.clone(),
+                config.ingestion.path_rules.clone(),
+                config.ingestion.max_concurrent_requests, // Pass default concurrency
+                config.ingestion.gpu_batch_size,          // Pass default GPU batch size
                 file_detector.clone(),
                 parser_factory.clone(),
             ).await?;
             
             let results = if args.smart {
-                if !args.json && OUTPUT.is_interactive { println!("Searching with smart routing for: {}", args.query); }
-                core.search_smart(&args.query, 10).await?
+                if show_progress {
+                    println!("Searching with smart routing in collection: {} for: {}", profile.default_collection_name, args.query);
+                }
+                core.search_smart(&profile.default_collection_name, &args.query, 10).await?
             } else {
-                if !args.json && OUTPUT.is_interactive { println!("Searching in collection: {} for: {}", profile.default_collection_name, args.query); }
+                if show_progress {
+                    println!("Searching in collection: {} for: {}", profile.default_collection_name, args.query);
+                }
                 core.search(&profile.default_collection_name, &args.query, 10, None).await?
             };
             
@@ -340,6 +406,10 @@ enum Commands {
                 config.resolve_local_use_gpu(None),
                 profile.qdrant_api_key.clone(),
                 profile.ollama_api_key.clone(),
+                config.smart_routing_keys.clone(),
+                config.ingestion.path_rules.clone(),
+                config.ingestion.max_concurrent_requests, 
+                config.ingestion.gpu_batch_size,          // Pass default GPU batch size
                 file_detector.clone(),
                 parser_factory.clone(),
             ).await?;
@@ -375,6 +445,10 @@ enum Commands {
                         config.resolve_local_use_gpu(Some(&collection)),
                         profile.qdrant_api_key.clone(),
                         profile.ollama_api_key.clone(),
+                        config.smart_routing_keys.clone(),
+                        config.ingestion.path_rules.clone(),
+                        config.ingestion.max_concurrent_requests, 
+                        config.ingestion.gpu_batch_size,          // Pass default GPU batch size
                         file_detector.clone(),
                         parser_factory.clone(),
                     ).await?;
@@ -386,7 +460,41 @@ enum Commands {
                 }
             }
         }
-    }
+            Commands::Snapshot { create, list, download, restore, collection } => {
+                let profile = config.resolve_profile(Some(base_profile_name), collection.as_deref())?;
+                let collection_name = collection.as_deref().unwrap_or(&profile.default_collection_name);
+                
+                let manager = vecdb_core::snapshot::SnapshotManager::new(&profile.qdrant_url)?;
+
+                if create {
+                    if OUTPUT.is_interactive { println!("Creating snapshot for collection '{}'...", collection_name); }
+                    let name = manager.create(collection_name).await?;
+                    println!("Snapshot created: {}", name);
+                } else if list {
+                    let snapshots = manager.list(collection_name).await?;
+                    if snapshots.is_empty() {
+                         println!("No snapshots found for collection '{}'.", collection_name);
+                    } else {
+                        println!("Snapshots for '{}':", collection_name);
+                        for s in snapshots {
+                            println!("- {}", s);
+                        }
+                    }
+                } else if let Some(snap_name) = download {
+                    let output_path = std::path::Path::new(&snap_name);
+                    if OUTPUT.is_interactive { println!("Downloading snapshot '{}'...", snap_name); }
+                    manager.download(collection_name, &snap_name, output_path).await?;
+                    println!("Downloaded to: {:?}", output_path);
+                } else if let Some(file_path) = restore {
+                     if OUTPUT.is_interactive { println!("Restoring snapshot from {:?} to collection '{}'...", file_path, collection_name); }
+                    manager.restore(collection_name, std::path::Path::new(&file_path)).await?;
+                    println!("Snapshot restored successfully.");
+                } else {
+                    println!("Please specify an action: --create, --list, --download <NAME>, or --restore <PATH>");
+                }
+            }
+
+        }
 
     Ok(())
 }

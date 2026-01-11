@@ -76,7 +76,8 @@ def start_container():
 
 def check_qdrant_health(url, max_retries=10):
     """Check if Qdrant is responding to health checks"""
-    health_url = url.replace("6335", "6335") + "/healthz"
+    # Map gRPC port back to HTTP port for healthz check
+    health_url = url.replace("6336", "6335") + "/healthz"
     
     for attempt in range(max_retries):
         try:
@@ -95,7 +96,9 @@ def check_qdrant_health(url, max_retries=10):
 def get_collections(url):
     """Get list of collections from Qdrant"""
     try:
-        collections_url = url + "/collections"
+        # Map gRPC port back to HTTP port for REST API check
+        rest_url = url.replace("6336", "6335")
+        collections_url = rest_url + "/collections"
         response = urllib.request.urlopen(collections_url, timeout=5)
         data = json.loads(response.read())
         collections = data.get("result", {}).get("collections", [])

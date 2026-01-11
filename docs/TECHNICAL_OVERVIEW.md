@@ -69,9 +69,37 @@ A **Faceted** approach adds filters to that search. In `vecdb-mcp`, every chunk 
 
 This allows you to say: *"Search for 'authentication' but ONLY in the v1.0.0 collection."* Qdrant handles this via pre-filtering, making it just as fast as a raw search.
 
+### Smart Routing (Deterministic Facet Discovery)
+
+> **Deep Dive**: Read [VECTOR_FACETS.md](VECTOR_FACETS.md) for a complete guide on Facets, Embeddings, and Configuration.
+
+Querying a vector database can suffer from "Embedding Dilution"—where a search query like *"How to install on Ubuntu"* returns generic results because the concept of "Install" overpowers the specific constraint of "Ubuntu".
+
+`vecdb` solves this with **Smart Routing**. 
+
+Instead of relying solely on vector similarity, the `DynamicRouter` acts as a deterministic filter engine:
+1.  **Configurable Monitoring**: It monitors specific metadata fields you define in `config.toml` (e.g., `language`, `source_type`, `platform`).
+2.  **Auto-Discovery**: It learns what valid values exist in your database (e.g., it sees you have `platform=linux`).
+3.  **Hard Filtering**: When you search for "linux installation", it detects the "linux" keyword and applies a **Hard Filter** before searching.
+
+This ensures that searched results strictly respect the constraints you asked for, providing the precision of SQL with the semantic power of vectors.
+
+
+## 3. Resource Management & Stability
+
+### Thread Capping (The "Meltdown Preventer")
+Vector math libraries (ONNX Runtime, Torch, Intel MKL) are notorious for trying to grab **all available CPU cores** for every operation. In a concurrent environment (like an MCP server handling multiple requests), this causes "Thread Starvation" and system lag.
+
+`vecdb` aggressively manages this by detecting your CPU count and forcing these libraries to stay in their lane.
+*   **Automatic Cap**: defaults to `(NumCPUs / 2).clamp(1, 4)` threads per operation.
+*   **Overrides**: You can manually set `ORT_INTRA_OP_NUM_THREADS` env var if you need raw performance for a single-user batch job.
+
+### Memory Safety (Rust)
+The entire codebase is written in Rust, which guarantees memory safety without a garbage collector. This is critical for `ingest`, which might process gigabytes of text. We use streaming iterators and buffered readers to keep RAM usage constant regardless of dataset size.
+
 ---
 
-## 3. Summary Table
+## 4. Summary Table
 
 | Scope | Dependency | If Lost... |
 |-------|------------|------------|

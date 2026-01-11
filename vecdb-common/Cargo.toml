@@ -9,4 +9,7 @@ description = "Shared utilities for vecdb ecosystem: output handling, common pat
 [dependencies]
 # Minimal dependencies - this crate should be lightweight
 serde = { workspace = true, features = ["derive"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+
 [dev-dependencies]

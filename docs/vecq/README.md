@@ -92,7 +92,7 @@ Supported file types:
   CUDA (cu, cuh)
   Go (go)
   Bash (sh, bash)
-  JSON (json)
+  JSON (json, jsonl, ndjson)
 
 ```
 

@@ -40,6 +40,10 @@ pub async fn run(args: StatusArgs, config: &Config, profile_name: &str) -> anyho
         config.resolve_local_use_gpu(None),
         profile.qdrant_api_key.clone(),
         profile.ollama_api_key.clone(),
+        config.smart_routing_keys.clone(),
+        config.ingestion.path_rules.clone(),
+        config.ingestion.max_concurrent_requests,
+        config.ingestion.gpu_batch_size,
         file_detector.clone(),
         parser_factory.clone(),
     ).await;
@@ -143,6 +147,29 @@ pub async fn run(args: StatusArgs, config: &Config, profile_name: &str) -> anyho
             skin.print_text(&format!("* **Qdrant**: **OFFLINE** (Error: {})", e));
             skin.print_text("\n> [!WARNING]\n> Cannot connect to backend. Ensure Qdrant is running.");
         }
+    }
+    
+    // ONNX Runtime Status
+    skin.print_text("\n## ONNX Runtime (Accelerators)");
+    let ort_version = vecdb_core::get_ort_version();
+    let providers = vecdb_core::get_ort_providers();
+    
+    skin.print_text(&format!("* **Version**: `{}`", ort_version));
+    
+    let mut providers_formatted = vec![];
+    for p in providers {
+        if p.contains("CUDA") {
+            // Highlight CUDA in Green/Bold
+            providers_formatted.push(format!("**{}**", p));
+        } else {
+            providers_formatted.push(p);
+        }
+    }
+    
+    skin.print_text(&format!("* **Providers**: [{}]", providers_formatted.join(", ")));
+    if !providers_formatted.iter().any(|p| p.contains("CUDA")) && config.resolve_local_use_gpu(None) {
+         skin.print_text("\n> [!WARNING]\n> CUDA provider missing but GPU requested!");
+         skin.print_text("> See `docs/vecq/GPU.md` to install `libonnxruntime_providers_cuda.so`");
     }
     
     println!();

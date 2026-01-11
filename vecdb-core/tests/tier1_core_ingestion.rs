@@ -77,7 +77,7 @@ async fn test_core_ingestion_and_search() -> Result<()> {
     let embedder = Arc::new(MockEmbedder);
     let detector = Arc::new(MockFileTypeDetector);
     let parser_factory = Arc::new(MockParserFactory);
-    let core = Core::with_backends(backend, embedder, detector, parser_factory);
+    let core = Core::with_backends(backend, embedder, detector, parser_factory, Vec::new(), Vec::new());
 
     // 1. Ingest content
     let mut metadata = std::collections::HashMap::new();

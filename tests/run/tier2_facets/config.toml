@@ -1,0 +1,9 @@
+
+smart_routing_keys = ["platform", "version", "language"]
+
+[profiles.default]
+qdrant_url = "http://localhost:6336"
+embedding_model = "nomic-embed-text"
+default_collection_name = "test_facets"
+embedder_type = "local"
+    

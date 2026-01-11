@@ -566,24 +566,37 @@ async fn parse_content_to_json(content: &str, path: Option<&Path>, options: &Par
     let file_type = if let Some(p) = path {
         options.file_type.unwrap_or_else(|| detect_file_type(p.to_str().unwrap_or("")))
     } else {
-        options.file_type.unwrap_or(FileType::Markdown)
+        options.file_type.unwrap_or(FileType::Unknown)
     };
 
-    if file_type == FileType::Unknown {
-        return Err(VecqError::UnsupportedFileType {
-            file_type: format!("Unknown file type for: {:?}", path),
-        });
-    }
-
-    let mut json_vals = if file_type == FileType::Json {
+    let mut json_vals = if file_type == FileType::Json || (file_type == FileType::Unknown && (content.trim_start().starts_with('{') || content.trim_start().starts_with('['))) {
         let deserializer = serde_json::Deserializer::from_str(content);
         let mut vals = Vec::new();
         for item in deserializer.into_iter::<serde_json::Value>() {
-            let val = item.map_err(|e| VecqError::json_error("Invalid JSON input".to_string(), Some(e)))?;
-            vals.push(val);
+            match item {
+                Ok(val) => vals.push(val),
+                Err(e) => {
+                    if file_type == FileType::Json {
+                        return Err(VecqError::json_error("Invalid JSON input".to_string(), Some(e)));
+                    } else {
+                        // If it was Unknown and failed JSON parsing, fall through to error or Markdown?
+                        // Actually, if it started with { but failed, it's likely malformed JSON.
+                        // But if it's Unknown and doesn't look like JSON, we want it to fail or be Markdown.
+                        // The previous logic defaulted to Markdown if path was None.
+                        return Err(VecqError::UnsupportedFileType {
+                            file_type: "Unknown (failed JSON heuristic)".to_string(),
+                        });
+                    }
+                }
+            }
         }
         vals
     } else {
+        if file_type == FileType::Unknown {
+            return Err(VecqError::UnsupportedFileType {
+                file_type: format!("Unknown file type for: {:?}", path),
+            });
+        }
         let parsed = parse_file(content, file_type).await?;
         let converter = UnifiedJsonConverter::with_default_schemas()
             .with_context_lines(options.context_lines);

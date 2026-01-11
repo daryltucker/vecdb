@@ -97,7 +97,7 @@ fn format_hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
-        write!(s, "{:02x}", b).unwrap();
+        write!(s, "{:02x}", b).expect("Writing to String should never fail");
     }
     s
 }

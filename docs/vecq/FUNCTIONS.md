@@ -47,10 +47,35 @@ Standard library for generating Markdown documentation from parsed AST.
 *   `_clean_doc`: Helper to clean up docstrings.
 *   `_format_item`: Format individual AST nodes.
 
+### 5. GitHub Issues (`gh_issue.jq`)
+Transform GitHub API JSON responses into clean Markdown reports.
+*   `gh_issue`: Renders a single issue with title, metadata matches, and body.
+
+### 6. NPM Audit (`npm_audit.jq`)
+Turn `npm audit --json` into a developer-friendly security report.
+*   `audit_summary`: Table of High/Critical vulnerabilities with fix suggestions.
+
+### 7. VS Code Setup (`vscode_ext.jq`)
+Generate setup scripts from project configuration JSON.
+*   `vscode_install_script`: Converts `.vscode/extensions.json` into a bash script to install all recommended extensions.
+
+### 8. Lighthouse (`lighthouse.jq`)
+Extract Web Vitals and scores from Lighthouse JSON.
+*   `lighthouse_badges`: One-line summary (e.g., "🟢 Performance: 98 | 🟢 Accessibility: 100").
+*   `lighthouse_table`: Detailed Markdown table of scores.
+
 **Example Usage**:
 ```bash
+# Security Check
+npm audit --json | vecq -L examples/functions -q 'audit_summary'
+
+# Generate Setup Script
+vecq -L examples/functions .vscode/extensions.json -q 'vscode_install_script' -r > setup.sh
+```
+
+```bash
 # Convert OpenWebUI export to Markdown using the chat_format renderer
-vecq export.json -L examples/functions -q 'webui_to_chat | chat_format'
+vecq export.json -L examples/functions -q 'openwebui_to_chat | chat_format'
 ```
 
 ---

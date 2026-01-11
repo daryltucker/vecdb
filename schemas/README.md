@@ -1,4 +1,4 @@
-# Vecdb Schemas
+# vecdb Schemas
 
 This directory contains **canonical schemas** for common data types. Schemas define the contract between normalizers (transforms raw data → schema) and renderers (transforms schema → output).
 
@@ -43,3 +43,15 @@ vecq -L examples raw.json -q 'webui_to_chat | chat_format'
 # Use just the normalizer for further processing
 vecq -L examples raw.json -q 'webui_to_chat | .[-5:]'
 ```
+
+## See Also
+
+*   [Querying & Filtering Guide](../docs/examples/QUERYING.md)
+*   [Thunar Integration](../docs/examples/THUNAR_INTEGRATION.md)
+*   `vecq man --agent` : Agent-focused documentation
+
+## See Also
+
+*   [Querying & Filtering Guide](../docs/examples/QUERYING.md)
+*   [Thunar Integration](../docs/examples/THUNAR_INTEGRATION.md)
+*   `vecq man --agent` : Agent-focused documentation

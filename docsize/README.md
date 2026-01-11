@@ -49,6 +49,7 @@ docsize [QUERY] [OPTIONS]
 - `-m, --model <MODEL>`: Specify the LLM model to use
 - `-n, --no-context`: Omit providing directory and semantic context
 - `-a, --append`: Append to the current conversation session
+- `--smart`: Enable Smart Routing (detect filters from query)
 - `--debug`: Show the final prompt sent to the LLM and raw server logs
 - `man --agent`: Show agent-optimized documentation
 
@@ -68,3 +69,13 @@ Supported placeholders:
 - `{{ %DOCSIZE_TREE% }}`: Directory path list
 - `{{ %DOCSIZE_VECDB_EMBEDDING_RESPONSE% }}`: Semantic search blocks (Context)
 - `{{ %QUERY% }}`: User query
+
+
+
+```bash
+docker run -d \
+  -v ollama_ollama:/root/.ollama \
+  -p 11434:11434 \
+  --name ollama \
+  ollama/ollama
+```

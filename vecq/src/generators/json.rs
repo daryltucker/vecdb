@@ -5,6 +5,12 @@ use serde_json::Value;
 
 pub struct JsonGenerator;
 
+impl Default for JsonGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl JsonGenerator {
     pub fn new() -> Self {
         Self
@@ -39,7 +45,7 @@ impl Generator for JsonGenerator {
         let mut is_arr = true;
         
         for (i, element) in doc.elements.iter().enumerate() {
-            let key = element.name.as_ref().map(|s| s.as_str()).unwrap_or("");
+            let key = element.name.as_deref().unwrap_or("");
             if key != format!("[{}]", i) {
                 is_arr = false;
             }

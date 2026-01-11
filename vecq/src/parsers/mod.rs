@@ -143,7 +143,7 @@ pub fn create_parser(file_type: FileType) -> VecqResult<Box<dyn Parser>> {
     match file_type {
 
         FileType::Markdown => Ok(Box::new(MarkdownParser::new())),
-        FileType::Rust => Ok(Box::new(RustTreeSitterParser::new())),
+        FileType::Rust => Ok(Box::new(RustParser::new())),
         
         FileType::Python => Ok(Box::new(PythonParser::new())),
         
@@ -190,6 +190,7 @@ pub fn available_parsers() -> Vec<FileType> {
     parsers.push(FileType::Text);
     parsers.push(FileType::Html);
     parsers.push(FileType::Toml);
+    parsers.push(FileType::Json);
     
     parsers
 }
@@ -275,12 +276,14 @@ mod tests {
         let parsers = available_parsers();
         assert!(parsers.contains(&FileType::Markdown));
         assert!(parsers.contains(&FileType::Rust));
+        assert!(parsers.contains(&FileType::Json));
     }
 
     #[test]
     fn test_parser_availability() {
         assert!(is_parser_available(FileType::Markdown));
         assert!(is_parser_available(FileType::Rust));
+        assert!(is_parser_available(FileType::Json));
         assert!(!is_parser_available(FileType::Unknown));
     }
 

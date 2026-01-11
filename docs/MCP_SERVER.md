@@ -31,6 +31,16 @@ By default, `vecdb` blocks agents from reading local files (except specific tool
 
 ## 2. Tools Available
 
+| MCP Tool | CLI Equivalent | Description |
+| :--- | :--- | :--- |
+| `search_vectors` | `vecdb search` | Semantic search with smart routing support. |
+| `ingest_path` | `vecdb ingest` | Ingest local files or directories. |
+| `ingest_historic_version` | `vecdb history ingest` | Ingest a specific git revision (Time Travel). |
+| `code_query` | `vecq <PATH> <QUERY>` | Structural analysis using Tree-sitter + JQ. |
+| `list_collections` | `vecdb list` | List available collections and stats. |
+| `delete_collection` | `vecdb delete` | Delete a collection with safety confirmation. |
+| `embed` | N/A | Generate vectors from raw text. |
+
 ### `search_vectors`
 Semantic search.
 *   `query`: Natural language query (e.g., "How does authentication work?").
@@ -50,15 +60,21 @@ Delete a collection. Requires implicit or explicit safety check.
 Structural code search/extraction using `vecq` syntax (jq-for-code).
 *   `path`: File path.
 *   `query`: JQ filter (e.g., `.functions[] | select(.name=="new")`).
-*   `source`: "local" or "git".
-*   `repo_path`: (If source="git") URL of the repo.
-*   **Security**: `source="git"` relies on ephemeral sandboxes and is **always allowed**. `source="local"` requires `VECDB_ALLOW_LOCAL_FS="true"`.
+*   `source`: "local" (Remote git support pending).
+*   **Security**: Requires `VECDB_ALLOW_LOCAL_FS="true"`.
 
 ### `ingest_path`
 Ingest local files/folders.
 *   `path`: Absolute path.
+*   `collection`: (Optional) Target collection name.
 *   `profile`: (Optional) Profile to resolve collection from.
 *   **Security**: Requires `VECDB_ALLOW_LOCAL_FS="true"`.
+
+### `ingest_historic_version`
+Ingest a specific git revision ('Time Travel').
+*   `repo_path`: URL or local path to git repository.
+*   `git_ref`: Tag, Branch, or SHA.
+*   `collection`: (Optional) Target collection name.
 
 ### `list_collections`
 List available collections with compatibility status.
@@ -72,7 +88,32 @@ Generate embeddings for raw text.
 *   `texts`: Array of strings to embed.
 *   **Returns**: Array of float vectors.
 
-## 3. Resources
+> [!NOTE]
+> **Snapshot Management** (backup/restore) is currently only available via the `vecdb snapshot` CLI command.
+
+## 3. Configuration & Control
+
+The server can be configured via Environment Variables and CLI Flags.
+
+### Environment Variables
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `VECDB_PROFILE` | Selects the active profile from `config.toml`. | `default` |
+| `VECDB_ALLOW_LOCAL_FS` | Enables tools like `ingest_path` to read the server's local filesystem. | `false` |
+| `VECDB_CONFIG` | Overrides the location of the config file. | `~/.config/vecdb/config.toml` |
+| `QDRANT_URL` | Overrides the Qdrant connection URL (if not in profile). | `http://localhost:6334` |
+| `QDRANT_API_KEY` | Overrides Qdrant API Key. | None |
+
+### CLI Flags
+
+- `--version`: Print version information.
+- `--allow-local-fs`: Enable local filesystem access (Same as `VECDB_ALLOW_LOCAL_FS=true`).
+
+### Security Note
+By default, `vecdb-server` runs in **API-Only Mode**. It blocks Agents from reading arbitrary system files to prevent sandbox escapes. To use tools like `ingest_path` or `code_query` (with `source='local'`), you must explicitly enable filesystem access.
+
+## 4. Resources
 The server exposes the following read-only resources:
 *   `vecdb://registry`: A machine-readable JSON summary of the server (Profile, Version, Collection List).
 *   `vecdb://manual`: The Agent Interface Specification (this guide).

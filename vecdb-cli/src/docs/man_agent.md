@@ -15,11 +15,16 @@ Ingest a file or directory into the vector store.
 
 **Options:**
 - `-c, --collection [NAME]`: Target collection. Optional (defaults to profile setting).
+- `--profile [NAME]`: Profile to use from config.toml.
 - `--chunk-size [INT]`: Max tokens per chunk (default: 1000).
+- `-o, --overlap [INT]`: Chunk overlap (default: 0).
 - `--respect-gitignore`: Skips files ignored by .gitignore.
 - `--extensions [LIST]`: Whitelist e.g. "rs,md".
 - `--excludes [LIST]`: Blacklist globs e.g. "*.tmp".
-- `--metadata [K=V]`: Attach metadata.
+- `--metadata [K=V]`: Attach metadata (can be used multiple times).
+- `--dry-run`: List files that would be ingested without processing.
+- `-P, --concurrency [INT]`: Max concurrent file processing tasks.
+- `-G, --gpu-concurrency [INT]`: Max concurrent GPU embedding tasks (batch size).
 
 **Agent Usage:**
 `vecdb ingest ./src`
@@ -31,6 +36,7 @@ Semantic search against the vector store.
 
 **Options:**
 - `-c, --collection [NAME]`: Source collection. Optional.
+- `--profile [NAME]`: Profile to use from config.toml.
 - `--json`: Output as JSON for parsing.
 - `--smart`: Use smart routing (multi-hop / filter detection).
 

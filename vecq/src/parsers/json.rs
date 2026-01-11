@@ -67,7 +67,7 @@ impl JsonParser {
 #[async_trait]
 impl Parser for JsonParser {
     fn file_extensions(&self) -> &[&str] {
-        &["json"]
+        &["json", "ndjson", "jsonl"]
     }
 
     fn language_name(&self) -> &str {
@@ -75,8 +75,12 @@ impl Parser for JsonParser {
     }
 
     async fn parse(&self, content: &str) -> VecqResult<ParsedDocument> {
-        let json_value: serde_json::Value = serde_json::from_str(content)
-            .map_err(|e| VecqError::json_error(format!("Failed to parse JSON: {}", e), Some(e)))?;
+        let deserializer = serde_json::Deserializer::from_str(content);
+        let mut json_values = Vec::new();
+        for item in deserializer.into_iter::<serde_json::Value>() {
+            let val = item.map_err(|e| VecqError::json_error(format!("Failed to parse JSON: {}", e), Some(e)))?;
+            json_values.push(val);
+        }
 
         let metadata = DocumentMetadata::new(PathBuf::from("memory"), content.len() as u64)
             .with_file_type(FileType::Json)
@@ -84,19 +88,21 @@ impl Parser for JsonParser {
 
         let mut doc = ParsedDocument::new(metadata).with_source(content);
 
-        match json_value {
-            serde_json::Value::Object(map) => {
-                for (k, v) in map {
-                    doc.elements.push(Self::process_value(k.clone(), &v));
+        for json_value in json_values {
+            match json_value {
+                serde_json::Value::Object(map) => {
+                    for (k, v) in map {
+                        doc.elements.push(Self::process_value(k.clone(), &v));
+                    }
+                },
+                serde_json::Value::Array(arr) => {
+                    for (i, v) in arr.iter().enumerate() {
+                        doc.elements.push(Self::process_value(format!("[{}]", i), v));
+                    }
+                },
+                _ => {
+                    doc.elements.push(Self::process_value("root".to_string(), &json_value));
                 }
-            },
-            serde_json::Value::Array(arr) => {
-                for (i, v) in arr.iter().enumerate() {
-                    doc.elements.push(Self::process_value(format!("[{}]", i), v));
-                }
-            },
-            _ => {
-                doc.elements.push(Self::process_value("root".to_string(), &json_value));
             }
         }
 

@@ -1,0 +1,1 @@
+Our strategy for 2025 is to leverage path parsing for smarter retrieval.

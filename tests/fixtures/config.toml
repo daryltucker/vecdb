@@ -1,22 +1,35 @@
 # Test Configuration - DO NOT use production Qdrant!
 # This config is used by ALL test tiers for consistency
 
-qdrant_url = "http://localhost:6335"  # Test instance HTTP port
+# Global defaults (for default fallback)
+qdrant_url = "http://localhost:6336" # Test instance HTTP port
+default_profile = "tier1_basic"
+
+[ingestion]
+path_rules = [
+  { pattern = "(?P<year>\\d{4})/(?P<quarter>Q\\d)/.*" }
+]
 
 # Test Profiles
 # Each profile tests a different configuration scenario
 
 [profiles.tier1_basic]
+qdrant_url = "http://localhost:6336"
+default_collection_name = "docs"
 embedder_type = "fastembed"
 embedding_model = "BAAI/bge-small-en-v1.5"
 chunk_size = 500
 
 [profiles.tier1_large_chunks]
+qdrant_url = "http://localhost:6336"
+default_collection_name = "docs"
 embedder_type = "fastembed"
 embedding_model = "BAAI/bge-small-en-v1.5"
 chunk_size = 2000
 
 [profiles.tier1_ollama]
+qdrant_url = "http://localhost:6335"
+default_collection_name = "docs"
 embedder_type = "ollama"
 embedding_model = "nomic-embed-text"
 ollama_url = "http://localhost:11434"

@@ -73,7 +73,9 @@ impl GitSandbox {
         let uuid = uuid::Uuid::new_v4();
         let sandbox_path = temp_dir.join(format!("vecdb-sandbox-{}", uuid));
 
-        eprintln!("Creating sandbox at {:?}", sandbox_path);
+        if crate::output::OUTPUT.is_interactive {
+            eprintln!("Creating sandbox at {:?}", sandbox_path);
+        }
 
         // 1. Clone
         let repo_url = sandbox_path.to_str()
@@ -110,7 +112,9 @@ impl GitSandbox {
 
 impl Drop for GitSandbox {
     fn drop(&mut self) {
-        eprintln!("Cleaning up sandbox at {:?}", self.path);
+        if crate::output::OUTPUT.is_interactive {
+            eprintln!("Cleaning up sandbox at {:?}", self.path);
+        }
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }

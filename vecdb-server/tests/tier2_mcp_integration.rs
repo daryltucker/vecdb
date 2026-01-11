@@ -44,7 +44,7 @@ async fn test_mcp_full_lifecycle() {
     let detector = Arc::new(HybridDetector::new());
     let parser_factory = Arc::new(MockParserFactory);
     
-    let core = Arc::new(Core::with_backends(backend, embedder, detector, parser_factory));
+    let core = Arc::new(Core::with_backends(backend, embedder, detector, parser_factory, Vec::new(), Vec::new()));
     let config = Config::default();
 
     // 2. Initialize

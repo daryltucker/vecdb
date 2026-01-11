@@ -11,7 +11,7 @@ name = "vecdb"
 path = "src/main.rs"
 
 [dependencies]
-vecdb-core = { workspace = true }
+vecdb-core = { workspace = true, features = ["local-embed", "qdrant"] }
 vecdb-common = { workspace = true }
 vecq = { workspace = true }
 async-trait = { workspace = true }
@@ -30,9 +30,11 @@ include_dir = "0.7.4" # To embed documentation files
 colored = "3.0.0"
 dialoguer = "0.12.0"
 num_cpus = "1.17.0"
+sha2 = "0.10"
 
 
 [features]
+default = ["cuda"]
 cuda = ["vecdb-core/cuda"]
 
 [dev-dependencies]

@@ -67,6 +67,10 @@ impl QdrantBackend {
         // Build client configuration
         let mut builder = Qdrant::from_url(url);
         
+        // Disable compatibility check to avoid non-JSON output on stdout/stderr
+        // during server initialization in MCP mode.
+        builder.check_compatibility = false;
+        
         if let Some(key) = api_key {
             builder = builder.api_key(key);
         }

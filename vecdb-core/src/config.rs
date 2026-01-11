@@ -1,3 +1,5 @@
+//! DOCS: docs/CONFIG.md
+//! COMPLIANCE: tests/tier2_config_compliance.py
 /*
  * PURPOSE:
  *   Manages application configuration and profiles.
@@ -79,6 +81,12 @@ pub struct Config {
     /// Global: Use GPU for local embeddings if available
     #[serde(default)]
     pub local_use_gpu: bool,
+
+    /// Keys to use for Smart Routing (Facet Auto-Detection).
+    /// Default: ["language", "source_type"]
+    /// Add "platform", "version", "cuda" here to enable them.
+    #[serde(default = "default_smart_routing_keys")]
+    pub smart_routing_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +134,25 @@ pub struct IngestionConfig {
     // Wildcard -> Config
     #[serde(default)]
     pub overrides: HashMap<String, IngestionOverride>,
+    
+    /// Path parsing rules for metadata extraction
+    /// Path parsing rules for metadata extraction
+    #[serde(default)]
+    pub path_rules: Vec<PathRule>,
+    
+    /// Concurrency Limit: Max number of file processing tasks running in parallel
+    #[serde(default = "default_concurrency")]
+    pub max_concurrent_requests: usize,
+
+    /// GPU Concurrency: Batch size for GPU embedding (prevents OOM)
+    #[serde(default = "default_gpu_batch_size")]
+    pub gpu_batch_size: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PathRule {
+    /// Regex pattern with named capture groups (e.g. "users/(?P<user>\w+)/.*")
+    pub pattern: String,
 }
 
 impl Default for IngestionConfig {
@@ -138,8 +165,19 @@ impl Default for IngestionConfig {
             respect_gitignore: false,
             tokenizer: default_tokenizer(),
             overrides: HashMap::new(),
+            path_rules: Vec::new(),
+            max_concurrent_requests: default_concurrency(),
+            gpu_batch_size: default_gpu_batch_size(),
         }
     }
+}
+
+fn default_gpu_batch_size() -> usize {
+    2
+}
+
+fn default_concurrency() -> usize {
+    4
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,6 +254,14 @@ fn default_fastembed_cache_path() -> PathBuf {
     path
 }
 
+fn default_smart_routing_keys() -> Vec<String> {
+    vec![
+        "source_type".to_string(),
+        "language".to_string(),
+        // Users can add "version", "cuda", "platform" in config.toml
+    ]
+}
+
 impl Default for Config {
     fn default() -> Self {
         let mut profiles = HashMap::new();
@@ -241,6 +287,7 @@ impl Default for Config {
             ingestion: IngestionConfig::default(),
             fastembed_cache_path: default_fastembed_cache_path(),
             local_use_gpu: false,
+            smart_routing_keys: default_smart_routing_keys(),
         }
     }
 }
@@ -373,6 +420,12 @@ impl Config {
         self.local_use_gpu
     }
 
+    /// Helper to get effective gpu_batch_size
+    pub fn resolve_gpu_batch_size(&self, _requested_collection: Option<&str>) -> usize {
+        // For now, it's just the global ingestion setting
+        self.ingestion.gpu_batch_size
+    }
+
     /// Load config from XDG config directory or create default
     pub fn load() -> Result<Self> {
         let config_path = Self::get_path()?;
@@ -390,12 +443,29 @@ impl Config {
         }
 
         let content = fs::read_to_string(&config_path)?;
-        let config: Config = toml::from_str(&content)
+        let mut config: Config = toml::from_str(&content)
             .context("Failed to parse config.toml")?;
+        
+        // ENV VAR OVERRIDE: VECDB_USE_GPU
+        // Allow users to force-disable GPU via environment (e.g., mcp_config.json)
+        if let Ok(val) = std::env::var("VECDB_USE_GPU") {
+            let val = val.trim().to_lowercase();
+            if val == "false" || val == "0" {
+                if crate::output::OUTPUT.is_interactive && config.local_use_gpu {
+                    eprintln!("⚠️  Overriding local_use_gpu=false (via VECDB_USE_GPU env var)");
+                }
+                config.local_use_gpu = false;
+            } else if val == "true" || val == "1" {
+                if crate::output::OUTPUT.is_interactive && !config.local_use_gpu {
+                    eprintln!("ℹ️  Overriding local_use_gpu=true (via VECDB_USE_GPU env var)");
+                }
+                config.local_use_gpu = true;
+            }
+        }
         
         // Validate: Warn if local profiles specify embedding_model (should use global local_embedding_model)
         for (profile_name, profile) in &config.profiles {
-            if profile.embedder_type == "local" && profile.embedding_model != default_embedding_model() {
+            if crate::output::OUTPUT.is_interactive && profile.embedder_type == "local" && profile.embedding_model != default_embedding_model() {
                 eprintln!(
                     "⚠️  WARNING: Profile '{}' uses embedder_type=\"local\" but specifies embedding_model=\"{}\".\n\
                      Local profiles should use the global 'local_embedding_model' config field.\n\
@@ -410,7 +480,7 @@ impl Config {
 
     /// Resolve config path: ~/.config/vecdb/config.toml
     /// Respects VECDB_CONFIG environment variable if set.
-    fn get_path() -> Result<PathBuf> {
+    pub fn get_path() -> Result<PathBuf> {
         if let Ok(path) = std::env::var("VECDB_CONFIG") {
             return Ok(PathBuf::from(path));
         }

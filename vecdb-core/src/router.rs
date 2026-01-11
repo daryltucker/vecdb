@@ -30,7 +30,7 @@ impl DynamicRouter {
     /// Returns a map of detected filters (key -> value) and the original query.
     pub async fn route(&self, collection: &str, query: &str) -> Result<(serde_json::Map<String, serde_json::Value>, String)> {
         let mut detected_filters = serde_json::Map::new();
-        let query_lower = query.to_lowercase();
+        // Regex handles case insensitivity via (?i)
 
         // Iterate through all monitored keys (e.g., "version", "cuda", "language")
         for key in &self.facet_keys {
@@ -39,15 +39,20 @@ impl DynamicRouter {
             
             // 2. Search for these values in the query
             for facet in facets {
-                let facet_lower = facet.to_lowercase();
-                // Heuristic: Check if the value exists in the query
-                // Note: Ideally we'd check word boundaries to avoid matching "1.4" in "11.4"
-                if query_lower.contains(&facet_lower) {
-                    eprintln!("DynamicRouter: Detected {}={}", key, facet);
-                    detected_filters.insert(key.clone(), json!(facet));
-                    // Once we find a match for a key, we stop looking for other values of THAT key
-                    // (Assumption: You usually only query for ONE version of GCC at a time)
-                    break;
+                // Securely escape the facet value to prevent regex injection (e.g. if version is "1.0+")
+                let escaped_facet = regex::escape(&facet);
+                // Pattern: Case-insensitive, Word Boundary start, value, Word Boundary end
+                let pattern = format!(r"(?i)\b{}\b", escaped_facet);
+                
+                if let Ok(re) = regex::Regex::new(&pattern) {
+                    if re.is_match(query) {
+                        if crate::output::OUTPUT.is_interactive {
+                            eprintln!("DynamicRouter: Detected {}={}", key, facet);
+                        }
+                        detected_filters.insert(key.clone(), json!(facet));
+                        // Once we find a match for a key, we stop looking for other values of THAT key
+                        break;
+                    }
                 }
             }
         }

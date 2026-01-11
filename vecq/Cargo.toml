@@ -59,6 +59,7 @@ tree-sitter-cpp = "0.23.4" # Latest is still 0.23.4
 tree-sitter-go = "0.25.0" # Latest is 0.25.0
 tree-sitter-bash = "0.25.1" # Latest is 0.25.1
 tree-sitter-javascript = "0.25.0" # Latest is 0.25.0
+toml_edit = "0.22.24"
 
 # Query engine (pure Rust jq implementation)
 jaq-syn = "1.6.0"

@@ -92,16 +92,16 @@ use std::path::PathBuf;
 use vecq::detection::{FileTypeDetector, HybridDetector, DetectionConfig};
 use vecq::types::FileType;
 
-/// Property 2: Schema Consistency Across File Types
-/// 
-/// For any file type supported by vecq, the JSON output should follow consistent 
-/// schema patterns with standardized field names and structure.
-/// 
-/// This property ensures that:
-/// 1. All detected file types can be successfully parsed
-/// 2. Parsed documents produce JSON with consistent schema patterns
-/// 3. Detection confidence correlates with parsing success
-/// 4. Custom file type mappings work seamlessly with built-in detection
+// Property 2: Schema Consistency Across File Types
+// 
+// For any file type supported by vecq, the JSON output should follow consistent 
+// schema patterns with standardized field names and structure.
+// 
+// This property ensures that:
+// 1. All detected file types can be successfully parsed
+// 2. Parsed documents produce JSON with consistent schema patterns
+// 3. Detection confidence correlates with parsing success
+// 4. Custom file type mappings work seamlessly with built-in detection
 
 // Test data generators
 
@@ -470,7 +470,7 @@ proptest! {
         let confidence = detector.get_confidence(&path, &content);
         
         // Content analysis should at least not crash and provide some confidence
-        prop_assert!(confidence >= 0.0 && confidence <= 1.0);
+        prop_assert!((0.0..=1.0).contains(&confidence));
         
         // If detection succeeds, should be able to get parser
         if detected_type != FileType::Unknown {
@@ -560,7 +560,7 @@ proptest! {
         prop_assert!(result.is_ok(), "Detection should handle malformed content gracefully");
         
         let confidence = detector.get_confidence(&path, &malformed_content);
-        prop_assert!(confidence >= 0.0 && confidence <= 1.0, "Confidence should be valid range");
+        prop_assert!((0.0..=1.0).contains(&confidence), "Confidence should be valid range");
     }
 
     /// Test that all supported file types can be detected and parsed

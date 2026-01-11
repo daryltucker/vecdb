@@ -1,0 +1,86 @@
+# AGENT INTERFACE SPECIFICATION: vecq
+Version: 0.1.0
+
+## PURPOSE
+vecq allows AI Agents to query source code structure (AST) as if it were JSON.
+
+## CAPABILITIES
+
+### 1. Querying (`query`)
+- **Action**: Parse source code and filter AST nodes using jq syntax.
+- **Usage**: `vecq <INPUT> <QUERY>`
+- **Output**: JSON Lines or Array.
+- **Recursion**: Use `-R` to recursively process a directory. This is the recommended default for directories.
+- **Common Queries**:
+    - `.functions[]` : List all functions
+    - `.structs[]` : List all structs/classes
+    - `.code_blocks[]` : List markdown code blocks (useful for extraction)
+    - `.imports[]` : List imports
+- **Examples**:
+    - `vecq -R src/ -q '.functions[] | select(.visibility == "pub")' --grep-format` (Find public functions)
+    - `vecq README.md -q '.code_blocks[] | select(.attributes.language == "bash") | .content' -r` (Extract bash code)
+    - `vecq src/main.rs -L examples/functions -q 'my_lib::filter'`
+
+### 2. Filtering & Manipulation (`select`, `map`)
+- **`select(condition)`**: Keep nodes matching a predicate.
+    - Example: `.functions[] | select(.visibility == "pub")`
+- **`map(filter)`**: Apply transformation to each element.
+    - Example: `.functions | map(.name)` -> Output list of function names.
+
+### 3. Conversion (`convert`)
+- **Action**: Dump the full AST as JSON.
+- **Usage**: `vecq --convert <INPUT>`
+
+### 4. Introspection (`list-filters`)
+- **Action**: List all available jq filters and functions (standard library).
+- **Usage**: `vecq list-filters`
+
+### 5. Documentation (`doc`)
+- **Action**: Generate standardized Markdown documentation from semantic code structure.
+- **Usage**: `vecq doc <INPUT>`
+- **Output**: Pure Markdown (headers, code blocks, docstrings).
+- **Mechanism**: Runs embedded `doc.jq` logic on strict Tree-sitter AST.
+
+## PROTOCOL COMPLIANCE
+- **Errors**: Printed to STDERR.
+- **Success**: Printed to STDOUT.
+- **Format**: All data output is valid JSON (unless overridden by --grep-format or -r).
+
+## OPTIONS
+- `-f, --from-file <PATH>`: Read query filter from file
+- `-q, --query <QUERY>`: Specify query filter as flag (useful for piped input)
+- `-L, --library-path <PATH>`: Add directory to search for library modules (.jq files)
+- `-o, --format <FORMAT>`: Output format (json, grep, human)
+- `-s, --slurp`: Read all inputs into array before querying
+- `--grep-format`: Shortcut for `-o grep` (Recommended for search tasks)
+- `-r, --raw-output`: Output raw strings, not JSON text (Critical for code extraction)
+- `-R, --recursive`: Recursively process directories
+
+## CONTEXT
+Use this tool when you need to:
+1. Understand the structure of a file without reading the whole text.
+2. Find specific code elements (e.g. "all public functions") reliably.
+3. Extract executable code blocks from documentation.
+
+## DISCOVERY PROTOCOL
+To avoid hallucinating schema structure, Agents MUST follow this protocol when encountering unmatched files:
+
+1. **Introspect Filters**: Run `vecq list-filters` to see available jq tools.
+2. **Introspect Schema**: Run `vecq <file> -q 'keys'` to see top-level keys.
+3. **Introspect Element**: Run `vecq <file> -q '.elements[0]'` to see node structure.
+
+## AST REFERENCE (Common Nodes)
+
+To see the exact schema for a file, run `vecq --convert <file>`.
+
+### Markdown (`.md`)
+- `.headers[]`: List of headers (`{ content, level, line_start }`)
+- `.code_blocks[]`: Fenced code blocks (`{ language, content }`)
+- `.links[]`: Hyperlinks (`{ text, url }`)
+
+### Rust/Python/Go/C++
+- `.functions[]`: Function definitions (`{ name, signature, content }`)
+- `.structs[]`: Class/Struct definitions (`{ name, content }`)
+- `.imports[]`: Import statements
+- `.comments[]`: Top-level comments
+

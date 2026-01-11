@@ -655,7 +655,7 @@ mod tests {
         
         let explanation = engine.explain_query(".functions[] | select(.visibility == \"pub\")").unwrap();
         assert_eq!(explanation.query, ".functions[] | select(.visibility == \"pub\")");
-        assert!(explanation.operations.len() > 0);
+        assert!(!explanation.operations.is_empty());
         // Complexity analysis may vary, just check it's not empty
         assert!(matches!(explanation.complexity, QueryComplexity::Simple | QueryComplexity::Moderate | QueryComplexity::Complex));
     }

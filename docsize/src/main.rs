@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
-use std::io::{IsTerminal, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -40,6 +40,10 @@ struct Args {
     #[arg(long)]
     debug: bool,
 
+    /// Enable Smart Routing (detect facets from query)
+    #[arg(short, long)]
+    smart: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -60,6 +64,8 @@ struct Config {
     pub default_model: Option<String>,
     #[serde(default = "default_ollama_url")]
     pub ollama_url: String,
+    #[serde(default = "default_context_window")]
+    pub context_window: usize,
 }
 
 impl Default for Config {
@@ -67,12 +73,14 @@ impl Default for Config {
         Self {
             default_model: None,
             ollama_url: "http://localhost:11434".to_string(),
+            context_window: 2048,
         }
     }
 }
 
 fn default_model() -> Option<String> { None }
 fn default_ollama_url() -> String { "http://localhost:11434".to_string() }
+fn default_context_window() -> usize { 2048 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Session {
@@ -87,8 +95,8 @@ struct Interaction {
 
 trait InferenceEngine {
     #[allow(dead_code)]
-    async fn complete(&self, model: &str, prompt: &str) -> Result<String>;
-    async fn stream_complete(&self, model: &str, prompt: &str) -> Result<BoxStream<'static, Result<String>>>;
+    async fn complete(&self, model: &str, prompt: &str, options: Option<serde_json::Value>) -> Result<String>;
+    async fn stream_complete(&self, model: &str, prompt: &str, options: Option<serde_json::Value>) -> Result<BoxStream<'static, Result<String>>>;
 }
 
 struct OllamaEngine {
@@ -121,15 +129,19 @@ impl OllamaEngine {
 }
 
 impl InferenceEngine for OllamaEngine {
-    async fn complete(&self, model: &str, prompt: &str) -> Result<String> {
+    async fn complete(&self, model: &str, prompt: &str, options: Option<serde_json::Value>) -> Result<String> {
         let client = reqwest::Client::new();
         let api_url = format!("{}/api/generate", self.url.trim_end_matches('/'));
         
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "model": model,
             "prompt": prompt,
             "stream": false
         });
+
+        if let Some(opts) = options {
+            payload.as_object_mut().unwrap().insert("options".to_string(), opts);
+        }
 
         let resp = client.post(&api_url)
             .json(&payload)
@@ -145,15 +157,19 @@ impl InferenceEngine for OllamaEngine {
         Ok(response.to_string())
     }
 
-    async fn stream_complete(&self, model: &str, prompt: &str) -> Result<BoxStream<'static, Result<String>>> {
+    async fn stream_complete(&self, model: &str, prompt: &str, options: Option<serde_json::Value>) -> Result<BoxStream<'static, Result<String>>> {
         let client = reqwest::Client::new();
         let api_url = format!("{}/api/generate", self.url.trim_end_matches('/'));
         
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "model": model,
             "prompt": prompt,
             "stream": true
         });
+
+        if let Some(opts) = options {
+            payload.as_object_mut().unwrap().insert("options".to_string(), opts);
+        }
 
         let resp = client.post(&api_url)
             .json(&payload)
@@ -190,6 +206,9 @@ Use the provided context to give precise, actionable, and correct answers.
 ### DIRECTORY STRUCTURE
 {{ %DOCSIZE_TREE% }}
 
+### PROJECT OVERVIEW (README)
+{{ %DOCSIZE_README% }}
+
 ### RELEVANT CODE & SEARCH RESULTS
 {{ %DOCSIZE_VECDB_EMBEDDING_RESPONSE% }}
 
@@ -198,6 +217,10 @@ Use the provided context to give precise, actionable, and correct answers.
 
 Please provide your response in a clear, structured Markdown format. If providing code, ensure it is in fenced blocks with the correct language tag.
 "#;
+
+fn estimate_tokens(text: &str) -> usize {
+    text.chars().count() / 4
+}
 
 fn migrate_config_to_xdg() -> Result<PathBuf> {
     let home = dirs::home_dir().context("Could not find home directory")?;
@@ -325,6 +348,9 @@ async fn resolve_model_interactive(config: &mut Config, update_default: bool) ->
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize logging (clean production default)
+    vecdb_common::logging::init_logging();
+
     let args = Args::parse();
     let ctx = &*OUTPUT;
 
@@ -332,7 +358,7 @@ async fn main() -> Result<()> {
         match cmd {
             Commands::Man { agent } => {
                 if agent {
-                    println!("{}", include_str!("../DOCSIZE.md")); // Use actual file
+                    println!("{}", include_str!("../README.md")); // Use actual file
                 } else {
                     println!("docsize v0.0.9 - Contextualized LLM wrapper");
                     println!("Usage: docsize [QUERY] [-d DIR] [-m MODEL] [-a]");
@@ -435,6 +461,7 @@ async fn main() -> Result<()> {
 
     // 3. Gather Context
     let mut tree_text = String::new();
+    let mut readme_text = String::new();
     let mut search_results = String::new();
 
     if !args.no_context {
@@ -443,14 +470,18 @@ async fn main() -> Result<()> {
         // Tree context via tree -J | vecq
         tree_text = gather_tree_context(&args.dir).await.unwrap_or_else(|e| format!("Tree error: {}", e));
 
+        // Readme context
+        readme_text = read_readme(&args.dir).await.unwrap_or_default();
+
         // Semantic search context via vecdb-server
-        search_results = call_vecdb_server(&query, args.debug).await.unwrap_or_else(|e| format!("Search error: {}", e));
+        search_results = call_vecdb_server(&query, args.debug, args.smart).await.unwrap_or_else(|e| format!("Search error: {}", e));
     }
 
     // 4. Build Prompt
     let template = std::fs::read_to_string(&prompt_path)?;
     let final_prompt = template
         .replace("{{ %DOCSIZE_TREE% }}", &tree_text)
+        .replace("{{ %DOCSIZE_README% }}", &readme_text)
         .replace("{{ %DOCSIZE_VECDB_EMBEDDING_RESPONSE% }}", &search_results)
         .replace("{{ %QUERY% }}", &query);
 
@@ -462,6 +493,15 @@ async fn main() -> Result<()> {
 
     // 5. LLM Interaction
     if ctx.is_interactive { eprintln!("Generating response with {}...", model); }
+
+    let est_tokens = estimate_tokens(&final_prompt);
+    let ctx_window = config.context_window;
+    let percentage = (est_tokens as f64 / ctx_window as f64) * 100.0;
+    
+    eprintln!("Context: ~{} / {} tokens ({:.1}%)", est_tokens, ctx_window, percentage);
+    if est_tokens > ctx_window {
+         eprintln!("⚠️  Warning: Prompt exceeds context window!");
+    }
     
     // Output previous history first if append mode is on
     if args.append {
@@ -480,7 +520,11 @@ async fn main() -> Result<()> {
     
     let engine = OllamaEngine { url: config.ollama_url.clone() };
     
-    let mut stream = match engine.stream_complete(&model, &final_prompt).await {
+    let options = serde_json::json!({
+        "num_ctx": config.context_window
+    });
+
+    let mut stream = match engine.stream_complete(&model, &final_prompt, Some(options.clone())).await {
         Ok(s) => s,
         Err(e) if std::io::stdin().is_terminal() => {
             let err_msg = e.to_string();
@@ -501,7 +545,7 @@ async fn main() -> Result<()> {
                    println!("> {}\n", query);
                    print!("% ");
                    std::io::stdout().flush()?;
-                   engine.stream_complete(&model, &final_prompt).await?
+                   engine.stream_complete(&model, &final_prompt, Some(options)).await?
                } else {
                    return Err(e);
                }
@@ -520,6 +564,8 @@ async fn main() -> Result<()> {
         full_response.push_str(&token);
     }
     println!(); // End of response line
+    println!();
+    println!("---");
     println!(); // Extra spacing
 
     session.history.push(Interaction {
@@ -550,7 +596,31 @@ async fn gather_tree_context(dir: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-async fn call_vecdb_server(query: &str, debug_mode: bool) -> Result<String> {
+async fn read_readme(dir: &Path) -> Result<String> {
+    let mut readme_path = dir.join("README.md");
+    if !readme_path.exists() {
+        readme_path = dir.join("readme.md");
+    }
+    if !readme_path.exists() {
+        readme_path = dir.join("README.txt"); // Check .txt too
+    }
+    
+    if readme_path.exists() {
+        // Read just the first 2KB to avoid blowing context
+        let file = std::fs::File::open(readme_path)?;
+        let mut handle = file.take(2048);
+        let mut buffer = String::new();
+        handle.read_to_string(&mut buffer)?;
+        if buffer.len() == 2048 {
+            buffer.push_str("\n... (truncated) ...");
+        }
+        Ok(buffer)
+    } else {
+        Ok("No README found.".to_string())
+    }
+}
+
+async fn call_vecdb_server(query: &str, debug_mode: bool, smart: bool) -> Result<String> {
     let mut child = Command::new("vecdb-server")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -582,7 +652,7 @@ async fn call_vecdb_server(query: &str, debug_mode: bool) -> Result<String> {
             "name": "search_vectors",
             "arguments": {
                 "query": query,
-                "smart": true,
+                "smart": smart,
                 "json": true
             }
         },

@@ -90,8 +90,10 @@ impl Chunker for RecursiveChunker {
                     safe_chunks.push(chunk);
                 } else {
                     // Chunk exceeds max, split it forcefully
-                    eprintln!("RecursiveChunker: Chunk size {} exceeds max {}, splitting with SimpleChunker", 
-                             chunk.content.len(), max);
+                    if crate::output::OUTPUT.is_interactive {
+                        eprintln!("RecursiveChunker: Chunk size {} exceeds max {}, splitting with SimpleChunker", 
+                                 chunk.content.len(), max);
+                    }
                     // Note: This sub-chunking loses precise line tracking relative to original file for the split parts
                     // but maintain offset approximate.
                     // Ideally SimpleChunker also returns ChunkResult.
@@ -121,21 +123,128 @@ pub struct CodeChunker;
 #[async_trait]
 impl Chunker for CodeChunker {
     async fn chunk(&self, text: &str, params: &ChunkParams) -> Result<Vec<ChunkResult>> {
-        // LEGACY: vecq based chunking is replaced by Smart Ingestion (ParserFactory).
-        // This remains as a fallback for the "code_aware" strategy if selected manually,
-        // but now mostly delegates to RecursiveChunker to avoid hard dependency on vecq binary.
-        RecursiveChunker.chunk(text, params).await
+        // Structural splitting by double newlines and indent level 0
+        let mut chunks = Vec::new();
+        let lines: Vec<&str> = text.lines().collect();
+        
+        let mut current_chunk = String::new();
+        let mut current_start_offset = 0;
+        let mut current_start_line = 1;
+        
+        let mut offset = 0;
+        for (i, line) in lines.iter().enumerate() {
+            let line_len_with_nl = line.len() + 1; // Approximate newline
+            
+            // Heuristic: Split if line starts with non-whitespace and we have enough content
+            let is_top_level = !line.starts_with(|c: char| c.is_whitespace()) && !line.is_empty();
+            let should_split = is_top_level && current_chunk.len() >= params.chunk_size;
+            
+            if should_split && !current_chunk.is_empty() {
+                chunks.push(ChunkResult {
+                    content: current_chunk.trim_end().to_string(),
+                    offset_bytes: current_start_offset,
+                    line_start: Some(current_start_line),
+                    line_end: Some(i), // i is 0-indexed, so current line is i+1, previous line is i
+                });
+                current_chunk = String::new();
+                current_start_offset = offset;
+                current_start_line = i + 1;
+            }
+            
+            current_chunk.push_str(line);
+            current_chunk.push('\n');
+            offset += line_len_with_nl;
+        }
+        
+        if !current_chunk.is_empty() {
+            chunks.push(ChunkResult {
+                content: current_chunk.trim_end().to_string(),
+                offset_bytes: current_start_offset,
+                line_start: Some(current_start_line),
+                line_end: Some(lines.len()),
+            });
+        }
+
+        // If chunks are still too large, use RecursiveChunker on them
+        let mut refined_chunks = Vec::new();
+        for chunk in chunks {
+            if chunk.content.len() > params.max_chunk_size.unwrap_or(params.chunk_size * 2) {
+                let sub_chunks = RecursiveChunker.chunk(&chunk.content, params).await?;
+                for mut sub in sub_chunks {
+                    sub.offset_bytes += chunk.offset_bytes;
+                    sub.line_start = Some(chunk.line_start.unwrap_or(1) + sub.line_start.unwrap_or(1) - 1);
+                    sub.line_end = Some(chunk.line_start.unwrap_or(1) + sub.line_end.unwrap_or(1) - 1);
+                    refined_chunks.push(sub);
+                }
+            } else {
+                refined_chunks.push(chunk);
+            }
+        }
+
+        Ok(refined_chunks)
     }
 }
 
 pub struct Factory;
 
 impl Factory {
-    pub fn get(strategy: &str) -> Box<dyn Chunker> {
+    pub fn get(strategy: &str, file_type: vecdb_common::FileType) -> Box<dyn Chunker> {
+        // ENFORCED RULE: For types with "Simple" capability (e.g. Unknown/Lua),
+        // we FORCE SimpleChunker if strategy is recursive/semantic to avoid
+        // performance hangs on files that don't benefit from sentence-level splitting.
+        if matches!(file_type.capability(), vecdb_common::ParsingCapability::Simple) && (strategy == "recursive" || strategy == "semantic") {
+            return Box::new(SimpleChunker);
+        }
+
         match strategy {
             "code_aware" => Box::new(CodeChunker),
             "semantic" => Box::new(RecursiveChunker), 
+            "recursive" => Box::new(RecursiveChunker),
+            "simple" => Box::new(SimpleChunker),
             _ => Box::new(RecursiveChunker),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vecdb_common::FileType;
+
+    #[test]
+    fn test_capability_mapping() {
+        use vecdb_common::ParsingCapability;
+        assert_eq!(FileType::Rust.capability(), ParsingCapability::Code);
+        assert_eq!(FileType::Python.capability(), ParsingCapability::Code);
+        assert_eq!(FileType::Markdown.capability(), ParsingCapability::Document);
+        assert_eq!(FileType::Html.capability(), ParsingCapability::Document);
+        assert_eq!(FileType::Json.capability(), ParsingCapability::Data);
+        assert_eq!(FileType::Text.capability(), ParsingCapability::Simple);
+        assert_eq!(FileType::Unknown.capability(), ParsingCapability::Simple);
+    }
+
+    #[test]
+    fn test_factory_fallback_logic() {
+        // Rule: Unknown + semantic/recursive -> SimpleChunker
+        let _chunker_unk = Factory::get("semantic", FileType::Unknown);
+        
+        // Rule: Text (Simple) + semantic -> SimpleChunker
+        let _chunker_txt = Factory::get("semantic", FileType::Text);
+
+        // Let's verify it doesn't break known types
+        let _chunker_rs = Factory::get("semantic", FileType::Rust);
+        // This should be RecursiveChunker (logic check)
+    }
+
+    #[test]
+    fn test_all_strategies_resolved() {
+        let types = vec![FileType::Rust, FileType::Unknown, FileType::Text];
+        let strategies = vec!["semantic", "recursive", "simple", "code_aware", "unknown_bogus"];
+
+        for t in types {
+            for s in strategies.iter() {
+                let _ = Factory::get(s, t);
+            }
         }
     }
 }

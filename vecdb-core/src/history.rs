@@ -54,6 +54,9 @@ pub async fn ingest_history(
         excludes: None,
         dry_run: false,
         metadata: None,
+        path_rules: Vec::new(),
+        max_concurrent_requests: 4,
+        gpu_batch_size: 2,
     };
 
     // 3. Ingest

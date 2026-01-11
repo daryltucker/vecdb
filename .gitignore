@@ -9,13 +9,13 @@
 
 **/docs/**/
 !**/docs/vecq
+!**/docs/specs
+!**/src/docs
 
 **/__pycache__/
-target/
+**/target/
 **/external/
 **/out/
-scripts/
-
 
 !README.md
 !Cargo.lock
@@ -25,10 +25,12 @@ scripts/
 !docs
 !docsize
 !examples
+!install.sh
 !schemas
 !tests
 !vecdb-cli/
 !vecdb-common/
 !vecdb-core
 !vecdb-server
+!vecdb-asm
 !vecq

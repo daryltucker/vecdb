@@ -102,17 +102,44 @@ impl FileType {
         let sample = &content[..sample_len];
         
         // Fast scan for null bytes (indicates binary)
-        if sample.iter().any(|&b| b == 0) {
+        if sample.contains(&0) {
             return false;
         }
         
-        // Check ratio of printable characters (including whitespace)
+        // Check ratio of printable characters (including whitespace and UTF-8)
         let printable = sample.iter().filter(|&&b| {
-            (b >= 32 && b <= 126) || b == 9 || b == 10 || b == 13
+            (32..=126).contains(&b) || b == 9 || b == 10 || b == 13 || b >= 128
         }).count();
         
         (printable as f32 / sample_len as f32) > 0.85
     }
+
+    /// Categorize file type into a broader capability class for strategy selection
+    pub fn capability(&self) -> ParsingCapability {
+        match self {
+            Self::Markdown | Self::Html => ParsingCapability::Document,
+            Self::Json | Self::Toml => ParsingCapability::Data,
+            
+            Self::Rust | Self::Python | Self::C | Self::Cpp | 
+            Self::Cuda | Self::Go | Self::Bash => ParsingCapability::Code,
+
+            Self::Text => ParsingCapability::Simple,
+            Self::Unknown => ParsingCapability::Simple, // The Lua fallback
+        }
+    }
+}
+
+/// Broad categories of parsing behavior
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ParsingCapability {
+    /// Structured documents (Markdown, HTML)
+    Document,
+    /// Source code (Python, Rust, etc)
+    Code,
+    /// Structured data (JSON, TOML)
+    Data,
+    /// Unstructured or unknown text
+    Simple,
 }
 
 impl fmt::Display for FileType {

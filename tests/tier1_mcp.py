@@ -68,6 +68,7 @@ def run_tier1_test():
 
     # Start Server with test Qdrant URL
     # Note: --allow-local-fs is REQUIRED for ingest_path
+    config_path = os.path.join(os.path.dirname(__file__), "fixtures", "config.toml")
     process = subprocess.Popen(
         [server_path, '--allow-local-fs'],
         stdin=subprocess.PIPE,

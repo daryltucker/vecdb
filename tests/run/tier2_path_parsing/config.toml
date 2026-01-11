@@ -1,0 +1,15 @@
+
+smart_routing_keys = ["year", "quarter"]
+
+[profiles.default]
+qdrant_url = "http://localhost:6336"
+embedding_model = "nomic-embed-text"
+default_collection_name = "test_path_parsing"
+embedder_type = "local"
+
+[[ingestion.path_rules]]
+# Matches: .../data/2025/Q1/strategy.txt
+# Capture year and quarter
+# Note: Ingestion root is .../data, so relative path is 2025/Q1/...
+pattern = "(?P<year>\\d{4})/(?P<quarter>Q\\d)/.*"
+    

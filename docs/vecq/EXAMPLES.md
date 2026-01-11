@@ -1,83 +1,57 @@
 # vecq Examples Cookbook
 
-This document provides a cookbook of common queries and recipes for `vecq`.
+`vecq` is a versatile tool for structural querying. Below are common patterns to help you navigate and transform your documents.
 
-## 🚀 Key Patterns
+---
 
-### 1. Structural Grep (Recursive)
-The "Happy Path" for finding code. Uses `-R` to recurse and `--grep-format` for editor compatibility.
+## 🔍 Search Recipes
 
-**Find public functions:**
+### Find text in Headers or Paragraphs
+This query searches both Markdown headers (titles) and paragraphs for a specific term. Use this when you want to find content within specific structural elements rather than just a raw string match.
+
 ```bash
-vecq -R src/ -q '.functions[] | select(.visibility == "pub") | .name' --grep-format
+vecq -R . -q '(.headers[] | select(.name | contains("pattern"))), (.paragraph[] | select(.content | contains("pattern")))' --grep-format
 ```
 
-**Find "TODO" items:**
+### Search All Content Elements
+To search across all document elements (code blocks, text blocks, headers, etc.):
+
 ```bash
-vecq -R src/ -q '.todos[]' --grep-format
+vecq -R . -q '.elements[] | select(.content | contains("pattern"))' --grep-format
 ```
 
-### 2. Code Block Extraction
-Extract executable code from Markdown files. Clean, raw output.
+### Filter by File Type
+Process only specific file types (e.g., Markdown) within a directory:
 
-**Extract bash commands:**
 ```bash
-vecq README.md -q '.code_blocks[] | select(.attributes.language == "bash") | .content' -r
+find . -name "*.md" | xargs vecq -q '.headers[]' --grep-format
 ```
 
 ---
 
-## 🦀 Rust Examples
+## �️ Extraction Recipes
 
-### List all struct names
+### Extract all functions from a project
 ```bash
-vecq src/lib.rs '.structs[] | .name'
+vecq -R src/ '.functions[]'
 ```
 
-### Find functions returning Result
+### List all TODOs in Bash scripts
 ```bash
-vecq -R src/ '.functions[] | select(.return_type | contains("Result")) | .name'
+vecq -R scripts/ -q '.comments[] | select(.content | contains("TODO"))' --grep-format
 ```
 
-### List imports
+### Extract Python class names
 ```bash
-vecq -R src/ '.imports[]' --grep-format
-```
-
----
-
-## 🐍 Python Examples
-
-### List all classes
-```bash
-vecq app.py '.classes[] | .name'
-```
-
-### Find decorated functions
-```bash
-vecq app.py '.functions[] | select(.decorators | length > 0) | .name'
+vecq app/ '.classes[] | .name'
 ```
 
 ---
 
-## 📝 Markdown Examples
+## 🎨 Visualization and Piping
 
-### List document headers
-```bash
-vecq README.md '.headers[] | .title'
-```
-
-### Extract Rust code blocks
-```bash
-vecq README.md -q '.code_blocks[] | select(.attributes.language == "rust") | .content' -r
-```
-
----
-
-## ⚡ Terminal Workflows
-
-### Syntax Highlighting with `vecdb`
-Pipe `vecdb search` results into `vecq` for coloring:
+### Syntax highlight search results
+Pipe `vecdb search` results into `vecq` for colorized structural analysis:
 ```bash
 vecdb search "authentication" | vecq syntax -l md
 ```

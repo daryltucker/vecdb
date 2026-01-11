@@ -86,6 +86,8 @@ default_strategy = "recursive"              # "recursive" or "code_aware"
 chunk_size = 512                            # Target tokens per chunk
 chunk_overlap = 50                          # Overlap between chunks
 tokenizer = "cl100k_base"                   # "cl100k_base" (GPT-4) or "char"
+max_concurrent_requests = 4                 # Parallel file processing tasks
+gpu_batch_size = 2                          # GPU embedding batch size
 
 # Pattern-based overrides (glob patterns)
 [ingestion.overrides."*.rs"]
@@ -109,6 +111,7 @@ chunk_size = 800
 | `local_embedding_model` | string | `"bge-micro-v2"` | **Global**: Embedding model for ALL profiles with `embedder_type="local"`. Only **ONE** local model can be loaded per process. |
 | `local_use_gpu` | bool | `false` | **Global**: Use GPU for local embeddings if available. Requires `cuda` feature flag. |
 | `fastembed_cache_path` | string | `~/.config/vecdb/fastembed_cache` | Path for `local` embedder model cache |
+| `smart_routing_keys` | array | `["source_type", "language"]` | Keys to use for Smart Routing / Facet Auto-Detection. |
 
 ### Profile Options (`[profiles.<name>]`)
 
@@ -120,6 +123,8 @@ chunk_size = 800
 | `ollama_url` | string | `"http://localhost:11434"` | Ollama API URL (only for `embedder_type = "ollama"`) |
 | `embedding_model` | string | `"nomic-embed-text"` | Ollama model name (**only for** `embedder_type = "ollama"`). If set on a `local` profile, a warning will be displayed and this field will be ignored. |
 | `accept_invalid_certs` | bool | `false` | Accept invalid TLS certificates |
+| `qdrant_api_key` | string | `null` | Optional API Key for Qdrant authentication |
+| `ollama_api_key` | string | `null` | Optional API Key for Ollama proxy authentication |
 
 ### Embedder Types
 
@@ -153,8 +158,12 @@ Usage:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | string | **REQUIRED** | Actual Qdrant collection name |
+| `description` | string | `null` | Optional description for listing |
 | `embedder_type` | string | `null` | Override active profile's embedder type |
 | `embedding_model`| string | `null` | Override active profile's embedding model |
+| `ollama_url` | string | `null` | Override Ollama URL |
+| `qdrant_api_key` | string | `null` | Override Qdrant API Key |
+| `ollama_api_key` | string | `null` | Override Ollama API Key |
 | `chunk_size` | integer | `null` | Override ingestion chunk size |
 | `max_chunk_size` | integer | `null` | Override max chunk size |
 | `chunk_overlap` | integer | `null` | Override chunk overlap |
@@ -173,6 +182,12 @@ Usage:
 | `chunk_overlap` | integer | `50` | Overlap between adjacent chunks |
 | `respect_gitignore` | bool | `false` | Always respect .gitignore files |
 | `tokenizer` | string | `"cl100k_base"` | Tokenizer for splitting |
+| `max_concurrent_requests` | integer | `4` | Max parallel file processing tasks |
+| `gpu_batch_size` | integer | `2` | Max GPU embedding batch size (OOM protection) |
+
+#### Smart Ingestion (Path Parsing)
+You can configure `path_rules` to extract metadata from file paths (e.g., years, versions).
+See [VECTOR_FACETS.md](VECTOR_FACETS.md) for details and [TRAINING_GOLD.md](internal/TRAINING_GOLD.md) for 10 fun examples!
 
 #### Chunking Strategies
 

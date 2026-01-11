@@ -308,7 +308,7 @@ mod tests {
         let doc = parse_html(&deep_html);
         let duration = start.elapsed();
         
-        assert!(doc.elements.len() > 0);
+        assert!(!doc.elements.is_empty());
         // Skeleton-first should be extremely fast, even with 150 levels
         assert!(duration.as_millis() < 50, "Skeleton refactor should be ultra-fast: {:?}", duration);
     }
@@ -319,7 +319,7 @@ mod tests {
         if !path.exists() { return; }
         let content = std::fs::read_to_string(path).unwrap();
         let doc = parse_html(&content);
-        assert!(doc.elements.len() > 0);
+        assert!(!doc.elements.is_empty());
         assert!(doc.elements.iter().any(|e| e.name.as_deref() == Some("div")));
     }
 
@@ -380,6 +380,6 @@ mod tests {
         // This file contains binary junk. While the parser itself might try to find tags,
         // we want to ensure it doesn't hang or crash.
         let doc = parse_html(&content);
-        assert!(doc.elements.len() > 0); 
+        assert!(!doc.elements.is_empty()); 
     }
 }

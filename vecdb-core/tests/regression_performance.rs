@@ -44,6 +44,20 @@ impl FileTypeDetector for UnknownDetector {
     fn detect(&self, _path: &Path, _content: &[u8]) -> FileType { FileType::Unknown }
 }
 
+struct RealDetector;
+impl FileTypeDetector for RealDetector {
+    fn detect(&self, path: &Path, _content: &[u8]) -> FileType { FileType::from_path(path) }
+}
+
+struct TextBypassFactory;
+impl vecdb_core::parsers::ParserFactory for TextBypassFactory {
+    fn get_parser(&self, file_type: FileType) -> Option<Box<dyn vecdb_core::parsers::Parser>> {
+        match file_type {
+            FileType::Text => None,
+            _ => None, 
+        }
+    }
+}
 
 fn generate_large_lua_like_code(size_mb: usize) -> String {
     let line = "local function data_processor(arg1, arg2)\n    if arg1 ~= nil then\n        return arg2 * 2\n    end\n    print('error')\nend\n";
@@ -79,6 +93,9 @@ async fn regression_lua_speed_and_structure() {
         excludes: None,
         dry_run: false,
         metadata: None,
+        path_rules: vec![],
+        max_concurrent_requests: 1,
+        gpu_batch_size: 1,
     };
 
     let start = Instant::now();
@@ -150,23 +167,8 @@ async fn regression_text_performance() {
     let backend: Arc<dyn vecdb_core::backend::Backend + Send + Sync> = Arc::new(MockBackend);
     let embedder: Arc<dyn vecdb_core::embedder::Embedder + Send + Sync> = Arc::new(MockEmbedder);
     // Real detector for .txt gives FileType::Text
-    struct RealDetector;
-    impl FileTypeDetector for RealDetector {
-        fn detect(&self, path: &Path, _content: &[u8]) -> FileType { FileType::from_path(path) }
-    }
+
     let detector: Arc<dyn FileTypeDetector> = Arc::new(RealDetector);
-    // Use Builtin (or Mock factory that returns None) - wait, if Text, ParserFactory might give Yaml if not careful.
-    // We fixed that in mod.rs. Let's verify it here by using the Real Factory behavior Mock.
-    struct TextBypassFactory;
-    impl vecdb_core::parsers::ParserFactory for TextBypassFactory {
-        fn get_parser(&self, file_type: FileType) -> Option<Box<dyn vecdb_core::parsers::Parser>> {
-            // Mimic the fix in mod.rs: Text returns None
-            match file_type {
-                FileType::Text => None,
-                _ => None, 
-            }
-        }
-    }
     let factory: Arc<dyn vecdb_core::parsers::ParserFactory> = Arc::new(TextBypassFactory);
 
     let options = IngestionOptions {
@@ -183,6 +185,9 @@ async fn regression_text_performance() {
         excludes: None,
         dry_run: false,
         metadata: None,
+        path_rules: vec![],
+        max_concurrent_requests: 1,
+        gpu_batch_size: 1,
     };
 
     println!("Starting Text Regression (Recursive/Smart)...");
@@ -207,15 +212,8 @@ async fn regression_pride_and_prejudice_file() {
 
     let backend: Arc<dyn vecdb_core::backend::Backend + Send + Sync> = Arc::new(MockBackend);
     let embedder: Arc<dyn vecdb_core::embedder::Embedder + Send + Sync> = Arc::new(MockEmbedder);
-    struct RealDetector;
-    impl FileTypeDetector for RealDetector {
-        fn detect(&self, path: &Path, _content: &[u8]) -> FileType { FileType::from_path(path) }
-    }
+
     let detector: Arc<dyn FileTypeDetector> = Arc::new(RealDetector);
-    struct TextBypassFactory;
-    impl vecdb_core::parsers::ParserFactory for TextBypassFactory {
-        fn get_parser(&self, file_type: FileType) -> Option<Box<dyn vecdb_core::parsers::Parser>> { match file_type { FileType::Text => None, _ => None } }
-    }
     let factory: Arc<dyn vecdb_core::parsers::ParserFactory> = Arc::new(TextBypassFactory);
 
     let options = IngestionOptions {
@@ -232,6 +230,9 @@ async fn regression_pride_and_prejudice_file() {
         excludes: None,
         dry_run: false,
         metadata: None,
+        path_rules: vec![],
+        max_concurrent_requests: 1,
+        gpu_batch_size: 1,
     };
 
     println!("Starting Real P&P Regression...");

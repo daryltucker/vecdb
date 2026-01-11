@@ -11,7 +11,7 @@ async fn test_stability_multibyte_boundaries() {
     // We force a max_chunk_size of 2, which lands INSIDE the multibyte char (index 2).
     // Previously, this panicked. Now it should split safely.
     
-    let chunker = Factory::get("semantic");
+    let chunker = Factory::get("semantic", vecdb_common::FileType::Text);
     let text = "H\u{FFFD}lloWorld"; 
     
     let params = ChunkParams {
@@ -41,7 +41,7 @@ async fn test_stability_binary_simulation() {
     // A string with null bytes that isn't caught by the binary detector (e.g. embedded nulls in code)
     // The TextSplitter might behave weirdly, but SimpleChunker must handle it fallback.
     
-    let chunker = Factory::get("semantic");
+    let chunker = Factory::get("semantic", vecdb_common::FileType::Text);
     // "Header\0BodyResult"
     let text = "Header\0BodyStart\nLine2\nEnd";
     

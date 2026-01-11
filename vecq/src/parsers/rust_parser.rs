@@ -343,9 +343,16 @@ impl RustParser {
             other,
         });
 
+        let self_ty = &item_impl.self_ty;
+        let name = if let Some((_, path, _)) = &item_impl.trait_ {
+            format!("impl {} for {}", quote::quote!(#path), quote::quote!(#self_ty))
+        } else {
+            format!("impl {}", quote::quote!(#self_ty))
+        };
+
         Ok(Some(DocumentElement::new(
             ElementType::Implementation,
-            None, // Impl blocks don't have a single "name", usually target type
+            Some(name),
             format!("{}", quote::quote!(#item_impl)),
             start,
             end,

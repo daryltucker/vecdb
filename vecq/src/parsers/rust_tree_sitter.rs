@@ -8,6 +8,12 @@ use vecdb_common::LineCounter;
 #[derive(Clone)]
 pub struct RustTreeSitterParser;
 
+impl Default for RustTreeSitterParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RustTreeSitterParser {
     pub fn new() -> Self {
         Self

@@ -29,7 +29,7 @@ jobs:
             asset_ext: ""
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -48,6 +48,13 @@ jobs:
         cp target/${{ matrix.target }}/release/vecdb-server${{ matrix.asset_ext }} dist/
         cp target/${{ matrix.target }}/release/vecq${{ matrix.asset_ext }} dist/
         
+        # Bundle Shared Libraries for Portable/RPATH support
+        mkdir -p dist/lib
+        # Find and copy libonnxruntime* from build artifacts to dist/lib
+        find target/${{ matrix.target }}/release -name "libonnxruntime*${{ matrix.asset_ext }}*" -exec cp {} dist/lib/ \; || true
+        find target/${{ matrix.target }}/release/deps -name "libonnxruntime*${{ matrix.asset_ext }}*" -exec cp {} dist/lib/ \; || true
+        find target/${{ matrix.target }}/release/build -name "libonnxruntime*${{ matrix.asset_ext }}*" -exec cp {} dist/lib/ \; || true
+        
         # Create archive
         cd dist
         if [ "${{ matrix.os }}" = "windows-latest" ]; then
@@ -57,7 +64,7 @@ jobs:
         fi
 
     - name: Upload Artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.artifact_name }}
         path: |
@@ -71,13 +78,13 @@ jobs:
     permissions:
       contents: write
     steps:
-    - uses: actions/download-artifact@v3
+    - uses: actions/download-artifact@v4
     
     - name: Display downloaded artifacts
       run: ls -R
 
     - name: Create Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         files: |
           */*.tar.gz

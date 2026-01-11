@@ -48,25 +48,35 @@ impl VecqParserAdapter {
              };
              metadata.insert("crumbtrail".to_string(), serde_json::Value::String(current_trail.clone()));
 
-             // Create deterministic ID based on doc ID + line number + crumbtrail
-             // Using start_line and name is usually stable enough for code
-             let chunk_seed = format!("{}::{}::{}", doc_id, element.line_start, current_trail);
-             let chunk_id = Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, chunk_seed.as_bytes()).to_string();
+             // Redundancy Check: If it has children, only add it if it has "meat" (unique content)
+             let children_len: usize = element.children.iter().map(|c| c.content.len()).sum();
+             let is_fully_covered = !element.children.is_empty() && (children_len > (element.content.len() * 9 / 10));
+             
+             let should_index = if is_fully_covered {
+                 matches!(element.element_type.to_string().as_str(), "function" | "method" | "class" | "struct" | "interface" | "trait") || element.attributes.contains_key("docstring")
+             } else {
+                 true
+             };
 
-             // Only add chunks for meaningful elements (filter out small fragments if needed, but for now keep all)
-             // We use element content as the text to embed
-             chunks.push(Chunk {
-                 id: chunk_id,
-                 document_id: doc_id.to_string(),
-                 content: element.content.clone(),
-                 vector: None, // To be filled by embedder
-                 metadata: metadata.into_iter().collect(),
-                 page_num: None,
-                 char_start: 0, 
-                 char_end: element.content.len(),
-                 start_line: Some(element.line_start),
-                 end_line: Some(element.line_end),
-             });
+             if should_index {
+                 // Create deterministic ID based on doc ID + crumbtrail + content hash for maximum stability
+                 let content_hash = calculate_hash(&element.content);
+                 let chunk_seed = format!("{}::{}::{}", doc_id, current_trail, content_hash);
+                 let chunk_id = Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, chunk_seed.as_bytes()).to_string();
+
+                 chunks.push(Chunk {
+                     id: chunk_id,
+                     document_id: doc_id.to_string(),
+                     content: element.content.clone(),
+                     vector: None,
+                     metadata: metadata.into_iter().collect(),
+                     page_num: None,
+                     char_start: 0, 
+                     char_end: element.content.len(),
+                     start_line: Some(element.line_start),
+                     end_line: Some(element.line_end),
+                 });
+             }
 
              // Recurse
              if !element.children.is_empty() {
@@ -74,6 +84,14 @@ impl VecqParserAdapter {
              }
         }
     }
+}
+
+fn calculate_hash(content: &str) -> String {
+    use sha2::{Sha256, Digest};
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    let result = hasher.finalize();
+    result.iter().map(|b| format!("{:02x}", b)).collect::<String>()
 }
 
 #[async_trait]
@@ -130,6 +148,13 @@ impl ParserFactory for VecqParserFactory {
              }
         } else {
             None
+        }
+    }
+
+    fn get_streaming_parser(&self, file_type: FileType) -> Option<Box<dyn Parser>> {
+        match file_type {
+            FileType::Json => Some(Box::new(vecdb_core::parsers::streaming_json::StreamingJsonParser::new())),
+            _ => None,
         }
     }
 }

@@ -144,12 +144,10 @@ impl PythonParser {
                 attributes.insert("is_async".to_string(), json!(false));
                 
                 // Extract docstring if present
-                if let Some(first_stmt) = func_def.body.first() {
-                    if let ast::Stmt::Expr(expr) = first_stmt {
-                        if let ast::Expr::Constant(constant) = &*expr.value {
-                            if let ast::Constant::Str(docstring) = &constant.value {
-                                attributes.insert("docstring".to_string(), json!(docstring));
-                            }
+                if let Some(ast::Stmt::Expr(expr)) = func_def.body.first() {
+                    if let ast::Expr::Constant(constant) = &*expr.value {
+                        if let ast::Constant::Str(docstring) = &constant.value {
+                            attributes.insert("docstring".to_string(), json!(docstring));
                         }
                     }
                 }
@@ -206,12 +204,10 @@ impl PythonParser {
                 attributes.insert("is_async".to_string(), json!(true));
                 
                 // Extract docstring if present
-                if let Some(first_stmt) = async_func_def.body.first() {
-                    if let ast::Stmt::Expr(expr) = first_stmt {
-                        if let ast::Expr::Constant(constant) = &*expr.value {
-                            if let ast::Constant::Str(docstring) = &constant.value {
-                                attributes.insert("docstring".to_string(), json!(docstring));
-                            }
+                if let Some(ast::Stmt::Expr(expr)) = async_func_def.body.first() {
+                    if let ast::Expr::Constant(constant) = &*expr.value {
+                        if let ast::Constant::Str(docstring) = &constant.value {
+                            attributes.insert("docstring".to_string(), json!(docstring));
                         }
                     }
                 }
@@ -260,12 +256,10 @@ impl PythonParser {
                 attributes.insert("decorators".to_string(), json!(decorators));
                 
                 // Extract docstring if present
-                if let Some(first_stmt) = class_def.body.first() {
-                    if let ast::Stmt::Expr(expr) = first_stmt {
-                        if let ast::Expr::Constant(constant) = &*expr.value {
-                            if let ast::Constant::Str(docstring) = &constant.value {
-                                attributes.insert("docstring".to_string(), json!(docstring));
-                            }
+                if let Some(ast::Stmt::Expr(expr)) = class_def.body.first() {
+                    if let ast::Expr::Constant(constant) = &*expr.value {
+                        if let ast::Constant::Str(docstring) = &constant.value {
+                            attributes.insert("docstring".to_string(), json!(docstring));
                         }
                     }
                 }

@@ -87,7 +87,7 @@ impl Enricher {
         Ok(el)
     }
 
-    fn offset_elements(&self, elements: &mut Vec<DocumentElement>, offset: usize) {
+    fn offset_elements(&self, elements: &mut [DocumentElement], offset: usize) {
         let mut stack: Vec<&mut DocumentElement> = elements.iter_mut().collect();
         while let Some(el) = stack.pop() {
             el.line_start = el.line_start.saturating_add(offset);

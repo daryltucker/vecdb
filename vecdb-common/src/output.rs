@@ -58,10 +58,12 @@ impl OutputContext {
     /// Detect the output context from the current environment.
     /// 
     /// Checks:
-    /// 1. Is stdout connected to a TTY?
-    /// 2. Is the NO_COLOR environment variable set?
+    /// 1. Is stderr connected to a TTY? (Used for interactivity/progress)
+    /// 2. Is stdout connected to a TTY? (Used for color detection)
+    /// 3. Is the NO_COLOR environment variable set?
     pub fn detect() -> Self {
-        let is_tty = std::io::stdout().is_terminal();
+        let stdout_tty = std::io::stdout().is_terminal();
+        let stderr_tty = std::io::stderr().is_terminal();
         
         // Respect NO_COLOR environment variable (https://no-color.org/)
         let no_color = std::env::var("NO_COLOR")
@@ -69,12 +71,16 @@ impl OutputContext {
             .unwrap_or(false);
         
         Self {
-            is_interactive: is_tty,
-            color_override: if no_color { Some(false) } else { None },
+            // Interactive features (progress bars, status updates) should follow stderr.
+            // If you pipe stdout to a file, you still want to see progress on your screen (stderr).
+            is_interactive: stderr_tty,
+            // Color detection is trickier. If we are printing to stdout, we follow stdout.
+            // But usually, we want to know if colors are supported AT ALL in the current session.
+            color_override: if no_color { Some(false) } else if !stdout_tty { Some(false) } else { None },
         }
     }
     
-    /// Check if colors should be used.
+    /// Check if colors should be used for stdout.
     /// 
     /// Returns false if:
     /// - Output is not a TTY (piped or redirected)

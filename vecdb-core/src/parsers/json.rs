@@ -57,7 +57,9 @@ impl Parser for JsonParser {
             Err(_) => {
                 // Fallback to JSON5 for files with comments (tsconfig.json, .eslintrc.json, etc.)
                 // Fallback to JSON5 for files with comments (tsconfig.json, .eslintrc.json, etc.)
-                eprintln!("Notice: Standard JSON parse failed for '{}' (trailing comma/comments detected). Falling back to JSON5 parser...", path.display());
+                if crate::output::OUTPUT.is_interactive {
+                    eprintln!("Notice: Standard JSON parse failed for '{}' (trailing comma/comments detected). Falling back to JSON5 parser...", path.display());
+                }
                 json5::from_str(content)
                     .map_err(|e| anyhow::anyhow!("JSON5 parse also failed: {}", e))?
             }

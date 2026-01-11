@@ -48,6 +48,14 @@ pub struct IngestPathArgs {
     /// The target collection to ingest into. If it doesn't exist, it will be created.
     #[arg(long, short)]
     pub collection: Option<String>,
+
+    /// Max concurrent file processing tasks (optional, uses server default if not specified)
+    #[arg(long, short = 'c')]
+    pub concurrency: Option<usize>,
+
+    /// Max concurrent GPU embedding tasks (optional, uses server default if not specified)
+    #[arg(long, short = 'G')]
+    pub gpu_concurrency: Option<usize>,
 }
 
 /// Tool: Ingest a historic version of a repository

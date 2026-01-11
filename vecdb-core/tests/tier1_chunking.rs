@@ -21,26 +21,26 @@ use vecdb_core::chunking::{Chunker, RecursiveChunker, CodeChunker, Factory, Chun
 
 #[test]
 fn test_factory_returns_chunker_for_recursive() {
-    let chunker = Factory::get("recursive");
+    let chunker = Factory::get("recursive", vecdb_common::FileType::Text);
     // Factory returns something - just verify it doesn't panic
     let _ = chunker;
 }
 
 #[test]
 fn test_factory_returns_chunker_for_code_aware() {
-    let chunker = Factory::get("code_aware");
+    let chunker = Factory::get("code_aware", vecdb_common::FileType::Text);
     let _ = chunker;
 }
 
 #[test]
 fn test_factory_returns_chunker_for_unknown() {
-    let chunker = Factory::get("unknown_strategy");
+    let chunker = Factory::get("unknown_strategy", vecdb_common::FileType::Text);
     let _ = chunker;
 }
 
 #[test]
 fn test_factory_returns_chunker_for_semantic() {
-    let chunker = Factory::get("semantic");
+    let chunker = Factory::get("semantic", vecdb_common::FileType::Text);
     let _ = chunker;
 }
 

@@ -4,6 +4,12 @@ use crate::error::VecqResult;
 
 pub struct RustGenerator;
 
+impl Default for RustGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RustGenerator {
     pub fn new() -> Self {
         Self

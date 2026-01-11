@@ -314,7 +314,7 @@ mod tests {
         if !path.exists() { return; }
         let content = std::fs::read_to_string(path).unwrap();
         let doc = parse_markdown_document(&content);
-        assert!(doc.elements.len() > 0);
+        assert!(!doc.elements.is_empty());
         // Markdown should have headers or paragraphs
         assert!(doc.elements.iter().any(|e| e.element_type == ElementType::Header));
     }

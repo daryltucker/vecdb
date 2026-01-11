@@ -291,7 +291,7 @@ struct Point {
             .filter(|e| e.element_type == ElementType::Struct)
             .collect();
         
-        assert!(structs.len() >= 1);
+        assert!(!structs.is_empty());
     }
 
     #[tokio::test]

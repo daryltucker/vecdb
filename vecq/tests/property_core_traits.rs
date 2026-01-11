@@ -270,10 +270,10 @@ proptest! {
         prop_assert_eq!(json_file_type, document.metadata.file_type.to_string(), "File type must be preserved");
         
         // Validate element preservation
-        validate_elements_preserved(&document.elements, &json_obj)?;
+        validate_elements_preserved(&document.elements, json_obj)?;
         
         // Validate line number consistency
-        validate_line_number_consistency(&json_obj)?;
+        validate_line_number_consistency(json_obj)?;
     }
 
     /// Property Test 2: Schema Consistency Across File Types

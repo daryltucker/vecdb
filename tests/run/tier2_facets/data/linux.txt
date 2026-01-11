@@ -1,0 +1,1 @@
+Bash scripts are better for servers and cloud infrastructure.

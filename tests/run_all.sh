@@ -67,6 +67,9 @@ echo "=== Core Unit Tests ===" | tee "logs/unit_${TIMESTAMP}.log"
 echo "[Core] Running vecq Tests (Spine)..." | tee -a "logs/unit_${TIMESTAMP}.log"
 cargo test -p vecq 2>&1 | tee -a "logs/unit_${TIMESTAMP}.log"
 
+echo "[Core] Running vecdb-asm Tests..." | tee -a "logs/unit_${TIMESTAMP}.log"
+cargo test -p vecdb-asm 2>&1 | tee -a "logs/unit_${TIMESTAMP}.log"
+
 echo "=== Tier 2 Test Suite (Integration) ===" | tee "logs/tier2_${TIMESTAMP}.log"
 # 6. Run Tier 2 Integration Tests
 echo "[Tier 2] Running Integration Tests..." | tee -a "logs/tier2_${TIMESTAMP}.log"
