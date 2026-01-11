@@ -1,0 +1,144 @@
+
+/*
+ * PURPOSE:
+ *   Main initialization for the MCP Server.
+ *   Hosts the Model Context Protocol interface via manual JSON-RPC.
+ *   (Replaces SDK approach for reliability and speed)
+ */
+
+use clap::Parser;
+
+use std::sync::Arc;
+use vecdb_core::config::Config;
+use vecdb_core::Core;
+use vecdb_server::handler::{handle_request, JsonRpcRequest, JsonRpcResponse}; // Use the lib module
+mod vecq_adapter;
+use crate::vecq_adapter::VecqParserFactory;
+use vecq::detection::HybridDetector;
+
+#[derive(Parser)]
+#[command(name = "vecdb-server")]
+#[command(about = "MCP Server for Vector Database")]
+struct Args {
+    #[arg(long)]
+    version: bool,
+
+    /// Allow tools that scan the local filesystem (e.g. ingest_path)
+    #[arg(long, env = "VECDB_ALLOW_LOCAL_FS")]
+    allow_local_fs: bool,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // 0. Parse Args
+    let args = Args::parse();
+    if args.version {
+        println!("vecdb-server {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    // 1. Initialize Configuration & Core
+    let config = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error loading config: {}. Loading defaults.", e);
+            Config::default()
+        }
+    };
+    
+    // Check VECDB_PROFILE env var
+    let env_profile = std::env::var("VECDB_PROFILE").ok();
+    let target_profile = env_profile.as_deref().unwrap_or(&config.default_profile).to_string();
+    
+    eprintln!("Initializing with profile: {}", target_profile);
+    
+    let profile = config.get_profile(Some(&target_profile)).unwrap_or_else(|e| {
+        eprintln!("Error loading profile '{}': {}", target_profile, e);
+        std::process::exit(1);
+    });
+    
+    // Use global local_embedding_model for local embedders, profile.embedding_model for others
+    let embedding_model = config.resolve_embedding_model(&profile);
+
+    // Prepare shared services
+    let file_detector = Arc::new(HybridDetector::new());
+    let parser_factory = Arc::new(VecqParserFactory);
+    
+    let core_instance = Core::new(
+        &profile.qdrant_url,
+        &profile.ollama_url,
+        &embedding_model,
+        profile.accept_invalid_certs,
+        &profile.embedder_type,
+        Some(config.fastembed_cache_path.clone()),
+        config.resolve_local_use_gpu(None),
+        profile.qdrant_api_key.clone(),
+        profile.ollama_api_key.clone(),
+        file_detector.clone(),
+        parser_factory.clone(),
+    ).await.unwrap_or_else(|e| {
+        eprintln!("Failed to initialize Core: {}", e);
+        std::process::exit(1);
+    });
+    
+    let core = Arc::new(core_instance);
+    let config = Arc::new(config);
+
+    eprintln!("vecdb-mcp server running on stdio (Manual JSON-RPC)...");
+    if args.allow_local_fs {
+        eprintln!("WARNING: Local Filesystem Access ENABLED (--allow-local-fs)");
+    } else {
+        eprintln!("Security Mode: API-Only (Local Filesystem blocked)");
+    }
+
+    // Switch to Async IO to avoid blocking the runtime
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    
+    let stdin = tokio::io::stdin();
+    let stdout = tokio::io::stdout();
+    
+    let mut reader = BufReader::new(stdin).lines();
+    let mut writer = stdout; // Async stdout is already buffered typically, or we can wrap. Tokio stdout is unbuffered by default but lines are discrete.
+
+    while let Some(line) = reader.next_line().await? {
+        if line.trim().is_empty() { continue; }
+
+        // Parse Request
+        let req: JsonRpcRequest = match serde_json::from_str(&line) {
+            Ok(req) => req,
+            Err(e) => {
+                eprintln!("Invalid JSON-RPC request: {}", e);
+                continue;
+            }
+        };
+
+        // Handle Method
+        let result = handle_request(&core, &config, &req, args.allow_local_fs, &target_profile).await;
+
+        // Send Response
+        if let Some(id) = req.id {
+            let response = match result {
+                Ok(res) => JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id,
+                    result: Some(res),
+                    error: None,
+                },
+                Err(err) => JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id,
+                    result: None,
+                    error: Some(err),
+                },
+            };
+            
+            // Serialize and write atomically
+            let json_out = serde_json::to_string(&response)?;
+            writer.write_all(json_out.as_bytes()).await?;
+            writer.write_all(b"\n").await?;
+            writer.flush().await?;
+        }
+    }
+
+    Ok(())
+}

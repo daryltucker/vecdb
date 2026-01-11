@@ -1,0 +1,27 @@
+[workspace]
+
+[package]
+name = "docsize"
+version = "0.0.9"
+edition = "2021"
+authors = ["Sextant <daryl@daryltucker.com>"]
+license = "MIT"
+repository = "https://github.com/daryltucker/vecdb"
+
+[dependencies]
+clap = { version = "4.5.4", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+dirs = "6.0"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+toml = "0.8"
+dialoguer = "0.11"
+console = "0.15"
+futures-util = "0.3"
+
+# Path-based dependencies for workspace members
+vecdb-common = { path = "../vecdb-common" }
+vecq = { path = "../vecq" }
+infer = "0.19.0"

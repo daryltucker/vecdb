@@ -1,0 +1,51 @@
+[workspace]
+members = [
+    "vecdb-common",
+    "vecdb-core",
+    "vecdb-server", 
+    "vecdb-cli",
+    "vecq"
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.9"
+edition = "2021"
+authors = ["Sextant <daryl@daryltucker.com>"]
+license = "MIT"
+repository = "https://github.com/daryltucker/vecdb"
+
+[workspace.dependencies]
+# Core
+vecdb-common = { path = "vecdb-common", version = "0.0.9" }
+vecdb-core = { path = "vecdb-core", version = "0.0.9" }
+vecq = { path = "vecq", version = "0.0.9" }
+tokio = { version = "1.49.0", features = ["full"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+thiserror = "2.0.17"
+anyhow = "1.0.100"
+async-trait = "0.1.89"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.22"
+uuid = { version = "1.19.0", features = ["v4", "v5", "serde"] }
+chrono = { version = "0.4.42", features = ["serde"] }
+
+# Configuration
+toml = "0.9"
+dotenvy = "0.15.7"
+
+# CLI
+clap = { version = "4.5.54", features = ["derive", "env"] }
+clap_complete = "4.5.65"
+
+# Vector DB
+qdrant-client = "1.16.0"
+
+# MCP
+mcp-protocol-sdk = "0.5.1" # Placeholder, will verify exact version/name
+
+# ML / Embeddings
+infer = "0.19.0"
+# candle-core = "0.3" # Uncomment when implementing embeddings
+# ort = "1.16"        # Uncomment when implementing embeddings

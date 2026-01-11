@@ -1,0 +1,23 @@
+# Test Configuration - DO NOT use production Qdrant!
+# This config is used by ALL test tiers for consistency
+
+qdrant_url = "http://localhost:6335"  # Test instance HTTP port
+
+# Test Profiles
+# Each profile tests a different configuration scenario
+
+[profiles.tier1_basic]
+embedder_type = "fastembed"
+embedding_model = "BAAI/bge-small-en-v1.5"
+chunk_size = 500
+
+[profiles.tier1_large_chunks]
+embedder_type = "fastembed"
+embedding_model = "BAAI/bge-small-en-v1.5"
+chunk_size = 2000
+
+[profiles.tier1_ollama]
+embedder_type = "ollama"
+embedding_model = "nomic-embed-text"
+ollama_url = "http://localhost:11434"
+chunk_size = 500

@@ -1,0 +1,19 @@
+name: vecdb
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: vecdb-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    environment:
+      # Secure Qdrant with an API Key
+      # WARNING: Change this key in production!
+      - QDRANT__SERVICE__API_KEY=change_me_to_a_secure_key
+    volumes:
+      - vecdb-data:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  vecdb-data:

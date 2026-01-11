@@ -1,0 +1,34 @@
+[package]
+name = "vecdb-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "MCP Server implementation for vecdb (server name: vecdb-mcp)"
+
+[dependencies]
+vecdb-core = { workspace = true }
+vecdb-common = { workspace = true }
+vecq = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+dotenvy = { workspace = true }
+schemars = "1.2.0"
+
+# mcp-sdk-rs = "0.3.4" # Removed due to API complexity
+
+
+[features]
+cuda = ["vecdb-core/cuda"]
+
+[dev-dependencies]
+async-trait = { workspace = true }
+vecdb-core = { workspace = true } # Already in deps but harmless
+tokio-test = "0.4.5"

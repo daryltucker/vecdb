@@ -1,0 +1,96 @@
+[package]
+name = "vecq"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "jq for source code - convert any structured document to queryable JSON"
+keywords = ["parser", "json", "jq", "source-code", "query"]
+categories = ["command-line-utilities", "parsing", "development-tools"]
+
+[[bin]]
+name = "vecq"
+path = "src/main.rs"
+
+
+
+[lib]
+name = "vecq"
+path = "src/lib.rs"
+
+[features]
+default = []
+python-parser = []
+c-parser = []
+cpp-parser = []
+cuda-parser = []
+go-parser = []
+bash-parser = []
+javascript-parser = []
+natural-language = []
+property-testing = []
+
+[dependencies]
+# Shared utilities
+vecdb-common = { workspace = true }
+
+# Core dependencies
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+chrono = { version = "0.4.42", features = ["serde"] }
+toml = "0.9"
+
+
+# Parsing dependencies
+pulldown-cmark = "0.13.0"
+syn = { version = "2.0.114", features = ["full", "extra-traits", "visit"] }
+quote = "1.0.43"
+rustpython-parser = "0.4.0"
+tree-sitter = "0.26.3" # Core library - updated to 0.26 for C23 support
+tree-sitter-c = "0.24.1" # Supports C23 language features (v0.24.1)
+tree-sitter-cpp = "0.23.4" # Latest is still 0.23.4
+tree-sitter-go = "0.25.0" # Latest is 0.25.0
+tree-sitter-bash = "0.25.1" # Latest is 0.25.1
+tree-sitter-javascript = "0.25.0" # Latest is 0.25.0
+
+# Query engine (pure Rust jq implementation)
+jaq-syn = "1.6.0"
+jaq-parse = "1.0.3"
+jaq-interpret = "1.5.0"
+jaq-std = "1.5.0"
+jaq-core = "1.5.0"
+indexmap = "2.13.0" # Required for jaq Val::Obj construction
+dirs = "6.0.0"
+
+# File type detection
+infer.workspace = true
+
+# Caching and performance
+lru = "0.16.3"
+
+# Testing
+proptest = { version = "1.9.0", optional = true }
+proc-macro2 = { version = "1.0.105", features = ["span-locations"] }
+termimad = "0.34.1"
+
+syntect = "5.3.0"
+quick-xml = { version = "0.38.4", features = ["serialize"] }
+tree-sitter-rust = "0.24.0"
+
+[dev-dependencies]
+proptest = "1.9.0"
+tempfile = "3.24.0"
+criterion = "0.8.1"
+pretty_assertions = "1.4.1"
+assert_cmd = "2.1.2"
+predicates = "3.1.3"
+
+
+

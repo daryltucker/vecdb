@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 83c0fafb0ef0ddf847affe2ee457f9a9737222ab3ed51bf14b2b7cbc9e128591 # shrinks to document = ParsedDocument { metadata: DocumentMetadata { file_type: Rust, path: "a.rs", size: 1, modified: None, encoding: "utf-8", line_count: 1, hash: None }, elements: [DocumentElement { element_type: Function, name: None, content: ".", line_start: 1, line_end: 2, attributes: {}, children: [] }] }
+cc 22f95ad7ae9d97bf5e6786d6710716fe0843b13cf95da2ff2e18069915febcdb # shrinks to mut document = ParsedDocument { metadata: DocumentMetadata { file_type: Unknown, path: "/.rs", size: 1, modified: None, encoding: "utf-8", line_count: 1, hash: None }, elements: [] }, corruption_type = 0
+cc b051f5cc71d143420a99569fd489258c137cf1fa92da8db8d859e31d491140ba # shrinks to document = ParsedDocument { metadata: DocumentMetadata { file_type: Rust, path: "a.rs", size: 1, modified: None, encoding: "utf-8", line_count: 2, hash: None }, elements: [DocumentElement { element_type: Interface, name: Some("element_1"), content: "element_content_1", line_start: 1, line_end: 1, attributes: {}, children: [] }] }
+cc 6e0d926e03a35d1b4378e40a0d3b46f0ca1605a026c41f5663fbe1bc49a4e427 # shrinks to document = ParsedDocument { metadata: DocumentMetadata { file_type: Bash, path: "a.rs", size: 1, modified: None, encoding: "utf-8", line_count: 2, hash: None }, elements: [DocumentElement { element_type: Variable, name: Some("element_1"), content: "element_content_1", line_start: 1, line_end: 1, attributes: {}, children: [] }], source_lines: None }

@@ -1,0 +1,78 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://github.com/vecdb/schemas/chat/v1",
+    "title": "Chat Session",
+    "description": "Canonical schema for a chat session containing metadata and a list of messages.",
+    "type": "object",
+    "required": [
+        "meta",
+        "messages"
+    ],
+    "properties": {
+        "meta": {
+            "type": "object",
+            "description": "Session metadata (Non-standard envelope)",
+            "properties": {
+                "schema_version": {
+                    "type": "string",
+                    "const": "v1"
+                },
+                "normalizer": {
+                    "type": "string",
+                    "description": "Identifier of the normalizer that produced this session"
+                }
+            },
+            "required": [
+                "schema_version"
+            ]
+        },
+        "messages": {
+            "type": "array",
+            "description": "Ordered list of chat messages (OpenAI Compatible)",
+            "items": {
+                "type": "object",
+                "description": "A message object compatible with OpenAI API, extended with x- fields.",
+                "required": [
+                    "role",
+                    "content"
+                ],
+                "properties": {
+                    "role": {
+                        "type": "string",
+                        "enum": [
+                            "user",
+                            "assistant",
+                            "system",
+                            "tool",
+                            "function"
+                        ],
+                        "description": "The role of the message author"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The message content"
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Optional display name for the author"
+                    },
+                    "tool_calls": {
+                        "type": "array",
+                        "description": "Tool calls made by the model"
+                    },
+                    "tool_call_id": {
+                        "type": "string",
+                        "description": "ID of the tool call this message is responding to"
+                    }
+                },
+                "patternProperties": {
+                    "^x-": {
+                        "description": "Extension fields (e.g. x-hash, x-timestamp)"
+                    }
+                },
+                "additionalProperties": false
+            }
+        }
+    },
+    "additionalProperties": false
+}

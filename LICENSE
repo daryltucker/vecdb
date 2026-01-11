@@ -1,0 +1,29 @@
+Business Source License 1.1
+
+Parameters:
+
+Licensor: NRG
+Licensed Work: vecdb (The Software)
+Additional Use Grant: You may use the Licensed Work for any purpose, including in production environments, provided that your total gross revenue (or the total gross revenue of your organization) does not exceed $1,000,000 (One Million) USD per year.
+Change Date: 2030-01-01
+Change License: Apache License, Version 2.0
+
+Terms:
+
+The Licensor hereby grants you the right to copy, modify, create derivative works, redistribute, and make non-production use of the Licensed Work. The Licensor commits to change the license of the Licensed Work to the Change License on the Change Date.
+
+"Non-production use" means any use that is not "Production Use."
+
+"Production Use" means using the Licensed Work for your internal business purposes or for providing a service to third parties, excluding:
+(a) Personal use or use by an individual for testing, evaluation, or development;
+(b) Use by an organization with total gross revenue below the threshold defined in the Additional Use Grant.
+
+If your use qualifies under the Additional Use Grant, it is treated as a permitted use equivalent to the rights granted under the Change License, subject to the revenue limit.
+
+Conditions:
+
+1.  **Redistribution**: You may redistribute the Licensed Work or modifications to it, provided that you include this License file and the above parameters.
+2.  **Attribution**: You must retain all copyright, patent, trademark, and attribution notices.
+3.  **No Warranty**: THE LICENSED WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.
+
+For uses not permitted by this License (e.g., Production Use by organizations with >$1M revenue), please contact the Licensor for a commercial license.
