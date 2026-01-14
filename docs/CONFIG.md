@@ -168,8 +168,29 @@ Usage:
 | `max_chunk_size` | integer | `null` | Override max chunk size |
 | `chunk_overlap` | integer | `null` | Override chunk overlap |
 | `use_gpu` | bool | `null` | Override `local_use_gpu` for this collection |
+| `quantization` | string | `null` | "scalar", "binary", or "none" (See Quantization below) |
 
 > **Warning:** Changing the `embedder_type` or `embedding_model` for an existing collection will likely break searches due to vector dimension mismatches (e.g., 384 vs 768). If you change the model, you must delete and re-ingest the collection.
+
+### Quantization Options
+
+You can reduce memory usage (RAM) by quantizing vectors. This is configured per-collection or in a profile.
+
+| Type | Description | Memory Usage | Precision Loss |
+|------|-------------|--------------|----------------|
+| `none` | Default Float32 vectors | 100% (Baseline) | None |
+| `scalar` | **Int8 Quantization** | ~25% (4x smaller) | Very Low (<1%) |
+| `binary` | **1-bit Quantization** | ~3% (32x smaller) | Moderate |
+
+**Configuration:**
+Set `quantization = "scalar"` in your `[profile]` or `[collection]` block.
+Or use the CLI: `vecdb config set-quantization <collection> scalar`.
+
+**Applying Changes:**
+Changing the config does *not* immediately re-index existing vectors. You must run:
+```bash
+vecdb optimize <collection_name>
+```
 
 
 ### Ingestion Options (`[ingestion]`)

@@ -123,7 +123,7 @@ mod tests {
             {"id": 1, "content": "A", "metadata": {"modified": "2023-01-01T10:00:00Z"}}
         ]);
 
-        let result = process_stream(input, false).unwrap();
+        let result = process_stream(input, false, false).unwrap();
         let arr = result.as_array().unwrap();
         assert_eq!(arr.len(), 2);
     }
@@ -135,7 +135,7 @@ mod tests {
             {"id": 1, "content": "A", "metadata": {"modified": "2023-01-01T10:00:00Z"}}
         ]);
 
-        let result = process_stream(input, false).unwrap();
+        let result = process_stream(input, false, false).unwrap();
         let arr = result.as_array().unwrap();
         assert_eq!(arr[0]["id"], 1);
         assert_eq!(arr[1]["id"], 2);

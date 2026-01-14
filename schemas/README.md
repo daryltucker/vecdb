@@ -12,7 +12,11 @@ We provide **lenient normalizer examples**, not strict validators. Users fork an
 
 | Schema | Description | Normalizers |
 |--------|-------------|-------------|
-| `chat.schema.json` | Conversational messages | `webui_to_chat` |
+| `log.schema.json` | Chronological events (logs) | `nginx_to_log`, `journald_to_log` |
+| `task.schema.json` | Project management tasks | `github_to_task`, `todo_to_task`, `src_to_task` |
+| `artifact.schema.json` | Build/Test artifacts | `cargo_to_artifact`, `junit_to_artifact` |
+| `diff.schema.json` | Code changes and hunks | `git_diff_to_diff` |
+| `chat.schema.json` | Conversational messages | `openwebui_to_chat` |
 
 ## Extension Mechanism
 

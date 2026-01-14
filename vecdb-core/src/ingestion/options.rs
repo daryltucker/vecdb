@@ -1,4 +1,4 @@
-use crate::config::PathRule;
+use crate::config::{PathRule, QuantizationType};
 use std::collections::HashMap;
 
 pub struct IngestionOptions {
@@ -19,4 +19,5 @@ pub struct IngestionOptions {
     pub path_rules: Vec<PathRule>,       // D031: Smart Path Parsing
     pub max_concurrent_requests: usize,  // Concurrency Limit
     pub gpu_batch_size: usize,           // GPU Batch Size
+    pub quantization: Option<QuantizationType>,
 }

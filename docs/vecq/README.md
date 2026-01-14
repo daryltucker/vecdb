@@ -131,3 +131,4 @@ To see the exact schema for a file, run `vecq --convert <file>`.
 *   [Examples](EXAMPLES.md): Common recipes and query patterns.
 *   [Configuration](CONFIG.md): Setting up custom functions and defaults.
 *   [Functions](FUNCTIONS.md): Extending `vecq` with reusable macros.
+*   [Discovery](SUGGEST.md): Using `elements` and `suggest` to find what you need.

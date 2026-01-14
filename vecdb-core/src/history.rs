@@ -24,6 +24,7 @@ pub async fn ingest_history(
     git_ref: &str,
     collection: &str,
     chunk_size: usize,
+    quantization: Option<crate::config::QuantizationType>,
 ) -> Result<()> {
     if OUTPUT.is_interactive {
         eprintln!("Starting Time Travel Ingestion: {} @ {}", repo_path, git_ref);
@@ -57,6 +58,7 @@ pub async fn ingest_history(
         path_rules: Vec::new(),
         max_concurrent_requests: 4,
         gpu_batch_size: 2,
+        quantization,
     };
 
     // 3. Ingest

@@ -24,7 +24,7 @@ docsize "How do I install use vecq?"
 
 **Option A: Install via Cargo (Recommended)**
 ```bash
-cargo install --git https://github.com/daryltucker/vecdb vecdb-cli vecdb-server vecq
+cargo install --git https://github.com/daryltucker/vecdb vecdb-cli vecdb-server vecq docsize
 ```
 
 **Option B: Build from Source**
@@ -35,18 +35,19 @@ cargo install --git https://github.com/daryltucker/vecdb vecdb-cli vecdb-server 
 === Installing vecdb binaries ===
 Target: ~/.cargo/bin
 
-[1/3] Installing vecq (jq for source code)...
-[2/3] Installing vecdb (CLI)...
-[3/3] Installing vecdb-server (MCP)...
+[1/4] Installing vecq (jq for source code)...
+[2/4] Installing vecdb (CLI)...
+[3/4] Installing vecdb-server (MCP)...
+[4/4] Installing docsize (LLM context tool)...
 
 === Installation Complete ===
 Installed:
   - vecq         (jq for source code)
   - vecdb        (CLI tool)
   - vecdb-server (MCP server)
+  - docsize      (LLM context tool)
 
-Verify with: vecq --help && vecdb --help
-
+Verify with: vecq --help && vecdb --help && docsize --help
 === Autocomplete Setup ===
 Detected bash. To enable autocomplete, add this to your /home/daryl/.bashrc:
 
@@ -112,8 +113,6 @@ vecdb ingest ./docs --collection my_knowledge -P 4 -G 2
 ```
 ## ⚡ CUDA Support
 
-## ⚡ CUDA Support
-
 By default, `vecdb` is built with CUDA support enabled (via `ort` static linking).
 
 1.  **Prerequisites**:
@@ -167,6 +166,18 @@ vecdb list
 vecdb status
 ```
 
+**Quantization Management:**
+```bash
+# Set Int8 quantization for a collection (persistent config)
+vecdb config set-quantization my_coll scalar
+
+# Apply optimization explicitly
+vecdb optimize my_coll
+
+# Check warnings for memory usage
+vecdb list
+```
+
 **More Examples**: See [docs/EXAMPLES.md](docs/EXAMPLES.md) and [docs/CLI.md](docs/CLI.md).
 
 ---
@@ -183,7 +194,7 @@ To use with an MCP client (like Claude Desktop or an IDE):
 *   `embed`: Generate embeddings.
 *   `ingest_path`: Ingest local files/folders.
 *   `ingest_historic_version`: Time-travel ingestion (Git).
-*   `code_query`: Analyze code structure with `vecq` (supports `-f`, `-L` flags).
+*   `code_query`: Analyze code structure with `vecq` (supports `-f`, `-L` flags). Now supports comment-aware queries for Rust!
 
 See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for API details.
 
@@ -194,7 +205,6 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for API details.
 *   **[EXAMPLES.md](docs/EXAMPLES.md)**: Common usage patterns and tricks.
 *   **[CONFIG.md](docs/CONFIG.md)**: Full configuration reference.
 *   **[BUILDING.md](docs/BUILDING.md)**: Compile from source.
-*   **[Architecture](docs/planning/ARCHITECTURE.md)**: System design and philosophy.
 *   **[Vecq Guide](docs/vecq/README.md)**: Manual for the `vecq` code query tool.
 *   **Specs**: Detailed feature modules in `docs/specs/` (e.g. [Ingestion Design](docs/specs/INGESTION_DESIGN.md)).
 

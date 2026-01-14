@@ -52,6 +52,14 @@ pub const DEFAULT_CHUNK_SIZE: usize = 512;
 const DEFAULT_CHUNK_OVERLAP: usize = 50;
 const DEFAULT_STRATEGY: &str = "recursive";
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum QuantizationType {
+    Scalar,
+    Binary,
+    None,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub profiles: HashMap<String, Profile>,
@@ -114,6 +122,8 @@ pub struct CollectionConfig {
     pub qdrant_api_key: Option<String>,
     /// Override: Ollama API Key (if using authenticated proxy)
     pub ollama_api_key: Option<String>,
+    /// Override: Quantization Setting (Scalar/Binary/None)
+    pub quantization: Option<QuantizationType>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,6 +239,9 @@ pub struct Profile {
     // Credentials
     pub qdrant_api_key: Option<String>,
     pub ollama_api_key: Option<String>,
+    
+    // Default Quantization for collections created under this profile
+    pub quantization: Option<QuantizationType>,
 }
 
 fn default_embedder_type() -> String {
@@ -274,8 +287,10 @@ impl Default for Config {
                 accept_invalid_certs: false,
                 ollama_url: DEFAULT_OLLAMA_URL.to_string(),
                 embedder_type: "local".to_string(),
+
                 qdrant_api_key: None,
                 ollama_api_key: None,
+                quantization: Some(QuantizationType::None), // Default to None for safety/compat, or Scalar? Plan says default scalar if not set, but explicit config might be safer as None.
             },
         );
         Self {
@@ -347,6 +362,9 @@ impl Config {
                   }
                   if let Some(ref key) = c_config.ollama_api_key {
                       profile.ollama_api_key = Some(key.clone());
+                  }
+                  if let Some(ref q) = c_config.quantization {
+                      profile.quantization = Some(q.clone());
                   }
                  // chunk_size is currently in IngestionConfig, not Profile. 
                  // We might need to carry it? 
@@ -439,25 +457,30 @@ impl Config {
             }
             let toml_str = toml::to_string_pretty(&default_config)?;
             fs::write(&config_path, toml_str)?;
-            return Ok(default_config);
+            // We continue to load via Figment to ensure consistent behavior
         }
 
-        let content = fs::read_to_string(&config_path)?;
-        let mut config: Config = toml::from_str(&content)
-            .context("Failed to parse config.toml")?;
+        use figment::{Figment, providers::{Env, Format, Toml, Serialized}};
+
+        let mut config: Config = Figment::new()
+            .merge(Serialized::defaults(Config::default()))
+            .merge(Toml::file(&config_path))
+            .merge(Env::prefixed("VECDB_").split("__"))
+            .extract()
+            .context("Failed to load configuration via Figment")?;
         
-        // ENV VAR OVERRIDE: VECDB_USE_GPU
-        // Allow users to force-disable GPU via environment (e.g., mcp_config.json)
+        // LEGACY ENV VAR SUPPORT: VECDB_USE_GPU
+        // We support this for backward compatibility, but prefer VECDB_LOCAL_USE_GPU (handled by figment)
         if let Ok(val) = std::env::var("VECDB_USE_GPU") {
             let val = val.trim().to_lowercase();
             if val == "false" || val == "0" {
                 if crate::output::OUTPUT.is_interactive && config.local_use_gpu {
-                    eprintln!("⚠️  Overriding local_use_gpu=false (via VECDB_USE_GPU env var)");
+                    eprintln!("⚠️  Overriding local_use_gpu=false (via legacy VECDB_USE_GPU env var)");
                 }
                 config.local_use_gpu = false;
             } else if val == "true" || val == "1" {
                 if crate::output::OUTPUT.is_interactive && !config.local_use_gpu {
-                    eprintln!("ℹ️  Overriding local_use_gpu=true (via VECDB_USE_GPU env var)");
+                    eprintln!("ℹ️  Overriding local_use_gpu=true (via legacy VECDB_USE_GPU env var)");
                 }
                 config.local_use_gpu = true;
             }
@@ -492,6 +515,13 @@ impl Config {
         Ok(path)
     }
 
+    pub fn save(&self) -> Result<()> {
+        let path = Self::get_path()?;
+        let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
+        fs::write(&path, content).context("Failed to write config file")?;
+        Ok(())
+    }
+
     /// Get a specific profile or the default one
     pub fn get_profile(&self, name: Option<&str>) -> Result<&Profile> {
         let profile_name = name.unwrap_or(&self.default_profile);
@@ -520,6 +550,7 @@ mod tests {
                 embedder_type: "ollama".to_string(),
                 qdrant_api_key: None,
                 ollama_api_key: None,
+                quantization: None,
             }
         );
 

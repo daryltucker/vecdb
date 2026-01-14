@@ -74,6 +74,7 @@ Supported placeholders:
 
 ```bash
 docker run -d \
+  --gpus=all \
   -v ollama_ollama:/root/.ollama \
   -p 11434:11434 \
   --name ollama \

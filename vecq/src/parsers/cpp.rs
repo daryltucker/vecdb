@@ -31,48 +31,120 @@ impl CppParser {
         Self { _config: config }
     }
 
-    fn extract_functions(&self, content: &str, tree: &tree_sitter::Tree) -> VecqResult<Vec<DocumentElement>> {
-        let mut functions = Vec::new();
-        self.extract_functions_recursive(content, tree.root_node(), &mut functions);
-        Ok(functions)
-    }
-
-    fn extract_functions_recursive(&self, content: &str, node: tree_sitter::Node, functions: &mut Vec<DocumentElement>) {
+    /// Process nodes recursively to preserve hierarchy
+    fn process_nodes(
+        &self,
+        node: tree_sitter::Node,
+        content: &str,
+        source: &[u8],
+    ) -> Vec<DocumentElement> {
+        let mut elements = Vec::new();
         let mut cursor = node.walk();
 
         for child in node.children(&mut cursor) {
-            if child.kind() == "function_definition" {
-                if let Some(func) = self.parse_function(content, child) {
-                    functions.push(func);
+            let kind = child.kind();
+            
+            match kind {
+                "namespace_definition" => {
+                    let mut element = self.create_element(child, content, source, ElementType::Namespace);
+                    if let Some(body) = child.child_by_field_name("body") {
+                        let children = self.process_nodes(body, content, source);
+                        element = element.with_children(children);
+                    }
+                    elements.push(element);
                 }
-            } else if child.kind() == "namespace_definition" || child.kind() == "class_specifier" {
-                // Recurse into namespaces and classes
-                self.extract_functions_recursive(content, child, functions);
+                "class_specifier" | "struct_specifier" => {
+                    let element_type = if kind == "class_specifier" { ElementType::Class } else { ElementType::Struct };
+                    let mut element = self.create_element(child, content, source, element_type);
+                    
+                    if let Some(body) = child.child_by_field_name("body") {
+                        let children = self.process_nodes(body, content, source);
+                        element = element.with_children(children);
+                    }
+                    elements.push(element);
+                }
+                "function_definition" => {
+                    if let Some(func) = self.parse_function(content, child) {
+                        elements.push(func);
+                    }
+                }
+                "preproc_include" => {
+                     if let Some(include) = self.parse_include(content, child) {
+                         elements.push(include);
+                     }
+                }
+                "declaration" => {
+                     if let Some(field) = self.parse_field(content, child) {
+                         elements.push(field);
+                     }
+                }
+                _ => {
+                    // Recurse into linkage specs (extern "C") or other wrappers
+                    if kind == "linkage_specification" {
+                        if let Some(body) = child.child_by_field_name("body") {
+                             let children = self.process_nodes(body, content, source);
+                             elements.extend(children);
+                        }
+                    }
+                }
             }
         }
+        
+        elements
+    }
+
+    fn create_element(&self, node: tree_sitter::Node, _content: &str, source: &[u8], element_type: ElementType) -> DocumentElement {
+         let mut name = None;
+         if let Some(name_node) = node.child_by_field_name("name") {
+             name = Some(name_node.utf8_text(source).unwrap_or("").to_string());
+         }
+         
+         if name.is_none() {
+              let mut cursor = node.walk();
+              for child in node.children(&mut cursor) {
+                  if child.kind() == "type_identifier" {
+                       name = Some(child.utf8_text(source).unwrap_or("").to_string());
+                       break;
+                  }
+              }
+         }
+
+         DocumentElement::new(
+            element_type,
+            name,
+            node.utf8_text(source).unwrap_or("").to_string(),
+            node.start_position().row + 1,
+            node.end_position().row + 1,
+        ).set_attributes(ElementAttributes::CFamily(CFamilyAttributes {
+            other: HashMap::new(),
+        }))
     }
 
     fn parse_function(&self, content: &str, node: tree_sitter::Node) -> Option<DocumentElement> {
         let mut name = String::new();
-        let mut return_type = String::new();
         let mut cursor = node.walk();
 
-        for child in node.children(&mut cursor) {
-            match child.kind() {
-                "type_identifier" | "primitive_type" | "auto" => {
-                    if return_type.is_empty() {
-                        return_type = child.utf8_text(content.as_bytes()).unwrap_or("").to_string();
-                    }
+        // Extract name
+        if let Some(declarator) = node.child_by_field_name("declarator") {
+             name = declarator.utf8_text(content.as_bytes()).unwrap_or("").to_string();
+             if declarator.kind() == "function_declarator" {
+                 if let Some(id) = declarator.child_by_field_name("declarator") {
+                     name = id.utf8_text(content.as_bytes()).unwrap_or("").to_string();
+                 }
+             }
+        }
+        
+        if name.is_empty() {
+             for child in node.children(&mut cursor) {
+                if child.kind() == "function_declarator" {
+                    let mut d = child.walk();
+                     for deep_child in child.children(&mut d) {
+                         if deep_child.kind() == "identifier" || deep_child.kind() == "field_identifier" || deep_child.kind() == "qualified_identifier" {
+                             name = deep_child.utf8_text(content.as_bytes()).unwrap_or("").to_string();
+                             break;
+                         }
+                     }
                 }
-                "function_declarator" => {
-                    let mut decl_cursor = child.walk();
-                    for decl_child in child.children(&mut decl_cursor) {
-                        if decl_child.kind() == "identifier" || decl_child.kind() == "qualified_identifier" {
-                            name = decl_child.utf8_text(content.as_bytes()).unwrap_or("").to_string();
-                        }
-                    }
-                }
-                _ => {}
             }
         }
 
@@ -80,143 +152,68 @@ impl CppParser {
             return None;
         }
 
-        let element = DocumentElement::new(
+        Some(DocumentElement::new(
             ElementType::Function,
             Some(name),
             node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
             node.start_position().row + 1,
             node.end_position().row + 1,
-        )
-        .set_attributes(ElementAttributes::CFamily(CFamilyAttributes {
+        ).set_attributes(ElementAttributes::CFamily(CFamilyAttributes {
+            other: HashMap::new(),
+        })))
+    }
+
+    fn parse_include(&self, content: &str, node: tree_sitter::Node) -> Option<DocumentElement> {
+        let text = node.utf8_text(content.as_bytes()).unwrap_or("");
+        let path = text.trim_start_matches("#include")
+            .trim()
+            .trim_matches(|c| c == '<' || c == '>' || c == '"');
+        let is_system = text.contains('<');
+
+        Some(DocumentElement::new(
+            ElementType::Import,
+            Some(path.to_string()),
+            text.to_string(),
+            node.start_position().row + 1,
+            node.end_position().row + 1,
+        ).set_attributes(ElementAttributes::CFamily(CFamilyAttributes {
             other: {
                 let mut map = HashMap::new();
-                map.insert("return_type".to_string(), json!(return_type));
+                map.insert("is_system".to_string(), json!(is_system));
                 map
             }
-        }));
-
-        Some(element)
+        })))
     }
-
-    fn extract_classes(&self, content: &str, tree: &tree_sitter::Tree) -> VecqResult<Vec<DocumentElement>> {
-        let mut classes = Vec::new();
-        self.extract_classes_recursive(content, tree.root_node(), &mut classes);
-        Ok(classes)
-    }
-
-    fn extract_classes_recursive(&self, content: &str, node: tree_sitter::Node, classes: &mut Vec<DocumentElement>) {
+    
+    fn parse_field(&self, content: &str, node: tree_sitter::Node) -> Option<DocumentElement> {
+        let mut name = None;
         let mut cursor = node.walk();
-
+        
         for child in node.children(&mut cursor) {
-            if child.kind() == "class_specifier" || child.kind() == "struct_specifier" {
-                if let Some(cls) = self.parse_class(content, child) {
-                    classes.push(cls);
-                }
-            } else if child.kind() == "namespace_definition" {
-                self.extract_classes_recursive(content, child, classes);
-            }
+             if child.kind() == "init_declarator" || child.kind() == "field_declaration" {
+                  let mut d_cursor = child.walk();
+                   for d_child in child.children(&mut d_cursor) {
+                        if d_child.kind() == "identifier" || d_child.kind() == "field_identifier" {
+                            name = Some(d_child.utf8_text(content.as_bytes()).unwrap_or("").to_string());
+                            break;
+                        }
+                   }
+             }
         }
-    }
-
-    fn parse_class(&self, content: &str, node: tree_sitter::Node) -> Option<DocumentElement> {
-        let mut name: Option<String> = None;
-        let element_type = if node.kind() == "class_specifier" {
-            ElementType::Class
+        
+        if let Some(n) = name {
+            Some(DocumentElement::new(
+                ElementType::Variable,
+                Some(n),
+                node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
+                node.start_position().row + 1,
+                node.end_position().row + 1,
+            ).set_attributes(ElementAttributes::CFamily(CFamilyAttributes {
+                other: HashMap::new(),
+            })))
         } else {
-            ElementType::Struct
-        };
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "type_identifier" {
-                name = Some(child.utf8_text(content.as_bytes()).unwrap_or("").to_string());
-                break;
-            }
+            None
         }
-
-        Some(DocumentElement::new(
-            element_type,
-            name,
-            node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
-            node.start_position().row + 1,
-            node.end_position().row + 1,
-        ).set_attributes(ElementAttributes::CFamily(CFamilyAttributes {
-            other: HashMap::new(),
-        })))
-    }
-
-    fn extract_namespaces(&self, content: &str, tree: &tree_sitter::Tree) -> VecqResult<Vec<DocumentElement>> {
-        let mut namespaces = Vec::new();
-        let root = tree.root_node();
-        let mut cursor = root.walk();
-
-        for child in root.children(&mut cursor) {
-            if child.kind() == "namespace_definition" {
-                if let Some(ns) = self.parse_namespace(content, child) {
-                    namespaces.push(ns);
-                }
-            }
-        }
-
-        Ok(namespaces)
-    }
-
-    fn parse_namespace(&self, content: &str, node: tree_sitter::Node) -> Option<DocumentElement> {
-        let mut name: Option<String> = None;
-        let mut cursor = node.walk();
-
-        for child in node.children(&mut cursor) {
-            if child.kind() == "identifier" {
-                name = Some(child.utf8_text(content.as_bytes()).unwrap_or("").to_string());
-                break;
-            }
-        }
-
-        Some(DocumentElement::new(
-            ElementType::Namespace,
-            name,
-            node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
-            node.start_position().row + 1,
-            node.end_position().row + 1,
-        ).set_attributes(ElementAttributes::CFamily(CFamilyAttributes {
-            other: HashMap::new(),
-        })))
-    }
-
-    fn extract_includes(&self, content: &str, tree: &tree_sitter::Tree) -> VecqResult<Vec<DocumentElement>> {
-        let mut includes = Vec::new();
-        let root = tree.root_node();
-        let mut cursor = root.walk();
-
-        for child in root.children(&mut cursor) {
-            if child.kind() == "preproc_include" {
-                let text = child.utf8_text(content.as_bytes()).unwrap_or("");
-                let path = text.trim_start_matches("#include")
-                    .trim()
-                    .trim_matches(|c| c == '<' || c == '>' || c == '"');
-
-                let is_system = text.contains('<');
-
-                let element = DocumentElement::new(
-                    ElementType::Import,
-                    Some(path.to_string()),
-                    text.to_string(),
-                    child.start_position().row + 1,
-                    child.end_position().row + 1,
-                )
-                .set_attributes(ElementAttributes::CFamily(CFamilyAttributes {
-                    other: {
-                        let mut map = HashMap::new();
-                        map.insert("is_system".to_string(), json!(is_system));
-                        map
-                    }
-                }));
-                
-                includes.push(element);
-            }
-        }
-
-        Ok(includes)
     }
 }
 
@@ -229,7 +226,7 @@ impl Default for CppParser {
 #[async_trait]
 impl Parser for CppParser {
     fn file_extensions(&self) -> &[&str] {
-        &["cpp", "cc", "cxx", "hpp", "hxx", "h"]
+        &["cpp", "cc", "cxx", "hpp", "hxx"]
     }
 
     fn language_name(&self) -> &str {
@@ -240,7 +237,7 @@ impl Parser for CppParser {
         ParserCapabilities {
             incremental: false,
             error_recovery: true,
-            documentation: false,
+            documentation: false, // Could enable later if we extract comments
             type_information: true,
             macros: true,
             max_file_size: None,
@@ -265,16 +262,7 @@ impl Parser for CppParser {
                 source: None,
             })?;
 
-        let functions = self.extract_functions(content, &tree)?;
-        let classes = self.extract_classes(content, &tree)?;
-        let namespaces = self.extract_namespaces(content, &tree)?;
-        let includes = self.extract_includes(content, &tree)?;
-
-        let mut elements = Vec::new();
-        elements.extend(functions);
-        elements.extend(classes);
-        elements.extend(namespaces);
-        elements.extend(includes);
+        let elements = self.process_nodes(tree.root_node(), content, content.as_bytes());
 
         let mut doc = ParsedDocument::new(
             DocumentMetadata::new(PathBuf::from("file.cpp"), content.len() as u64)
@@ -292,7 +280,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_parse_function() {
+    async fn test_parse_top_level_function() {
         let parser = CppParser::new();
         let content = r#"
 int main() {
@@ -301,6 +289,7 @@ int main() {
 "#;
         let result = parser.parse(content).await.unwrap();
         
+        // Should be at top level
         let functions: Vec<_> = result.elements.iter()
             .filter(|e| e.element_type == ElementType::Function)
             .collect();
@@ -310,13 +299,13 @@ int main() {
     }
 
     #[tokio::test]
-    async fn test_parse_class() {
+    async fn test_parse_nested_class() {
         let parser = CppParser::new();
         let content = r#"
-class Point {
+class Verified {
 public:
-    int x;
-    int y;
+    void method() {}
+    int field;
 };
 "#;
         let result = parser.parse(content).await.unwrap();
@@ -326,15 +315,24 @@ public:
             .collect();
         
         assert_eq!(classes.len(), 1);
-        assert_eq!(classes[0].name, Some("Point".to_string()));
+        let cls = &classes[0];
+        assert_eq!(cls.name, Some("Verified".to_string()));
+        
+        // VERIFY HIERARCHY: Method should be a child, not a sibling
+        let methods: Vec<_> = cls.children.iter()
+            .filter(|e| e.element_type == ElementType::Function)
+            .collect();
+        assert_eq!(methods.len(), 1, "Method should be nested in class");
+        assert_eq!(methods[0].name, Some("method".to_string()));
     }
 
     #[tokio::test]
-    async fn test_parse_namespace() {
+    async fn test_parse_namespace_hierarchy() {
         let parser = CppParser::new();
         let content = r#"
 namespace mylib {
     void foo() {}
+    class Internal {};
 }
 "#;
         let result = parser.parse(content).await.unwrap();
@@ -344,8 +342,17 @@ namespace mylib {
             .collect();
         
         assert_eq!(namespaces.len(), 1);
-        // Note: Name extraction depends on tree-sitter grammar version
-        // For now, verify we found the namespace
+        let ns = &namespaces[0];
+        // Note: Name might be "mylib" or empty depending on extraction logic detail, 
+        // strictly checking children here.
+        
+        assert_eq!(ns.children.len(), 2, "Namespace should have 2 children");
+        
+        let has_foo = ns.children.iter().any(|c| c.name.as_deref() == Some("foo") && c.element_type == ElementType::Function);
+        let has_internal = ns.children.iter().any(|c| c.name.as_deref() == Some("Internal") && c.element_type == ElementType::Class);
+        
+        assert!(has_foo, "Function foo should be nested in namespace");
+        assert!(has_internal, "Class Internal should be nested in namespace");
     }
 
     #[tokio::test]
@@ -359,6 +366,7 @@ int main() { return 0; }
 "#;
         let result = parser.parse(content).await.unwrap();
         
+        // Includes are top level
         let imports: Vec<_> = result.elements.iter()
             .filter(|e| e.element_type == ElementType::Import)
             .collect();

@@ -1,0 +1,17 @@
+```console
+$ vecdb --help
+? success
+...
+```
+
+```console
+$ vecdb --version
+? success
+...
+```
+
+```console
+$ vecdb init --help
+? success
+...
+```

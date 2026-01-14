@@ -4,11 +4,27 @@ The `vecdb` command-line tool is the primary interface for humans and scripts to
 
 ## Global Options
 
+
 | Option | Description |
 | :--- | :--- |
 | `--profile <NAME>` | Specify the configuration profile to use (overrides `VECDB_PROFILE`). |
+| `-j, --json` | **Force** JSON output (bypasses smart detection). |
+| `-m, --markdown` | **Force** Human-Readable output (bypasses smart detection). |
 | `-h, --help` | Show help information. |
 | `-V, --version` | Show version information. |
+
+## Output Standardization (Smart Defaults)
+**"Pipes want Data, Humans want Headers."**
+
+`vecdb` and `vecq` automatically adapt their output based on the context:
+1.  **interactive (TTY)**: Output is formatted for humans (Tables, Markdown, Colors).
+2.  **Pipe / Redirection**: Output is raw JSON for machine consumption.
+
+**Example**:
+- `vecdb list` → Displays a pretty ASCII table.
+- `vecdb list | cat` → Outputs a JSON array.
+
+You can **force** a specific format using the global flags `-j` (JSON) or `-m` (Markdown/Text).
 
 ---
 
@@ -40,18 +56,13 @@ Perform semantic search against the index.
 *   **Options**:
     *   `-c, --collection <NAME>`: Collection to search in.
     *   `--profile <NAME>`: Profile to use.
-    *   `--json`: Output results as a pure JSON array for piping.
     *   `--smart`: Enable smart routing (multi-hop reasoning and facet detection).
 
 ### `list`
 List available collections and their statistics.
-*   **Options**:
-    *   `--json`: Output the collection list as JSON.
 
 ### `status`
 Show system health, connectivity, and detailed collection stats.
-*   **Options**:
-    *   `--json`: Output full system status as JSON.
 
 ### `delete <COLLECTION>`
 Safely delete a collection.

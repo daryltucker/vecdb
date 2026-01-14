@@ -50,8 +50,6 @@ toml = "0.9"
 
 # Parsing dependencies
 pulldown-cmark = "0.13.0"
-syn = { version = "2.0.114", features = ["full", "extra-traits", "visit"] }
-quote = "1.0.43"
 rustpython-parser = "0.4.0"
 tree-sitter = "0.26.3" # Core library - updated to 0.26 for C23 support
 tree-sitter-c = "0.24.1" # Supports C23 language features (v0.24.1)
@@ -65,8 +63,8 @@ toml_edit = "0.22.24"
 jaq-syn = "1.6.0"
 jaq-parse = "1.0.3"
 jaq-interpret = "1.5.0"
-jaq-std = "1.5.0"
-jaq-core = "1.5.0"
+jaq-std = "=1.5.0"
+jaq-core = "=1.5.0"
 indexmap = "2.13.0" # Required for jaq Val::Obj construction
 dirs = "6.0.0"
 
@@ -84,6 +82,8 @@ termimad = "0.34.1"
 syntect = "5.3.0"
 quick-xml = { version = "0.38.4", features = ["serialize"] }
 tree-sitter-rust = "0.24.0"
+regex = "1.12.2"
+ahash = "0.8.12"
 
 [dev-dependencies]
 proptest = "1.9.0"

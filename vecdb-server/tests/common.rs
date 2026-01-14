@@ -14,7 +14,7 @@ pub struct MockBackend {
 impl Backend for MockBackend {
     async fn health_check(&self) -> Result<()> { Ok(()) }
     
-    async fn create_collection(&self, _name: &str, _v: u64) -> Result<()> { Ok(()) }
+    async fn create_collection(&self, _name: &str, _v: u64, _q: Option<vecdb_core::config::QuantizationType>) -> Result<()> { Ok(()) }
     
     async fn collection_exists(&self, _name: &str) -> Result<bool> { Ok(true) }
     
@@ -52,10 +52,19 @@ impl Backend for MockBackend {
             name: name.to_string(),
             vector_count: Some(100),
             vector_size: Some(3),
+            quantization: None,
         })
     }
     
-    async fn list_metadata_values(&self, _c: &str, _k: &str) -> Result<Vec<String>> { Ok(vec![]) }
+    async fn list_metadata_values(&self, _: &str, _: &str) -> anyhow::Result<Vec<String>> { Ok(vec![]) }
+
+    async fn update_collection_quantization(
+        &self,
+        _: &str,
+        _: vecdb_core::config::QuantizationType,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 pub struct MockEmbedder;

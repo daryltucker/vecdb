@@ -47,6 +47,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+// ARCHITECTURE NOTE:
+// This struct uses HashMap<String, Value> for metadata.
+// In high-scale environments (>1M vectors), this causes significant heap fragmentation and overhead.
+// Future Refactor (Sprint 2026-02): Replace with `bilge` bit-packed structs or `rkyv` zero-copy maps.
+// See: docs/inquiries/responses/RustMemoryFilesandArchitecture.md
 /// Represents a source file or logical document before ingestion.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Document {
@@ -122,4 +127,5 @@ pub struct CollectionInfo {
     pub name: String,
     pub vector_count: Option<u64>,
     pub vector_size: Option<u64>,
+    pub quantization: Option<crate::config::QuantizationType>,
 }

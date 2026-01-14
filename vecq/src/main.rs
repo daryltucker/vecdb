@@ -98,10 +98,11 @@ use vecq::{
     detect_file_type, format_results, parse_file, 
     validate_query, explain_query, available_output_formats,
     supported_file_types, FileType, FormatOptions, VecqError, VecqResult,
-    UnifiedJsonConverter, JsonConverter, JqQueryEngine, QueryEngine
+    UnifiedJsonConverter, JsonConverter, JqQueryEngine, QueryEngine, SchemaRegistry
 };
 use clap_complete::{generate, Shell};
-use clap::CommandFactory;
+use clap::{ArgMatches, CommandFactory, FromArgMatches};
+use clap::builder::TypedValueParser;
 
 mod man_cmd;
 
@@ -139,7 +140,11 @@ SUPPORTED FILE TYPES:
 
 OUTPUT FORMATS:
     json (default), grep, human
+
+AGENT USAGE:
+    Run `vecq man --agent` for the definitive Agent Interface Manual.
 "#)]
+#[command(after_help = "See `vecq man --agent` for Agent Interface documentation.")]
 struct Args {
     /// Input file(s) or directory to process
     #[arg(value_name = "INPUT")]
@@ -171,9 +176,17 @@ struct Args {
     convert: bool,
 
     /// Output format
-    #[arg(short = 'o', long, default_value = "json")]
+    #[arg(short = 'o', long)]
     #[arg(value_parser = validate_output_format)]
-    format: String,
+    format: Option<String>,
+
+    /// Force JSON output
+    #[arg(long, short = 'j', conflicts_with = "format")]
+    json: bool,
+
+    /// Force Human-Readable output
+    #[arg(long, short = 'm', conflicts_with = "format")]
+    human: bool,
 
     /// Use grep-compatible output format (filename:line:content)
     #[arg(long)]
@@ -194,6 +207,10 @@ struct Args {
     /// Process files recursively in directories
     #[arg(short = 'R', long)]
     recursive: bool,
+
+    /// Limit recursion depth (requires -R)
+    #[arg(short = 'd', long)]
+    depth: Option<usize>,
 
     /// File type override (auto-detected by default)
     #[arg(short = 't', long)]
@@ -274,6 +291,8 @@ enum Commands {
     },
     /// List available jq filters and functions
     ListFilters,
+    /// List available structural elements (AST nodes)
+    Elements,
 }
 
 #[derive(Clone)]
@@ -282,6 +301,7 @@ struct ParseOptions {
     context_lines: usize,
     verbose: bool,
     recursive: bool,
+    max_depth: Option<usize>,
 }
 
 impl From<&Args> for ParseOptions {
@@ -291,6 +311,7 @@ impl From<&Args> for ParseOptions {
             context_lines: args.context_lines,
             verbose: args.verbose,
             recursive: args.recursive,
+            max_depth: args.depth,
         }
     }
 }
@@ -309,27 +330,114 @@ fn validate_output_format(format: &str) -> Result<String, String> {
 }
 
 fn validate_file_type(type_str: &str) -> Result<FileType, String> {
-    match type_str.to_lowercase().as_str() {
-        "rust" | "rs" => Ok(FileType::Rust),
-        "python" | "py" => Ok(FileType::Python),
-        "markdown" | "md" => Ok(FileType::Markdown),
-        "html" => Ok(FileType::Html),
-        "c" => Ok(FileType::C),
-        "cpp" | "c++" => Ok(FileType::Cpp),
-        "cuda" | "cu" => Ok(FileType::Cuda),
-        "go" => Ok(FileType::Go),
-        "bash" | "sh" => Ok(FileType::Bash),
-        "json" => Ok(FileType::Json),
-        _ => Err(format!(
-            "Unsupported file type '{}'. Supported types: rust, python, markdown, html, c, cpp, cuda, go, bash, json",
-            type_str
-        )),
+    let type_str = type_str.to_lowercase();
+    for ft in supported_file_types() {
+        if ft.to_string().to_lowercase() == type_str || 
+           ft.file_extensions().iter().any(|&ext| ext == type_str) {
+            return Ok(ft);
+        }
     }
+    
+    // Special handlings for non-standard but common aliases
+    match type_str.as_str() {
+        "c++" => return Ok(FileType::Cpp),
+        "txt" => return Ok(FileType::Text),
+        _ => {}
+    }
+
+    Err(format!(
+        "Unsupported file type '{}'. Supported types: {}",
+        type_str,
+        supported_file_types().iter().map(|ft| ft.to_string().to_lowercase()).collect::<Vec<_>>().join(", ")
+    ))
+}
+
+fn get_informed_command() -> clap::Command {
+    let mut cmd = Args::command();
+    
+    // Dynamically discover supported file types for suggestions/help
+    let types: Vec<_> = supported_file_types()
+        .iter()
+        .map(|ft| ft.to_string().to_lowercase())
+        .collect::<Vec<_>>();
+
+    // Standard extensions for help text
+    let mut ext_types = types.clone();
+    ext_types.extend(vec!["rs".to_string(), "py".to_string(), "md".to_string(), "sh".to_string()]);
+    ext_types.sort();
+    ext_types.dedup();
+
+    // 1. Inject possible values into --file-type / -t
+    let static_ext_types: Vec<&'static str> = ext_types
+        .into_iter()
+        .map(|s| Box::leak(s.into_boxed_str()) as &'static str)
+        .collect();
+
+    let ft_parser = clap::builder::PossibleValuesParser::new(static_ext_types.clone())
+        .map(|s: String| validate_file_type(&s).unwrap());
+
+    cmd = cmd.mut_arg("file_type", |arg| {
+        arg.value_parser(ft_parser.clone())
+    });
+
+    // 2. Inject into 'elements' subcommand
+    cmd = cmd.mut_subcommand("elements", |sub| {
+        let mut sub = sub.about("List available structural elements by language")
+            .arg(clap::Arg::new("json")
+                .long("json")
+                .help("Output as JSON")
+                .action(clap::ArgAction::SetTrue));
+
+        let registry = SchemaRegistry::new();
+        for ft in supported_file_types() {
+            let ft_name: &'static str = Box::leak(ft.to_string().to_lowercase().into_boxed_str());
+            let mut lang_sub = clap::Command::new(ft_name)
+                .about(format!("Browse {} elements", ft));
+            
+            // Add aliases from extensions
+            for ext_ref in ft.file_extensions() {
+                let ext: &str = ext_ref;
+                if ext != ft_name {
+                    lang_sub = lang_sub.alias(Box::leak(ext.to_string().into_boxed_str()) as &'static str);
+                }
+            }
+            // Manual overrides removed as they are now handled by extensions
+
+            if let Ok(schema) = registry.get_schema(ft) {
+                let mut elements: Vec<String> = schema.element_mappings.values().cloned().collect();
+                elements.extend(schema.required_fields.clone());
+                elements.sort();
+                elements.dedup();
+                
+                let static_el: Vec<&'static str> = elements
+                    .into_iter()
+                    .map(|s| Box::leak(s.into_boxed_str()) as &'static str)
+                    .collect();
+                
+                lang_sub = lang_sub.arg(
+                    clap::Arg::new("element")
+                        .value_parser(clap::builder::PossibleValuesParser::new(static_el))
+                        .help("Specific structural element to filter by")
+                ).arg(
+                    clap::Arg::new("json")
+                        .long("json")
+                        .help("Output as JSON")
+                        .action(clap::ArgAction::SetTrue)
+                );
+            }
+            sub = sub.subcommand(lang_sub);
+        }
+        sub
+    });
+
+    cmd
 }
 
 #[tokio::main]
 async fn main() {
-    let args = Args::parse();
+    let cmd = get_informed_command();
+    let matches = cmd.get_matches();
+    let args = Args::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 
     // Handle informational commands first
     if args.list_types {
@@ -346,9 +454,15 @@ async fn main() {
     if let Some(command) = args.command {
         match command {
             Commands::Completions { shell } => {
-                let mut cmd = Args::command();
+                let mut cmd = get_informed_command();
                 generate(shell, &mut cmd, "vecq", &mut std::io::stdout());
                 return;
+            }
+            Commands::Elements => {
+                if let Err(e) = handle_elements_command(&matches).await {
+                    eprintln!("Error: {}", format_user_error(&e));
+                    process::exit(1);
+                }
             }
             _ => {
                 match handle_subcommand(command).await {
@@ -405,6 +519,133 @@ async fn main() {
     }
 }
 
+async fn handle_elements_command(matches: &ArgMatches) -> VecqResult<()> {
+    let el_matches = matches.subcommand_matches("elements").ok_or_else(|| {
+        VecqError::ConfigError {
+            message: "Elements subcommand not found".to_string(),
+        }
+    })?;
+    let mut json = el_matches.get_flag("json");
+    let registry = SchemaRegistry::new();
+
+    if let Some((lang_name, sub_matches)) = el_matches.subcommand() {
+        if sub_matches.get_flag("json") {
+            json = true;
+        }
+        let ft = validate_file_type(lang_name).map_err(|e| VecqError::ConfigError { message: e })?;
+        let schema = registry.get_schema(ft)?;
+        let element = sub_matches.get_one::<String>("element");
+
+        if let Some(target_field) = element {
+            // Drill down into a specific element's attributes
+            // First, find the ElementType that maps to this field name
+            let element_type = schema
+                .element_mappings
+                .iter()
+                .find(|(_, field)| *field == target_field)
+                .map(|(et, _)| *et);
+
+            let attributes = if let Some(et) = element_type {
+                schema.get_attributes(et)
+            } else {
+                Vec::new()
+            };
+
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&attributes).map_err(|e| VecqError::json_error(
+                        "Failed to serialize attributes".to_string(),
+                        Some(e)
+                    ))?
+                );
+            } else {
+                println!("Attributes for {} {}:", ft, target_field);
+                if attributes.is_empty() {
+                    println!("  (none or no specific metadata registered)");
+                } else {
+                    for attr in attributes {
+                        println!("  - {}", attr);
+                    }
+                }
+            }
+        } else {
+            // List structural elements for the language
+            let mut elements: Vec<String> = schema.element_mappings.values().cloned().collect();
+            elements.extend(schema.required_fields.clone());
+            elements.sort();
+            elements.dedup();
+
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&elements).map_err(|e| VecqError::json_error(
+                        "Failed to serialize elements".to_string(),
+                        Some(e)
+                    ))?
+                );
+            } else {
+                println!("Structural elements for {}:", ft);
+                if elements.is_empty() {
+                    println!("  (none found)");
+                } else {
+                    for chunk in elements.chunks(4) {
+                        let line = chunk
+                            .iter()
+                            .map(|s| format!("{:<20}", s))
+                            .collect::<Vec<String>>()
+                            .join("");
+                        println!("  {}", line);
+                    }
+                }
+            }
+        }
+    } else {
+        // Root 'elements' command: List supported languages by default (less verbose)
+        let schemas = registry.list_schemas();
+
+        if json {
+            // Maintain full verbosity for Agents/automated tools
+            let mut result = serde_json::Map::new();
+            for schema in schemas {
+                let mut elements: Vec<String> = schema.element_mappings.values().cloned().collect();
+                elements.extend(schema.required_fields.clone());
+                elements.sort();
+                elements.dedup();
+                result.insert(
+                    schema.file_type.to_string(),
+                    serde_json::Value::Array(
+                        elements.into_iter().map(serde_json::Value::String).collect(),
+                    ),
+                );
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).map_err(|e| VecqError::json_error(
+                    "Failed to serialize schemas".to_string(),
+                    Some(e)
+                ))?
+            );
+        } else {
+            println!("Supported languages for structural extraction:");
+            println!("(Use 'vecq elements <lang>' to see structural elements for a specific language)");
+            let mut languages: Vec<String> =
+                schemas.iter().map(|s| s.file_type.to_string()).collect();
+            languages.sort();
+
+            for chunk in languages.chunks(4) {
+                let line = chunk
+                    .iter()
+                    .map(|s| format!("{:<20}", s))
+                    .collect::<Vec<String>>()
+                    .join("");
+                println!("  {}", line);
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn run_main_command(mut args: Args) -> VecqResult<()> {
     // Resolve query from file, flag, or positional
     let query_string = if let Some(path) = &args.from_file {
@@ -429,9 +670,29 @@ async fn run_main_command(mut args: Args) -> VecqResult<()> {
     // Determine output format
     let output_format = if args.grep_format {
         "grep".to_string()
+    } else if args.json {
+        "json".to_string()
+    } else if args.human {
+        "human".to_string()
+    } else if let Some(ref fmt) = args.format {
+        fmt.clone()
     } else {
-        args.format.clone()
+        // Smart Default
+        // If we are writing to TTY, we prefer human-readable output (Markdown/Text)
+        // If we are piping, we default to JSON for machine consumption
+        use vecdb_common::output::{OutputContext, OutputFormat};
+        // Detect fresh context to check stdout TTY status
+        let ctx = OutputContext::detect(); 
+        
+        match ctx.resolve_format() {
+             OutputFormat::Markdown | OutputFormat::Text => "human".to_string(),
+             OutputFormat::Grep => "grep".to_string(),
+             OutputFormat::Json => "json".to_string(),
+        }
     };
+    
+    // Auto-enable raw output if "human" format is selected, to avoid quoting strings in tables
+    let raw_output = if output_format == "human" { true } else { args.raw_output };
 
     // Create format options
     let format_options = FormatOptions {
@@ -443,7 +704,8 @@ async fn run_main_command(mut args: Args) -> VecqResult<()> {
         include_file_paths: true,
         max_width: if output_format == "human" { Some(120) } else { None },
         custom_format: None,
-        raw_output: args.raw_output,
+
+        raw_output,
     };
 
     // Resolve inputs: if empty and stdin has data, use stdin
@@ -457,6 +719,10 @@ async fn run_main_command(mut args: Args) -> VecqResult<()> {
             message: "No input provided. Usage: vecq <file> [query] or pipe data: cat file | vecq".to_string(),
         });
     }
+    
+    // Setup Buffered Output
+    let stdout = std::io::stdout();
+    let mut handle = std::io::BufWriter::new(stdout.lock());
 
     if args.slurp {
         let mut all_values = Vec::new();
@@ -464,15 +730,21 @@ async fn run_main_command(mut args: Args) -> VecqResult<()> {
             all_values.extend(extract_json_from_input(&input, &ParseOptions::from(&args)).await?);
         }
         let slurp_value = serde_json::Value::Array(all_values);
-        process_json_value(slurp_value, &query_string, &engine, &output_format, &format_options).await?;
+        // Synchronous call (no await)
+        process_json_value(slurp_value, &query_string, &engine, &output_format, &format_options, &mut handle)?;
     } else {
         for input in resolved_inputs {
             let values = extract_json_from_input(&input, &ParseOptions::from(&args)).await?;
             for val in values {
-                process_json_value(val, &query_string, &engine, &output_format, &format_options).await?;
+                // Synchronous call (no await)
+                process_json_value(val, &query_string, &engine, &output_format, &format_options, &mut handle)?;
             }
         }
     }
+    
+    // Ensure we flush at the end
+    use std::io::Write;
+    handle.flush().map_err(VecqError::IoError)?;
 
     Ok(())
 }
@@ -499,7 +771,7 @@ async fn extract_json_from_input(path: &Path, options: &ParseOptions) -> VecqRes
         let vals = parse_file_to_json(path, options).await?;
         Ok(vals)
     } else if path.is_dir() {
-        extract_json_from_directory(path, options).await
+        extract_json_from_directory(path, options, 0).await
     } else {
         Err(VecqError::IoError(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -508,7 +780,7 @@ async fn extract_json_from_input(path: &Path, options: &ParseOptions) -> VecqRes
     }
 }
 
-async fn extract_json_from_directory(dir_path: &Path, options: &ParseOptions) -> VecqResult<Vec<serde_json::Value>> {
+async fn extract_json_from_directory(dir_path: &Path, options: &ParseOptions, current_depth: usize) -> VecqResult<Vec<serde_json::Value>> {
     let mut entries = fs::read_dir(dir_path).await.map_err(|e| {
         VecqError::IoError(std::io::Error::new(
             e.kind(),
@@ -523,7 +795,12 @@ async fn extract_json_from_directory(dir_path: &Path, options: &ParseOptions) ->
 
         if path.is_dir() {
             if options.recursive {
-                values.extend(Box::pin(extract_json_from_directory(&path, options)).await?);
+                if let Some(max) = options.max_depth {
+                    if current_depth >= max {
+                        continue;
+                    }
+                }
+                values.extend(Box::pin(extract_json_from_directory(&path, options, current_depth + 1)).await?);
             }
             continue;
         }
@@ -569,7 +846,10 @@ async fn parse_content_to_json(content: &str, path: Option<&Path>, options: &Par
         options.file_type.unwrap_or(FileType::Unknown)
     };
 
-    let mut json_vals = if file_type == FileType::Json || (file_type == FileType::Unknown && (content.trim_start().starts_with('{') || content.trim_start().starts_with('['))) {
+    let mut json_vals = if file_type == FileType::Text {
+        // Treat content as raw string, wrapped in single JSON string
+        vec![serde_json::Value::String(content.to_string())]
+    } else if file_type == FileType::Json || (file_type == FileType::Unknown && (content.trim_start().starts_with('{') || content.trim_start().starts_with('['))) {
         let deserializer = serde_json::Deserializer::from_str(content);
         let mut vals = Vec::new();
         for item in deserializer.into_iter::<serde_json::Value>() {
@@ -579,10 +859,6 @@ async fn parse_content_to_json(content: &str, path: Option<&Path>, options: &Par
                     if file_type == FileType::Json {
                         return Err(VecqError::json_error("Invalid JSON input".to_string(), Some(e)));
                     } else {
-                        // If it was Unknown and failed JSON parsing, fall through to error or Markdown?
-                        // Actually, if it started with { but failed, it's likely malformed JSON.
-                        // But if it's Unknown and doesn't look like JSON, we want it to fail or be Markdown.
-                        // The previous logic defaulted to Markdown if path was None.
                         return Err(VecqError::UnsupportedFileType {
                             file_type: "Unknown (failed JSON heuristic)".to_string(),
                         });
@@ -622,13 +898,9 @@ fn inject_file_path_recursive(value: &mut serde_json::Value, path: &str) {
                 if let Some(meta_obj) = metadata.as_object_mut() {
                     meta_obj.insert("path".to_string(), serde_json::Value::String(path.to_string()));
                 }
-            } else {
-                // Determine if we should inject metadata here? 
-                // Mostly we care about injecting into 'attributes' for children
             }
 
             // Inject into attributes if present, or create it if it looks like a document element
-            // We use a heuristic: if it has 'element_type' or 'kind', it's an element
             let is_element = map.contains_key("element_type") || map.contains_key("kind") || map.contains_key("type");
             
             if is_element {
@@ -667,39 +939,58 @@ fn inject_file_path_recursive(value: &mut serde_json::Value, path: &str) {
     }
 }
 
-async fn process_json_value(
+// Synchronous version to support StdoutLock
+fn process_json_value(
     json_value: serde_json::Value,
     query: &str,
     engine: &JqQueryEngine,
     output_format: &str,
     format_options: &FormatOptions,
+    writer: &mut impl std::io::Write,
 ) -> VecqResult<()> {
     // Execute query if provided
-    let output = if !query.is_empty() {
+    if !query.is_empty() {
         let results = engine.execute_query(&json_value, query)?;
-        format_results(&results, output_format, format_options)?
+        
+        for result in results {
+             let output = format_results(&result, output_format, format_options)?;
+             if !output.is_empty() {
+                if let Err(e) = writeln!(writer, "{}", output) {
+                    if e.kind() == std::io::ErrorKind::BrokenPipe {
+                        std::process::exit(0);
+                    }
+                    return Err(VecqError::IoError(e));
+                }
+             }
+        }
     } else {
         // Default: output formatted JSON
-        if format_options.pretty_print {
+        let output = if format_options.pretty_print {
             serde_json::to_string_pretty(&json_value)?
         } else {
             serde_json::to_string(&json_value)?
+        };
+        
+        if let Err(e) = writeln!(writer, "{}", output) {
+            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                std::process::exit(0);
+            }
+            return Err(VecqError::IoError(e));
         }
     };
 
-    // Handle broken pipe gracefully
-    use std::io::Write;
-    if !output.is_empty() {
-        if let Err(e) = writeln!(std::io::stdout(), "{}", output) {
-        if e.kind() == std::io::ErrorKind::BrokenPipe {
-            std::process::exit(0);
-        }
-        return Err(VecqError::IoError(e));
-        }
-    }
-
     Ok(())
 }
+
+// ...
+// Actually, I can't return Err inside the prompt string haha.
+// I will abort this tool call and issue a correct one.
+// I will just execute NOTHING in the replacement content to trigger a "no change" or just use multi_replace in next turn.
+// Wait, I can't abort comfortably. I will synthesize the replacement for just `run_main_command` first?
+// No, I need to match the signature. If I change one, I break the build until I change the other.
+
+
+
 
 
 async fn handle_subcommand(command: Commands) -> VecqResult<()> {
@@ -710,17 +1001,20 @@ async fn handle_subcommand(command: Commands) -> VecqResult<()> {
                 context_lines: 0,
                 verbose: false,
                 recursive: false,
+                max_depth: None,
             };
             let values = extract_json_from_input(&input, &options).await?;
             let engine = JqQueryEngine::new_hermetic();
             
             // For now, simpler than full iterator: just process each file
             for val in values {
-                let result = engine.execute_query(&val, "markdown")?;
+                let results = engine.execute_query(&val, "markdown")?;
                  // If the result is a string, print it raw. JSON otherwise.
-                match result {
-                    serde_json::Value::String(s) => println!("{}", s),
-                    _ => println!("{}", result),
+                for result in results {
+                    match result {
+                        serde_json::Value::String(s) => println!("{}", s),
+                        _ => println!("{}", result),
+                    }
                 }
             }
             Ok(())
@@ -735,6 +1029,7 @@ async fn handle_subcommand(command: Commands) -> VecqResult<()> {
             print_query_suggestions(&description);
             Ok(())
         }
+        Commands::Elements => Ok(()), // Handled in main directly to support dynamic sub-subcommands
         Commands::Completions { .. } => unreachable!("Handled in main"),
         Commands::Syntax { input, language } => {
             use syntect::easy::HighlightFile;
@@ -876,29 +1171,33 @@ fn print_query_explanation(explanation: &vecq::QueryExplanation) {
 fn print_query_suggestions(description: &str) {
     println!("Query suggestions for: \"{}\"", description);
     
-    // Simple pattern matching for common requests
-    let suggestions = match description.to_lowercase().as_str() {
-        desc if desc.contains("function") => vec![
-            ".functions[]",
-            ".functions[] | .name",
-            ".functions[] | select(.visibility == \"pub\")",
-        ],
-        desc if desc.contains("struct") => vec![
-            ".structs[]",
-            ".structs[] | .name",
-            ".structs[] | select(.name | contains(\"Test\"))",
-        ],
-        desc if desc.contains("header") => vec![
-            ".headers[]",
-            ".headers[] | select(.level == 2)",
-            ".headers[] | .title",
-        ],
-        _ => vec![
-            ".",
-            ".[] | keys",
-            ".[] | select(.name)",
-        ],
-    };
+    let registry = SchemaRegistry::new();
+    let mut suggestions = Vec::new();
+    let desc = description.to_lowercase();
+
+    // Dynamically build suggestions based on registered schemas (D026: Elements Discovery)
+    for schema in registry.list_schemas() {
+        for (el_type, field_name) in &schema.element_mappings {
+            let el_str = el_type.to_string().to_lowercase();
+            if el_str.contains(&desc) || field_name.to_lowercase().contains(&desc) {
+                suggestions.push(format!(".{}[]", field_name));
+                suggestions.push(format!(".{}[] | .name", field_name));
+                suggestions.push(format!(".{}[] | select(.name | contains(\"...\"))", field_name));
+            }
+        }
+    }
+    
+    // Sort and dedup suggestions
+    suggestions.sort();
+    suggestions.dedup();
+
+    if suggestions.is_empty() {
+        suggestions = vec![
+            ".".to_string(),
+            ".[] | keys".to_string(),
+            ".[] | select(.name)".to_string(),
+        ];
+    }
 
     for (i, suggestion) in suggestions.iter().enumerate() {
         println!("  {}. {}", i + 1, suggestion);

@@ -20,7 +20,8 @@ struct MockBackend {
 #[async_trait]
 impl Backend for MockBackend {
     async fn health_check(&self) -> Result<()> { Ok(()) }
-    async fn create_collection(&self, _name: &str, _v: u64) -> Result<()> { Ok(()) }
+    async fn create_collection(&self, _name: &str, _v: u64, _q: Option<vecdb_core::config::QuantizationType>) -> Result<()> { Ok(()) }
+    async fn update_collection_quantization(&self, _: &str, _: vecdb_core::config::QuantizationType) -> Result<()> { Ok(()) }
     async fn collection_exists(&self, _name: &str) -> Result<bool> { Ok(true) }
     async fn delete_collection(&self, _name: &str) -> Result<()> { Ok(()) }
     async fn upsert(&self, _collection: &str, chunks: Vec<Chunk>) -> Result<()> {
@@ -44,6 +45,7 @@ impl Backend for MockBackend {
             name: name.to_string(),
             vector_count: Some(0),
             vector_size: Some(768),
+            quantization: None,
         })
     }
     async fn list_metadata_values(&self, _c: &str, _k: &str) -> Result<Vec<String>> { Ok(vec![]) }
@@ -73,6 +75,7 @@ impl vecdb_common::detection::FileTypeDetector for MockFileTypeDetector {
 struct MockParserFactory;
 impl vecdb_core::parsers::ParserFactory for MockParserFactory {
     fn get_parser(&self, _file_type: vecdb_common::FileType) -> Option<Box<dyn vecdb_core::parsers::Parser>> { None }
+    fn get_streaming_parser(&self, _file_type: vecdb_common::FileType) -> Option<Box<dyn vecdb_core::parsers::Parser>> { None }
 }
 
 #[tokio::test]
@@ -82,18 +85,18 @@ async fn test_ingestion_idempotency() -> Result<()> {
     let embedder = Arc::new(CountingEmbedder { count: count.clone() });
     let detector = Arc::new(MockFileTypeDetector);
     let parser_factory = Arc::new(MockParserFactory);
-    let core = Core::with_backends(backend, embedder, detector, parser_factory, Vec::new(), Vec::new());
+    let core = Core::with_backends(backend, embedder, detector, parser_factory, Vec::new(), Vec::new(), 1, 10);
 
     let content = "This is a unique string that should only be embedded once.";
     let metadata = std::collections::HashMap::new();
 
     // 1. First ingestion
-    core.ingest_content(content, metadata.clone(), "test", None, None, None).await?;
+    core.ingest_content(content, metadata.clone(), "test", None, None, None, None).await?;
     let first_count = count.load(Ordering::SeqCst);
     assert!(first_count > 0, "Should have embedded content once");
 
     // 2. Second ingestion (identical content)
-    core.ingest_content(content, metadata, "test", None, None, None).await?;
+    core.ingest_content(content, metadata, "test", None, None, None, None).await?;
     let second_count = count.load(Ordering::SeqCst);
     
     // 3. Verify count didn't increase

@@ -54,7 +54,11 @@ impl Backend for MockBackend {
         Ok(())
     }
 
-    async fn create_collection(&self, _name: &str, _vector_size: u64) -> Result<()> {
+    async fn create_collection(&self, _name: &str, _vector_size: u64, _quantization: Option<vecdb_core::config::QuantizationType>) -> Result<()> {
+        Ok(())
+    }
+
+    async fn update_collection_quantization(&self, _name: &str, _quantization: vecdb_core::config::QuantizationType) -> Result<()> {
         Ok(())
     }
 
@@ -114,6 +118,7 @@ impl Backend for MockBackend {
             name: name.to_string(),
             vector_count: Some(0),
             vector_size: Some(768),
+            quantization: None,
         })
     }
 
@@ -131,7 +136,7 @@ async fn test_backend_trait_contract() -> Result<()> {
     backend.health_check().await?;
 
     // 3. Create Collection
-    backend.create_collection("test", 768).await?;
+    backend.create_collection("test", 768, None).await?;
 
     // 4. Upsert
     let chunk = Chunk::new("doc-1", "This is a test.");

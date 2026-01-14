@@ -41,6 +41,18 @@ vecq allows AI Agents to query source code structure (AST) as if it were JSON.
 - **Output**: Pure Markdown (headers, code blocks, docstrings).
 - **Mechanism**: Runs embedded `doc.jq` logic on strict Tree-sitter AST.
 
+### 6. Normalization & Schemas (Unified Layer)
+- **Action**: Transform disparate raw data (logs, issues, build errors) into canonical schemas.
+- **Philosophy**: "Parse, Don't Validate". Lenient conversion to a shared contract.
+- **Usage**: `vecq <INPUT> -q 'auto_normalize'` or specific functions like `nginx_to_log`.
+- **Available Normalizers**:
+    - **Logs**: `nginx_to_log`, `journald_to_log` -> `log.schema.json`
+    - **Tasks**: `github_to_task`, `todo_to_task` -> `task.schema.json`
+    - **Artifacts**: `cargo_to_artifact`, `junit_to_artifact` -> `artifact.schema.json`
+    - **Diffs**: `git_diff_to_diff` -> `diff.schema.json`
+- **Auto-Normalization**: Use `auto_normalize` to heuristically detect and convert input.
+
+
 ## PROTOCOL COMPLIANCE
 - **Errors**: Printed to STDERR.
 - **Success**: Printed to STDOUT.
@@ -62,24 +74,43 @@ Use this tool when you need to:
 2. Find specific code elements (e.g. "all public functions") reliably.
 3. Extract executable code blocks from documentation.
 
+## RECIPES (Structural Analysis)
+Common Agentic workflows for codebase understanding.
+
+### 1. The "API Surface Auditor"
+**Goal**: List public functions/structs to understand the external interface.
+**Cmd**: `vecq -R src/ -q '(.functions // [])[] | select(.visibility == "pub") | {name, signature}' --compact`
+
+### 2. The "Complexity Hunter"
+**Goal**: Find functions > 50 lines (prime candidates for bugs/refactoring).
+**Cmd**: `vecq -R src/ -q '(.functions // [])[] | select((.line_end - .line_start) > 50) | {name, lines: (.line_end - .line_start)}' --compact`
+
+### 3. The "Test Integrity Check"
+**Goal**: Find tests lacking assertions (fragile tests).
+**Cmd**: `vecq -R tests/ -q '(.functions // [])[] | select(.name | contains("test")) | select(.content | contains("assert") | not) | .name' --grep-format`
+
+### 4. The "Dependency Mapper"
+**Goal**: Find all files importing a specific module.
+**Cmd**: `vecq -R src/ -q '(.imports // [])[] | select(.path | contains("target_module")) | .path' --grep-format`
+
 ## DISCOVERY PROTOCOL
 To avoid hallucinating schema structure, Agents MUST follow this protocol when encountering unmatched files:
 
 1. **Introspect Filters**: Run `vecq list-filters` to see available jq tools.
-2. **Introspect Schema**: Run `vecq <file> -q 'keys'` to see top-level keys.
-3. **Introspect Element**: Run `vecq <file> -q '.elements[0]'` to see node structure.
+2. **Introspect Elements**: Run `vecq elements <extension> --json` (e.g., `vecq elements md --json`) to see available AST nodes.
+   - Example: `vecq elements rs --json` -> `["functions", "structs", "impls", ...]`
 
 ## AST REFERENCE (Common Nodes)
-
-To see the exact schema for a file, run `vecq --convert <file>`.
+*Note: This list is for quick reference. Always authoritative source is `vecq elements <type>`.*
 
 ### Markdown (`.md`)
+Run `vecq elements md` to see all available nodes. Common ones include:
 - `.headers[]`: List of headers (`{ content, level, line_start }`)
 - `.code_blocks[]`: Fenced code blocks (`{ language, content }`)
 - `.links[]`: Hyperlinks (`{ text, url }`)
 
 ### Rust/Python/Go/C++
+Run `vecq elements <ext>` to see available nodes. Common ones include:
 - `.functions[]`: Function definitions (`{ name, signature, content }`)
 - `.structs[]`: Class/Struct definitions (`{ name, content }`)
 - `.imports[]`: Import statements
-- `.comments[]`: Top-level comments

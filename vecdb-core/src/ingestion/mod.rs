@@ -39,7 +39,7 @@ pub async fn ingest_path(
             eprintln!("Collection {} does not exist. Creating...", options.collection);
         }
         let dim = embedder.dimension().await?;
-        backend.create_collection(&options.collection, dim as u64).await?;
+        backend.create_collection(&options.collection, dim as u64, options.quantization.clone()).await?;
     }
 
     let commit_sha = crate::git::get_head_sha(Path::new(&options.path)).unwrap_or(None);
@@ -180,7 +180,9 @@ pub async fn ingest_path(
                          flush_chunks(backend, embedder, &collection_name, &mut chunks_buffer, options_arc.gpu_batch_size).await?;
                      }
                  },
-                 Ok(Ok(None)) => { },
+                 Ok(Ok(None)) => {
+                     files_skipped += 1;
+                 },
                  Ok(Err(e)) => {
                      if OUTPUT.is_interactive { eprintln!("File processing error: {}", e); }
                  },
@@ -200,10 +202,16 @@ pub async fn ingest_path(
                       flush_chunks(backend, embedder, &collection_name, &mut chunks_buffer, options_arc.gpu_batch_size).await?;
                   }
              },
-             Ok(Ok(None)) => {},
+             Ok(Ok(None)) => {
+                 files_skipped += 1;
+             },
              Ok(Err(e)) => { if OUTPUT.is_interactive { eprintln!("File processing error: {}", e); } },
              Err(e) => { if OUTPUT.is_interactive { eprintln!("Task join error: {}", e); } }
          }
+    }
+
+    if !chunks_buffer.is_empty() {
+        flush_chunks(backend, embedder, &collection_name, &mut chunks_buffer, options_arc.gpu_batch_size).await?;
     }
 
     if state_changed {
@@ -236,6 +244,7 @@ pub async fn ingest_memory(
     chunk_size: Option<usize>,
     max_chunk_size: Option<usize>,
     chunk_overlap: Option<usize>,
+    quantization: Option<crate::config::QuantizationType>,
 ) -> Result<()> {
     let options = IngestionOptions {
         path: "memory".to_string(),
@@ -254,13 +263,15 @@ pub async fn ingest_memory(
         path_rules: Vec::new(),
         max_concurrent_requests: 4,
         gpu_batch_size: 2,
+        quantization,
     };
+
     let mut chunks = process_content(content, &options, Path::new("memory"), &metadata, FileType::Text).await?;
     
     if !backend.collection_exists(collection).await? {
         eprintln!("Collection {} does not exist. Creating...", collection);
         let dim = embedder.dimension().await?;
-        backend.create_collection(collection, dim as u64).await?;
+        backend.create_collection(collection, dim as u64, options.quantization.clone()).await?;
     }
 
     flush_chunks(backend, embedder, collection, &mut chunks, options.gpu_batch_size).await?;

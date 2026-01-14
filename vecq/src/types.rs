@@ -118,6 +118,7 @@ pub enum ElementType {
     Class,
     Struct,
     Enum,
+    Union,
     Interface,
     Module,
     Import,
@@ -131,10 +132,15 @@ pub enum ElementType {
     Link,
     Table,
     List,
+    ListItem,
     Blockquote,
     Paragraph,
     HorizontalRule,
     Image,
+    Emphasis,
+    Strong,
+    Strikethrough,
+    FootnoteDefinition,
     HtmlElement,
 
     // Language-specific
@@ -146,6 +152,7 @@ pub enum ElementType {
     Package,      // Go
     Kernel,       // CUDA __global__
     DeviceFunction, // CUDA __device__
+    TypeAlias,      // Rust type alias
 
     // Generic container
     Block,
@@ -159,6 +166,7 @@ impl fmt::Display for ElementType {
             Self::Class => "class",
             Self::Struct => "struct",
             Self::Enum => "enum",
+            Self::Union => "union",
             Self::Interface => "interface",
             Self::Module => "module",
             Self::Import => "import",
@@ -170,10 +178,15 @@ impl fmt::Display for ElementType {
             Self::Link => "link",
             Self::Table => "table",
             Self::List => "list",
+            Self::ListItem => "list_item",
             Self::Blockquote => "blockquote",
             Self::Paragraph => "paragraph",
             Self::HorizontalRule => "horizontal_rule",
             Self::Image => "image",
+            Self::Emphasis => "emphasis",
+            Self::Strong => "strong",
+            Self::Strikethrough => "strikethrough",
+            Self::FootnoteDefinition => "footnote_definition",
             Self::HtmlElement => "element",
             Self::Trait => "trait",
             Self::Implementation => "implementation",
@@ -183,6 +196,7 @@ impl fmt::Display for ElementType {
             Self::Package => "package",
             Self::Kernel => "kernel",
             Self::DeviceFunction => "device_function",
+            Self::TypeAlias => "type_alias",
             Self::Block => "block",
             Self::Unknown => "unknown",
         };

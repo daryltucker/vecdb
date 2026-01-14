@@ -364,7 +364,7 @@ mod tests {
         let enriched_doc = crate::enrich_document(doc).unwrap();
         let enriched_task = &enriched_doc.elements[0];
         
-        assert_eq!(enriched_task.children.len(), 2, "Enriched task should have 2 markdown children");
+        assert_eq!(enriched_task.children.len(), 3, "Enriched task should have 3 markdown children (Header, List, and ListItem)");
         let header = &enriched_task.children[0];
         assert_eq!(header.element_type, crate::types::ElementType::Header);
         assert_eq!(header.name.as_deref(), Some("Header"));

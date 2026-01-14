@@ -41,10 +41,11 @@ impl Backend for DummyBackend {
     async fn search(&self, _collection: &str, _vector: &[f32], _limit: u64, _filter: Option<serde_json::Value>) -> anyhow::Result<Vec<vecdb_core::types::SearchResult>> { Ok(vec![]) }
     async fn delete_collection(&self, _collection: &str) -> anyhow::Result<()> { Ok(()) }
     async fn collection_exists(&self, _collection: &str) -> anyhow::Result<bool> { Ok(true) }
-    async fn create_collection(&self, _collection: &str, _vector_size: u64) -> anyhow::Result<()> { Ok(()) }
+    async fn create_collection(&self, _collection: &str, _vector_size: u64, _q: Option<vecdb_core::config::QuantizationType>) -> anyhow::Result<()> { Ok(()) }
+    async fn update_collection_quantization(&self, _: &str, _: vecdb_core::config::QuantizationType) -> anyhow::Result<()> { Ok(()) }
     async fn list_collections(&self) -> anyhow::Result<Vec<String>> { Ok(vec![]) }
     async fn get_collection_info(&self, _collection: &str) -> anyhow::Result<vecdb_core::types::CollectionInfo> { 
-        Ok(vecdb_core::types::CollectionInfo { name: "test".to_string(), vector_count: None, vector_size: None }) 
+        Ok(vecdb_core::types::CollectionInfo { name: "test".to_string(), vector_count: None, vector_size: None, quantization: None }) 
     }
     async fn points_exists(&self, _collection: &str, _ids: Vec<String>) -> anyhow::Result<Vec<String>> { Ok(vec![]) }
     async fn health_check(&self) -> anyhow::Result<()> { Ok(()) }
@@ -96,6 +97,10 @@ async fn test_fixture_ingestion_performance() {
                 excludes: None,
                 dry_run: false,
                 metadata: None,
+                path_rules: vec![],
+                max_concurrent_requests: 1,
+                gpu_batch_size: 10,
+                quantization: None,
             };
             
             print!("Testing {:<30} ... ", path.display());
@@ -139,6 +144,10 @@ async fn test_large_generic_text_performance() {
         excludes: None,
         dry_run: false,
         metadata: None,
+        path_rules: vec![],
+        max_concurrent_requests: 1,
+        gpu_batch_size: 10,
+        quantization: None,
     };
     
     println!("Testing 15MB generic text ingestion...");

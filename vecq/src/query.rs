@@ -92,20 +92,86 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
+use std::sync::LazyLock;
 use std::fs;
+use std::rc::Rc;
+
+use jaq_syn::Def;
 
 // jaq imports for real jq execution
 use jaq_interpret::{Ctx, Filter, FilterT, ParseCtx, RcIter, Val};
 use jaq_core;
-use std::rc::Rc;
 
-// Embed the standard documentation library
-const DOC_JQ_LIB: &str = include_str!("stdlib/doc.jq");
+// Normalizers
+const NORM_LOG_NGINX: &str = include_str!("stdlib/normalizers/log_nginx.jq");
+const NORM_LOG_JOURNALD: &str = include_str!("stdlib/normalizers/log_journald.jq");
+const NORM_TASK_GITHUB: &str = include_str!("stdlib/normalizers/task_github.jq");
+const NORM_TASK_TODO: &str = include_str!("stdlib/normalizers/task_todo.jq");
+const NORM_TASK_SRC: &str = include_str!("stdlib/normalizers/task_src.jq");
+const NORM_CHAT_WEBUI: &str = include_str!("stdlib/normalizers/chat_openwebui.jq");
+const NORM_ARTIFACT_CARGO: &str = include_str!("stdlib/normalizers/artifact_cargo.jq");
+const NORM_DIFF_GIT: &str = include_str!("stdlib/normalizers/diff_git.jq");
+
+// Renderers
+const RENDER_CHAT: &str = include_str!("stdlib/renderers/chat.jq");
+const RENDER_DOC: &str = include_str!("stdlib/renderers/doc.jq");
+const RENDER_TASK: &str = include_str!("stdlib/renderers/task.jq");
+const RENDER_ARTIFACT: &str = include_str!("stdlib/renderers/artifact.jq");
+const RENDER_DIFF: &str = include_str!("stdlib/renderers/diff.jq");
+const RENDER_LOG: &str = include_str!("stdlib/renderers/log.jq");
+
+// Logic
+const AUTO_JQ: &str = include_str!("stdlib/auto.jq");
+
+const REGEX_PRELUDE: &str = r#"
+def test($r): _native_test($r);
+def re_test($r): _native_test($r);
+def capture($r): _native_capture($r);
+def re_capture($r): _native_capture($r);
+def sub($r; $s): _native_sub($r; $s);
+def re_sub($r; $s): _native_sub($r; $s);
+def gsub($r; $s): _native_gsub($r; $s);
+def re_gsub($r; $s): _native_gsub($r; $s);
+"#;
+
+// Pre-compiled Standard Library Definitions
+// This eliminates the need to re-parse the massive stdlib for every query
+static PRELUDE_DEFS: LazyLock<Result<Vec<Def>, String>> = LazyLock::new(|| {
+    let prelude_source = format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}", 
+        REGEX_PRELUDE,
+        NORM_LOG_NGINX,
+        NORM_LOG_JOURNALD,
+        NORM_TASK_GITHUB,
+        NORM_TASK_TODO,
+        NORM_TASK_SRC,
+        NORM_CHAT_WEBUI,
+        NORM_ARTIFACT_CARGO,
+        NORM_DIFF_GIT,
+        RENDER_CHAT,
+        RENDER_DOC,
+        RENDER_TASK,
+        RENDER_ARTIFACT,
+        RENDER_DIFF,
+        RENDER_LOG,
+        AUTO_JQ
+    );
+
+    let (defs, errs) = jaq_parse::parse(&prelude_source, jaq_parse::defs());
+    
+    if !errs.is_empty() {
+        let error_msgs: Vec<String> = errs.iter()
+            .map(|e| format!("{:?}", e))
+            .collect();
+        return Err(format!("INTERNAL ERROR: Stdlib parse failed: {}", error_msgs.join("; ")));
+    }
+
+    Ok(defs.unwrap_or_default())
+});
 
 /// Trait for executing jq queries on JSON data
 pub trait QueryEngine: Send + Sync {
-    /// Execute a jq query on JSON data
-    fn execute_query(&self, json: &Value, query: &str) -> VecqResult<Value>;
+    /// Execute a jq query on JSON data, returning a stream of values
+    fn execute_query(&self, json: &Value, query: &str) -> VecqResult<Vec<Value>>;
 
     /// Validate jq query syntax without execution
     fn validate_query(&self, query: &str) -> VecqResult<()>;
@@ -204,8 +270,8 @@ impl JqQueryEngine {
         self.library_paths.push(path);
     }
 
-    /// Compile and execute a jq query, returning a Value
-    fn compile_and_execute(&self, query: &str, json: &Value) -> VecqResult<Value> {
+    /// Compile and execute a jq query, returning a list of values
+    fn compile_and_execute(&self, query: &str, json: &Value) -> VecqResult<Vec<Value>> {
         let start_time = std::time::Instant::now();
         
         // Try to get cached filter
@@ -233,7 +299,7 @@ impl JqQueryEngine {
         };
         
         // Execute the filter
-        let result = self.execute_jaq_filter(&filter, json)?;
+        let results = self.execute_jaq_filter(&filter, json)?;
         
         let execution_time = start_time.elapsed().as_millis() as u64;
         self.update_stats(|stats| {
@@ -241,7 +307,7 @@ impl JqQueryEngine {
             stats.total_execution_time_ms += execution_time;
         });
         
-        Ok(result)
+        Ok(results)
     }
 
     /// Compile a jaq filter from query string
@@ -257,13 +323,14 @@ impl JqQueryEngine {
         // Load user-defined functions from ~/.config/vecq/functions/*.jq
         let user_scripts = self.load_user_scripts();
 
-        // Combine standard library, user scripts, and query
-        let full_query = format!("{}{}{}", DOC_JQ_LIB, user_scripts, query);
-
+        // Combine user scripts and query (NO stdlib here, it's injected later)
+        let user_source = format!("{}\n{}", user_scripts, query);
+        
         // Parse the query using jaq_parse
-        let (main, errs) = jaq_parse::parse(&full_query, jaq_parse::main());
+        let (main, errs) = jaq_parse::parse(&user_source, jaq_parse::main());
         
         if !errs.is_empty() {
+             // ... error handling ...
             let error_msgs: Vec<String> = errs.iter()
                 .map(|e| format!("{:?}", e))
                 .collect();
@@ -286,8 +353,21 @@ impl JqQueryEngine {
         // Insert natives from jaq_core (provides length, keys, etc.)
         ctx.insert_natives(jaq_core::core());
         
+        // Insert custom regex natives
+        ctx.insert_natives(crate::natives::regex_natives());
+
         // Insert definitions from jaq_std (provides some standard filters like `add`, `map`, etc.)
         ctx.insert_defs(jaq_std::std());
+
+        // Insert cached Standard Library Definitions (Normalizers, Renderers, Regex Prelude)
+        match &*PRELUDE_DEFS {
+            Ok(defs) => ctx.insert_defs(defs.clone()),
+            Err(e) => return Err(VecqError::query_error(
+                query.to_string(),
+                format!("Failed to load standard library: {}", e),
+                None
+            )),
+        }
         
         // Compile the main filter
         let filter = ctx.compile(main);
@@ -307,7 +387,7 @@ impl JqQueryEngine {
     }
 
     /// Execute a compiled jaq filter on JSON input
-    fn execute_jaq_filter(&self, filter: &Filter, json: &Value) -> VecqResult<Value> {
+    fn execute_jaq_filter(&self, filter: &Filter, json: &Value) -> VecqResult<Vec<Value>> {
         // Convert serde_json::Value to jaq Val
         let input = self.serde_to_jaq(json);
         
@@ -323,11 +403,7 @@ impl JqQueryEngine {
             .collect();
         
         // Convert results back to serde_json::Value
-        match results.len() {
-            0 => Ok(Value::Null),
-            1 => Ok(self.jaq_to_serde(&results[0])),
-            _ => Ok(Value::Array(results.iter().map(|v| self.jaq_to_serde(v)).collect())),
-        }
+        Ok(results.iter().map(|v| self.jaq_to_serde(v)).collect())
     }
 
     /// Convert serde_json::Value to jaq Val
@@ -520,7 +596,7 @@ impl Default for JqQueryEngine {
 }
 
 impl QueryEngine for JqQueryEngine {
-    fn execute_query(&self, json: &Value, query: &str) -> VecqResult<Value> {
+    fn execute_query(&self, json: &Value, query: &str) -> VecqResult<Vec<Value>> {
         self.compile_and_execute(query, json)
     }
 
@@ -622,13 +698,15 @@ mod tests {
         });
 
         // Identity query
-        let result = engine.execute_query(&data, ".").unwrap();
-        assert_eq!(result, data);
+        let results = engine.execute_query(&data, ".").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], data);
 
         // Field access
-        let result = engine.execute_query(&data, ".functions").unwrap();
-        assert!(result.is_array());
-        assert_eq!(result.as_array().unwrap().len(), 2);
+        let results = engine.execute_query(&data, ".functions").unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_array());
+        assert_eq!(results[0].as_array().unwrap().len(), 2);
     }
 
     #[test]
@@ -637,13 +715,13 @@ mod tests {
         let data = json!({"test": "value"});
 
         // First execution - cache miss
-        engine.execute_query(&data, ".test").unwrap();
+        let _ = engine.execute_query(&data, ".test").unwrap();
         let stats = engine.get_stats();
         assert_eq!(stats.cache_misses, 1);
         assert_eq!(stats.cache_hits, 0);
 
         // Second execution - cache hit
-        engine.execute_query(&data, ".test").unwrap();
+        let _ = engine.execute_query(&data, ".test").unwrap();
         let stats = engine.get_stats();
         assert_eq!(stats.cache_misses, 1);
         assert_eq!(stats.cache_hits, 1);
@@ -691,7 +769,7 @@ mod tests {
         let data = json!({"test": "value"});
 
         // Execute query to populate cache
-        engine.execute_query(&data, ".test").unwrap();
+        let _ = engine.execute_query(&data, ".test").unwrap();
         let stats = engine.get_stats();
         assert_eq!(stats.cache_misses, 1);
 
@@ -699,7 +777,7 @@ mod tests {
         engine.clear_cache();
 
         // Execute same query - should be cache miss again
-        engine.execute_query(&data, ".test").unwrap();
+        let _ = engine.execute_query(&data, ".test").unwrap();
         let stats = engine.get_stats();
         assert_eq!(stats.cache_misses, 2);
     }

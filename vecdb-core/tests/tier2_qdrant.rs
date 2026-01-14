@@ -30,6 +30,7 @@ async fn test_qdrant_backend_integration() {
         accept_invalid_certs: true,
         qdrant_api_key: None,
         ollama_api_key: None,
+        quantization: None,
     };
 
     // 2. Init Backend
@@ -41,7 +42,7 @@ async fn test_qdrant_backend_integration() {
 
     // 4. Create Collection (ensure fresh)
     let _ = backend.delete_collection(&profile.default_collection_name).await; // Ignore error if missing
-    backend.create_collection(&profile.default_collection_name, 4).await.expect("Failed to create collection"); // Size 4 for test
+    backend.create_collection(&profile.default_collection_name, 4, None).await.expect("Failed to create collection"); // Size 4 for test
 
     // 5. Upsert
     let chunk = Chunk {

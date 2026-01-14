@@ -26,6 +26,7 @@ fn test_all_parsers_have_fixtures() {
             FileType::Html => "html",
             FileType::Text => "text",
             FileType::Toml => "toml",
+            FileType::Json => "json",
             _ => panic!("New parser type {:?} added without updating compliance test mapping!", parser_type),
         };
         

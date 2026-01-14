@@ -91,6 +91,9 @@ Generate embeddings for raw text.
 > [!NOTE]
 > **Snapshot Management** (backup/restore) is currently only available via the `vecdb snapshot` CLI command.
 
+> [!NOTE]
+> When the file is too large for context, do not read_file. Instead, use code_query to extract only the AST nodes relevant to the bug.
+
 ## 3. Configuration & Control
 
 The server can be configured via Environment Variables and CLI Flags.

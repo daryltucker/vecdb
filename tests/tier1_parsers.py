@@ -51,16 +51,22 @@ def test_search_json():
     """Verifies JSON flattening."""
     print("--- Verifying JSON ---")
     # Search for flattened key
+    # Search for flattened key in the JSON object
     result = run_command(f"{BINARY_PATH} search 'config.server.port'")
-    if "config.server.port: 8080" not in result.stdout:
-        print("FAILED: JSON content not found or not flattened correctly.")
-        print(result.stdout)
+    
+    # With recursive AST/TreeSitter, we might get the full JSON object for the block
+    # Expected: {"server":{"host":"0.0.0.0","port":8080}} or similar structure
+    if '"port":8080' not in result.stdout.replace(" ", ""):
+        print("FAILED: JSON content not found.")
+        print("Expected '\"port\":8080' (ignoring whitespace) in output.")
+        print("Actual Output:", result.stdout)
         sys.exit(1)
     
-    # Search for array flattening
+    # Search for array content
     result = run_command(f"{BINARY_PATH} search 'users[0].name'")
-    if "users[0].name: alice" not in result.stdout:
-        print("FAILED: JSON array content not found.")
+    # Should find alice
+    if 'alice' not in result.stdout:
+        print("FAILED: JSON array content (alice) not found.")
         print(result.stdout)
         sys.exit(1)
     print("JSON Verification Passed")
@@ -70,23 +76,18 @@ def test_search_yaml():
     print("--- Verifying YAML ---")
     # Search for flattened key
     result = run_command(f"{BINARY_PATH} search 'app.database.host'")
-    # YAML parser currently formats generally with ": "
-    if "app.database.host: localhost" not in result.stdout and "app.database.host: String(\"localhost\")" not in result.stdout:
-         # Note: serde_yaml::Value might print as String("...") in debug format if not careful.
-         # My implementation used `format!("{}: {:?}", prefix, value)` which uses Debug fmt.
-         # Value::String Debug fmt includes quotes.
-         # So it likely prints: app.database.host: String("localhost")
-         pass
+    
+    # TreeSitter/Recursive parser preserves structure, it does NOT flatten keys like the old linear parser.
+    # So we should expect to find the content block containing the key.
+    
+    print("YAML Search Result Preview: \n" + result.stdout[:200])
 
-    # Let's check what it actually outputs.
-    # Result should contain the chunk text.
-    print("YAML Search Result Preview:", result.stdout[:200])
-
-    # Loose check for existence
-    if "app.database.host" in result.stdout:
-        print("YAML Key found.")
+    # Check that the content was found
+    if "host: localhost" in result.stdout:
+        print("YAML Content found.")
     else:
-        print("FAILED: YAML key not found.")
+        print("FAILED: YAML content 'host: localhost' not found.")
+        print("Full Output:\n", result.stdout)
         sys.exit(1)
 
     print("YAML Verification Passed")

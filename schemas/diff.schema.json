@@ -1,0 +1,62 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Unified Diff Schema",
+    "type": "object",
+    "properties": {
+        "file": {
+            "type": "string",
+            "description": "Path to the file"
+        },
+        "change_type": {
+            "type": "string",
+            "enum": [
+                "ADDED",
+                "MODIFIED",
+                "DELETED",
+                "RENAMED"
+            ],
+            "description": "Type of change"
+        },
+        "additions": {
+            "type": "integer",
+            "description": "Number of lines added",
+            "default": 0
+        },
+        "deletions": {
+            "type": "integer",
+            "description": "Number of lines deleted",
+            "default": 0
+        },
+        "hunks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "header": {
+                        "type": "string"
+                    },
+                    "lines": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "start_line_old": {
+                        "type": "integer"
+                    },
+                    "start_line_new": {
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "lines"
+                ]
+            }
+        }
+    },
+    "required": [
+        "file",
+        "change_type"
+    ],
+    "additionalProperties": true
+}

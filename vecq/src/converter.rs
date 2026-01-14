@@ -109,6 +109,7 @@ pub struct Schema {
     pub file_type: FileType,
     pub required_fields: Vec<String>,
     pub element_mappings: HashMap<ElementType, String>,
+    pub attribute_definitions: HashMap<ElementType, Vec<String>>,
 }
 
 impl Schema {
@@ -123,6 +124,7 @@ impl Schema {
                 "elements".to_string(),
             ],
             element_mappings: HashMap::new(),
+            attribute_definitions: HashMap::new(),
         }
     }
 
@@ -138,12 +140,23 @@ impl Schema {
         self
     }
 
+    /// Add an attribute definition for an element type
+    pub fn with_attribute_definition(mut self, element_type: ElementType, attribute: String) -> Self {
+        self.attribute_definitions.entry(element_type).or_default().push(attribute);
+        self
+    }
+
     /// Get JSON field name for element type
     pub fn get_element_field(&self, element_type: ElementType) -> String {
         self.element_mappings
             .get(&element_type)
             .cloned()
             .unwrap_or_else(|| element_type.to_string())
+    }
+
+    /// Get attributes for an element type
+    pub fn get_attributes(&self, element_type: ElementType) -> Vec<String> {
+        self.attribute_definitions.get(&element_type).cloned().unwrap_or_default()
     }
 }
 
@@ -175,6 +188,11 @@ impl SchemaRegistry {
             })
     }
 
+    /// Get all registered schemas
+    pub fn list_schemas(&self) -> Vec<&Schema> {
+        self.schemas.values().collect()
+    }
+
     /// Register default schemas for all supported file types
     fn register_default_schemas(&mut self) {
         // Rust schema
@@ -183,11 +201,22 @@ impl SchemaRegistry {
             .with_required_field("structs".to_string())
             .with_required_field("enums".to_string())
             .with_element_mapping(ElementType::Function, "functions".to_string())
+            .with_attribute_definition(ElementType::Function, "signature".to_string())
+            .with_attribute_definition(ElementType::Function, "visibility".to_string())
+            .with_attribute_definition(ElementType::Function, "docstring".to_string())
             .with_element_mapping(ElementType::Struct, "structs".to_string())
+            .with_attribute_definition(ElementType::Struct, "visibility".to_string())
+            .with_attribute_definition(ElementType::Struct, "docstring".to_string())
             .with_element_mapping(ElementType::Enum, "enums".to_string())
+            .with_attribute_definition(ElementType::Enum, "visibility".to_string())
+            .with_attribute_definition(ElementType::Enum, "docstring".to_string())
             .with_element_mapping(ElementType::Trait, "traits".to_string())
+            .with_attribute_definition(ElementType::Trait, "visibility".to_string())
+            .with_attribute_definition(ElementType::Trait, "docstring".to_string())
             .with_element_mapping(ElementType::Implementation, "implementations".to_string())
-            .with_element_mapping(ElementType::Import, "use_statements".to_string());
+            .with_attribute_definition(ElementType::Implementation, "docstring".to_string())
+            .with_element_mapping(ElementType::Import, "use_statements".to_string())
+            .with_attribute_definition(ElementType::Import, "visibility".to_string());
         self.register(rust_schema);
 
         // Python schema
@@ -196,7 +225,10 @@ impl SchemaRegistry {
             .with_required_field("functions".to_string())
             .with_required_field("imports".to_string())
             .with_element_mapping(ElementType::Class, "classes".to_string())
+            .with_attribute_definition(ElementType::Class, "decorators".to_string())
             .with_element_mapping(ElementType::Function, "functions".to_string())
+            .with_attribute_definition(ElementType::Function, "is_async".to_string())
+            .with_attribute_definition(ElementType::Function, "signature".to_string())
             .with_element_mapping(ElementType::Import, "imports".to_string())
             .with_element_mapping(ElementType::Decorator, "decorators".to_string());
         self.register(python_schema);
@@ -207,10 +239,21 @@ impl SchemaRegistry {
             .with_required_field("code_blocks".to_string())
             .with_required_field("links".to_string())
             .with_element_mapping(ElementType::Header, "headers".to_string())
+            .with_attribute_definition(ElementType::Header, "level".to_string())
             .with_element_mapping(ElementType::CodeBlock, "code_blocks".to_string())
+            .with_attribute_definition(ElementType::CodeBlock, "language".to_string())
             .with_element_mapping(ElementType::Link, "links".to_string())
+            .with_attribute_definition(ElementType::Link, "title".to_string())
             .with_element_mapping(ElementType::Table, "tables".to_string())
-            .with_element_mapping(ElementType::List, "lists".to_string());
+            .with_element_mapping(ElementType::List, "lists".to_string())
+            .with_attribute_definition(ElementType::List, "ordered".to_string())
+            .with_element_mapping(ElementType::ListItem, "list_items".to_string())
+            .with_attribute_definition(ElementType::ListItem, "task".to_string())
+            .with_attribute_definition(ElementType::ListItem, "checked".to_string())
+            .with_element_mapping(ElementType::Emphasis, "emphasis".to_string())
+            .with_element_mapping(ElementType::Strong, "strong".to_string())
+            .with_element_mapping(ElementType::Strikethrough, "strikethrough".to_string())
+            .with_element_mapping(ElementType::FootnoteDefinition, "footnotes".to_string());
         self.register(markdown_schema);
 
         // Add schemas for other file types

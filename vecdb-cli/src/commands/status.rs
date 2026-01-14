@@ -16,12 +16,10 @@ use vecq::detection::HybridDetector;
 
 #[derive(Args, Debug)]
 pub struct StatusArgs {
-    /// Output in JSON format
-    #[arg(long)]
-    pub json: bool,
+    // No specific args for status anymore, overrides handled globally
 }
 
-pub async fn run(args: StatusArgs, config: &Config, profile_name: &str) -> anyhow::Result<()> {
+pub async fn run(_args: StatusArgs, config: &Config, profile_name: &str, format: vecdb_common::output::OutputFormat) -> anyhow::Result<()> {
     // 1. Resolve Profile
     let profile = config.get_profile(Some(profile_name))?;
 
@@ -48,7 +46,7 @@ pub async fn run(args: StatusArgs, config: &Config, profile_name: &str) -> anyho
         parser_factory.clone(),
     ).await;
 
-    if args.json {
+    if matches!(format, vecdb_common::output::OutputFormat::Json) {
         use serde_json::json;
         let mut status = json!({
             "profile": profile_name,

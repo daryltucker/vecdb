@@ -92,3 +92,12 @@ For faster incremental builds during development:
 cargo build
 ./target/debug/vecdb --help
 ```
+
+## Packaging & Assets
+
+The project includes icon assets in the `assets/` directory:
+- `assets/vecdb.png`
+- `assets/vecq.png`
+
+**Note**: Rust binaries (ELF) do not embed icons. These assets are provided for external packaging systems (e.g., `.desktop` files, AppImage, or distribution packages) to define the application icon.
+

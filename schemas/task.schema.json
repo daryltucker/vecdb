@@ -1,0 +1,69 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Unified Task Schema",
+    "type": "object",
+    "properties": {
+        "id": {
+            "type": "string",
+            "description": "Unique identifier for the task"
+        },
+        "title": {
+            "type": "string",
+            "description": "Short title or summary of the task"
+        },
+        "status": {
+            "type": "string",
+            "enum": [
+                "TODO",
+                "IN_PROGRESS",
+                "DONE",
+                "BLOCKED",
+                "CANCELLED"
+            ],
+            "description": "Current status of the task"
+        },
+        "priority": {
+            "type": "string",
+            "enum": [
+                "LOW",
+                "MEDIUM",
+                "HIGH",
+                "CRITICAL"
+            ],
+            "default": "MEDIUM",
+            "description": "Priority level"
+        },
+        "assignee": {
+            "type": "string",
+            "description": "User or agent assigned to the task"
+        },
+        "tags": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "description": "Labels or tags"
+        },
+        "description": {
+            "type": "string",
+            "description": "Detailed description in Markdown"
+        },
+        "created_at": {
+            "type": "string",
+            "format": "date-time"
+        },
+        "updated_at": {
+            "type": "string",
+            "format": "date-time"
+        },
+        "due_date": {
+            "type": "string",
+            "format": "date-time"
+        }
+    },
+    "required": [
+        "title",
+        "status"
+    ],
+    "additionalProperties": true
+}

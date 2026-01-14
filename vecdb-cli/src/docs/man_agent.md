@@ -7,6 +7,23 @@
 vecdb is a Vector Database wrapper designed for Agentic interactions.
 It abstracts connection details via Profiles and provides simple CLI tools for Ingestion and Search.
 
+## AGENT CHEATSHEET
+
+### 1. Ingest & Memorize
+**Goal**: Quickly learn a new repository.
+1. `vecdb ingest ./src --collection project_x --respect-gitignore`
+2. `vecdb list` (Verify vectors exist)
+
+### 2. Semantic Search
+**Goal**: Find concepts when keywords fail.
+*   `vecdb search "authentication logic" --collection project_x --json`
+*   `vecdb search "memory leak patterns" --collection project_x --json`
+
+### 3. Optimizing for Accuracy
+**Goal**: Ensure best search performance.
+1. `vecdb config set-quantization project_x binary` (Fastest) OR `scalar` (Balanced)
+2. `vecdb optimize project_x`
+
 ## COMMANDS
 
 ### ingest
@@ -45,6 +62,19 @@ Semantic search against the vector store.
 
 ### list
 List available collections and their statistics.
+Warns if collection size exceeds 1GB, suggesting optimization.
+
+### config
+Manage configuration settings.
+`vecdb config set-quantization [COLLECTION] [scalar|binary|none]`
+- Sets the quantization CONFIGURATION for a collection (persisted to config.toml).
+- Does NOT apply it immediately to existing vectors (use `optimize`).
+
+### optimize
+Trigger background optimization (quantization) for a collection.
+`vecdb optimize [COLLECTION]`
+- Applies the configured quantization setting to the collection in Qdrant.
+- Useful after `config set-quantization` or bulk ingestion.
 
 ### delete
 Delete a collection (requires confirmation).

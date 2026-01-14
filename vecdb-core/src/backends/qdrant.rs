@@ -46,13 +46,12 @@ use async_trait::async_trait;
 use qdrant_client::qdrant::{
     CreateCollection, Distance, PointStruct, SearchPoints, VectorParams, VectorsConfig,
     WithPayloadSelector, PointId, point_id::PointIdOptions, Value,
+    QuantizationConfig, QuantizationConfigDiff, ScalarQuantization, BinaryQuantization, UpdateCollection,
+    quantization_config, quantization_config_diff, 
+    Condition, Filter, FieldCondition, Match, r#match::MatchValue,
 };
 use qdrant_client::qdrant::value::Kind;
 use qdrant_client::Qdrant;
-
-use qdrant_client::qdrant::{
-    Condition, Filter, FieldCondition, Match, r#match::MatchValue,
-};
 
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -65,7 +64,9 @@ impl QdrantBackend {
     /// Create new Qdrant backend connection
     pub fn new(url: &str, api_key: Option<String>) -> Result<Self> {
         // Build client configuration
-        let mut builder = Qdrant::from_url(url);
+        let mut builder = Qdrant::from_url(url)
+            .timeout(std::time::Duration::from_secs(300))
+            .keep_alive_while_idle();
         
         // Disable compatibility check to avoid non-JSON output on stdout/stderr
         // during server initialization in MCP mode.
@@ -121,10 +122,27 @@ impl Backend for QdrantBackend {
         Ok(())
     }
 
-    async fn create_collection(&self, name: &str, vector_size: u64) -> Result<()> {
+    async fn create_collection(&self, name: &str, vector_size: u64, quantization: Option<crate::config::QuantizationType>) -> Result<()> {
         if self.collection_exists(name).await? {
             return Ok(());
         }
+
+        let q_config = match quantization {
+            Some(crate::config::QuantizationType::Scalar) => Some(QuantizationConfig {
+                 quantization: Some(quantization_config::Quantization::Scalar(ScalarQuantization {
+                     r#type: 1, // Int8
+                     quantile: None,
+                     always_ram: Some(true),
+                 })),
+            }),
+            Some(crate::config::QuantizationType::Binary) => Some(QuantizationConfig {
+                 quantization: Some(quantization_config::Quantization::Binary(BinaryQuantization {
+                     always_ram: Some(true),
+                     ..Default::default()
+                 })),
+            }),
+            _ => None,
+        };
 
         self.client
             .create_collection(CreateCollection {
@@ -136,10 +154,42 @@ impl Backend for QdrantBackend {
                         ..Default::default()
                     })),
                 }),
+                quantization_config: q_config,
                 ..Default::default()
             })
             .await?;
 
+        Ok(())
+    }
+
+    async fn update_collection_quantization(&self, name: &str, quantization: crate::config::QuantizationType) -> Result<()> {
+        let q_config = match quantization {
+            crate::config::QuantizationType::Scalar => Some(QuantizationConfigDiff {
+                 quantization: Some(quantization_config_diff::Quantization::Scalar(ScalarQuantization {
+                     r#type: 1, // Int8
+                     quantile: None,
+                     always_ram: Some(true),
+                 })),
+            }),
+            crate::config::QuantizationType::Binary => Some(QuantizationConfigDiff {
+                 quantization: Some(quantization_config_diff::Quantization::Binary(BinaryQuantization {
+                     always_ram: Some(true),
+                     ..Default::default()
+                 })),
+            }),
+            crate::config::QuantizationType::None => {
+                None 
+            },
+        };
+
+        if let Some(config) = q_config {
+             self.client.update_collection(UpdateCollection {
+                 collection_name: name.to_string(),
+                 quantization_config: Some(config),
+                 ..Default::default()
+             }).await?;
+        }
+        
         Ok(())
     }
 
@@ -327,27 +377,39 @@ impl Backend for QdrantBackend {
     async fn get_collection_info(&self, name: &str) -> Result<crate::types::CollectionInfo> {
         let info = self.client.collection_info(name).await?;
         
-        let (vector_count, vector_size) = if let Some(result) = info.result {
+        let (vector_count, vector_size, quantization) = if let Some(result) = info.result {
             let count = result.points_count;
-            let size = result.config.and_then(|c| {
-                c.params.and_then(|p| {
-                    p.vectors_config.and_then(|vc| {
+            let (size, quant) = result.config.and_then(|c| {
+                let s = c.params.and_then(|p| {
+                     p.vectors_config.and_then(|vc| {
                         match vc.config {
                             Some(qdrant_client::qdrant::vectors_config::Config::Params(vp)) => Some(vp.size),
                             _ => None,
                         }
                     })
-                })
-            });
-            (count, size)
+                });
+                
+                let q = c.quantization_config.and_then(|qc| {
+                    qc.quantization.map(|q_enum| match q_enum {
+                        qdrant_client::qdrant::quantization_config::Quantization::Scalar(_) => crate::config::QuantizationType::Scalar,
+                        qdrant_client::qdrant::quantization_config::Quantization::Binary(_) => crate::config::QuantizationType::Binary,
+                        qdrant_client::qdrant::quantization_config::Quantization::Product(_) => crate::config::QuantizationType::None, // Not supported
+                    })
+                });
+
+                Some((s, q))
+            }).unwrap_or((None, None));
+
+            (count, size, quant)
         } else {
-            (None, None)
+            (None, None, None)
         };
 
         Ok(crate::types::CollectionInfo {
             name: name.to_string(),
             vector_count,
             vector_size,
+            quantization,
         })
     }
 

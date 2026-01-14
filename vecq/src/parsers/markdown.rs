@@ -43,6 +43,9 @@ pub fn parse_markdown_document(content: &str) -> ParsedDocument {
      
      let mut options = Options::empty();
      options.insert(Options::ENABLE_TABLES);
+     options.insert(Options::ENABLE_TASKLISTS);
+     options.insert(Options::ENABLE_STRIKETHROUGH);
+     options.insert(Options::ENABLE_FOOTNOTES);
      
      let parser = pulldown_cmark::Parser::new_ext(content, options);
      let events = parser.into_offset_iter();
@@ -66,9 +69,34 @@ pub fn parse_markdown_document(content: &str) -> ParsedDocument {
      let mut list_start = 0;
      let mut list_ordered = false;
      let mut table_start = 0;
+
+     // Inline style tracking
+     // We need stacks because they can nest (e.g. bold inside italic)
+     // BUT, vecq element model is somewhat flat for "find all bold spans".
+     // We'll track the start positions.
+     let mut emphasis_start: Vec<usize> = Vec::new();
+     let mut strong_start: Vec<usize> = Vec::new();
+     let mut strikethrough_start: Vec<usize> = Vec::new();
+     
+     // List Item tracking
+     let mut item_start: Vec<usize> = Vec::new();
+     // We need to track if we saw a task list marker for the *current* item
+     let mut current_item_task_status: Option<bool> = None; 
+     
+     // Footnotes
+     let mut footnote_def_start = 0;
+     let mut footnote_name = String::new();
+
+     // Link state
+     let mut in_link = false;
+     let mut link_start = 0;
+     let mut link_url = String::new();
+     let mut link_title = String::new();
+     let mut link_text = String::new();
      
      for (event, range) in events {
         match event {
+            // --- Structural Blocks ---
             Event::Start(Tag::Heading { level, .. }) => {
                 in_header = true;
                 header_level = match level {
@@ -103,6 +131,9 @@ pub fn parse_markdown_document(content: &str) -> ParsedDocument {
                 let start_line = get_line_number(paragraph_start);
                 let end_line = get_line_number(range.end);
                 
+                // If inside a footnote definition, this paragraph is child content, but we verify top-level
+                // element creation logic.
+                
                 let element = DocumentElement::new(
                     ElementType::Paragraph,
                     None,
@@ -133,12 +164,13 @@ pub fn parse_markdown_document(content: &str) -> ParsedDocument {
                 
                 doc = doc.add_element(element);
             }
+            
+            // --- Lists & Items ---
             Event::Start(Tag::List(first_item)) => {
                 list_start = range.start;
                 list_ordered = first_item.is_some();
             }
             Event::End(TagEnd::List(_)) => {
-
                 let start_line = get_line_number(list_start);
                 let end_line = get_line_number(range.end);
                 
@@ -152,11 +184,41 @@ pub fn parse_markdown_document(content: &str) -> ParsedDocument {
                 
                 doc = doc.add_element(element);
             }
+            Event::Start(Tag::Item) => {
+                item_start.push(range.start);
+                current_item_task_status = None;
+            }
+            Event::End(TagEnd::Item) => {
+                if let Some(start) = item_start.pop() {
+                    let start_line = get_line_number(start);
+                    let end_line = get_line_number(range.end);
+                    
+                    let mut element = DocumentElement::new(
+                        ElementType::ListItem,
+                        None,
+                        content[start..range.end].to_string(),
+                        start_line,
+                        end_line,
+                    );
+                    
+                    if let Some(checked) = current_item_task_status {
+                        element = element
+                            .with_attribute("task".to_string(), true)
+                            .with_attribute("checked".to_string(), checked);
+                    }
+                    
+                    doc = doc.add_element(element);
+                }
+            }
+            Event::TaskListMarker(checked) => {
+                current_item_task_status = Some(checked);
+            }
+            
+            // --- Tables ---
             Event::Start(Tag::Table(_)) => {
                 table_start = range.start;
             }
             Event::End(TagEnd::Table) => {
-
                 let start_line = get_line_number(table_start);
                 let end_line = get_line_number(range.end);
                 
@@ -170,6 +232,8 @@ pub fn parse_markdown_document(content: &str) -> ParsedDocument {
                 
                 doc = doc.add_element(element);
             }
+            
+            // --- Media & Formatting ---
             Event::Start(Tag::Image { dest_url, title, .. }) => {
                 let start_line = get_line_number(range.start);
                 let end_line = get_line_number(range.end);
@@ -184,6 +248,114 @@ pub fn parse_markdown_document(content: &str) -> ParsedDocument {
                 
                 doc = doc.add_element(element);
             }
+             Event::Start(Tag::Link { dest_url, title, .. }) => {
+                in_link = true;
+                link_start = range.start;
+                link_url = dest_url.to_string();
+                link_title = title.to_string();
+                link_text.clear();
+            }
+            Event::End(TagEnd::Link) => {
+                in_link = false;
+                let start_line = get_line_number(link_start);
+                let end_line = get_line_number(range.end);
+                
+                let mut element = DocumentElement::new(
+                    ElementType::Link,
+                    Some(link_text.trim().to_string()),
+                    link_url.clone(), 
+                    start_line,
+                    end_line,
+                );
+
+                if !link_title.is_empty() {
+                    element = element.with_attribute("title".to_string(), link_title.clone());
+                }
+                
+                doc = doc.add_element(element);
+            }
+            
+            // --- Styles: Emphasis, Strong, Strikethrough ---
+            Event::Start(Tag::Emphasis) => {
+                emphasis_start.push(range.start);
+            }
+            Event::End(TagEnd::Emphasis) => {
+                if let Some(start) = emphasis_start.pop() {
+                     let start_line = get_line_number(start);
+                     let end_line = get_line_number(range.end);
+                     let text = content[start..range.end].to_string();
+                     // strip markers * or _ roughly? content gives full range including markers
+                     // Usually we want the content inside? 
+                     // pulldown_cmark range includes markers.
+                     // The text inside would be valuable but raw content is safer.
+                     
+                     let element = DocumentElement::new(
+                        ElementType::Emphasis,
+                        None,
+                        text,
+                        start_line,
+                        end_line,
+                    );
+                    doc = doc.add_element(element);
+                }
+            }
+            Event::Start(Tag::Strong) => {
+                strong_start.push(range.start);
+            }
+            Event::End(TagEnd::Strong) => {
+                if let Some(start) = strong_start.pop() {
+                     let start_line = get_line_number(start);
+                     let end_line = get_line_number(range.end);
+                     
+                     let element = DocumentElement::new(
+                        ElementType::Strong,
+                        None,
+                        content[start..range.end].to_string(),
+                        start_line,
+                        end_line,
+                    );
+                    doc = doc.add_element(element);
+                }
+            }
+             Event::Start(Tag::Strikethrough) => {
+                strikethrough_start.push(range.start);
+            }
+            Event::End(TagEnd::Strikethrough) => {
+                if let Some(start) = strikethrough_start.pop() {
+                     let start_line = get_line_number(start);
+                     let end_line = get_line_number(range.end);
+                     
+                     let element = DocumentElement::new(
+                        ElementType::Strikethrough,
+                        None,
+                        content[start..range.end].to_string(),
+                        start_line,
+                        end_line,
+                    );
+                    doc = doc.add_element(element);
+                }
+            }
+            
+            // --- Footnotes ---
+            Event::Start(Tag::FootnoteDefinition(name)) => {
+                footnote_def_start = range.start;
+                footnote_name = name.to_string();
+            }
+            Event::End(TagEnd::FootnoteDefinition) => {
+                let start_line = get_line_number(footnote_def_start);
+                let end_line = get_line_number(range.end);
+                
+                let element = DocumentElement::new(
+                    ElementType::FootnoteDefinition,
+                    Some(footnote_name.clone()),
+                    content[footnote_def_start..range.end].to_string(),
+                    start_line,
+                    end_line,
+                );
+                doc = doc.add_element(element);
+            }
+            
+            // --- Misc ---
             Event::Rule => {
                 let start_line = get_line_number(range.start);
                 let end_line = get_line_number(range.end);
@@ -199,12 +371,44 @@ pub fn parse_markdown_document(content: &str) -> ParsedDocument {
                 doc = doc.add_element(element);
             }
             Event::Text(text) => {
+                if in_link {
+                    link_text.push_str(&text);
+                }
+                
                 if in_header {
                     header_text.push_str(&text);
                 } else if in_paragraph {
                     paragraph_text.push_str(&text);
                 } else if in_blockquote {
                     blockquote_text.push_str(&text);
+                }
+            }
+            Event::Code(text) => {
+                let code_text = text.to_string(); 
+                
+                if in_link {
+                    link_text.push_str(&code_text);
+                }
+                
+                if in_header {
+                    header_text.push_str(&code_text);
+                } else if in_paragraph {
+                    paragraph_text.push_str(&code_text);
+                } else if in_blockquote {
+                    blockquote_text.push_str(&code_text);
+                }
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                let separator = " ";
+                if in_link {
+                    link_text.push_str(separator);
+                }
+                if in_header {
+                    header_text.push_str(separator);
+                } else if in_paragraph {
+                    paragraph_text.push_str(separator);
+                } else if in_blockquote {
+                    blockquote_text.push_str(separator);
                 }
             }
             Event::Start(Tag::CodeBlock(kind)) => {
@@ -227,20 +431,6 @@ pub fn parse_markdown_document(content: &str) -> ParsedDocument {
                  ).with_attribute("language".to_string(), codeblock_lang.clone());
                  
                  doc = doc.add_element(element);
-            }
-            Event::Start(Tag::Link { dest_url, title, .. }) => {
-                let start_line = get_line_number(range.start);
-                let end_line = get_line_number(range.end);
-                
-                let element = DocumentElement::new(
-                    ElementType::Link,
-                    Some(title.to_string()),
-                    dest_url.to_string(),
-                    start_line,
-                    end_line,
-                );
-                
-                doc = doc.add_element(element);
             }
             _ => {}
         }

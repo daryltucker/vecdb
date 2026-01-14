@@ -18,7 +18,26 @@ These functions are always available in every query:
 *   `select(f)`: Standard jq select function.
 *   `map(f)`: Standard jq map function.
 
-## Available Macro Libraries
+## Built-in Standard Library
+
+These modules are compiled into the `vecq` binary and are always available. You do not need `-L` or `include` to use them.
+
+### 1. Unified Schema Layer
+Canonical normalizers for common data types.
+*   **Logs** (`log.jq`): `nginx_to_log`, `journald_to_log`
+*   **Tasks** (`task.jq`): `github_to_task`, `todo_to_task`
+*   **Artifacts** (`artifact.jq`): `cargo_to_artifact`
+*   **Diffs** (`diff.jq`): `git_status_to_diff`
+*   **Auto**: `auto_normalize` (Heuristic detection)
+
+> **Note**: For more details on the schemas and their fields, see [schemas/README.md](../../schemas/README.md).
+
+### 2. Documentation (`doc.jq`)
+Generates Markdown documentation from AST.
+*   `markdown`: Main entry point.
+*   `_clean_doc`: Helper.
+
+## Available Macro Libraries (Examples)
 
 The following macro libraries are provided in the project root `examples/functions/` directory and can be used with `-L`.
 
@@ -41,21 +60,15 @@ Normalizer for OpenWebUI exports. Designed to be piped into `chat_format`.
 *   `webui_to_chat`: Transform OpenWebUI export array to canonical chat schema.
 *   `webui_conversation_to_chat`: Helper for single conversation objects.
 
-### 4. Standard Documentation (`doc.jq`)
-Standard library for generating Markdown documentation from parsed AST.
-*   `markdown`: Main entry point. Generates formatted Markdown from code structure.
-*   `_clean_doc`: Helper to clean up docstrings.
-*   `_format_item`: Format individual AST nodes.
-
-### 5. GitHub Issues (`gh_issue.jq`)
+### 4. GitHub Issues (`gh_issue.jq`)
 Transform GitHub API JSON responses into clean Markdown reports.
 *   `gh_issue`: Renders a single issue with title, metadata matches, and body.
 
-### 6. NPM Audit (`npm_audit.jq`)
+### 5. NPM Audit (`npm_audit.jq`)
 Turn `npm audit --json` into a developer-friendly security report.
 *   `audit_summary`: Table of High/Critical vulnerabilities with fix suggestions.
 
-### 7. VS Code Setup (`vscode_ext.jq`)
+### 6. VS Code Setup (`vscode_ext.jq`)
 Generate setup scripts from project configuration JSON.
 *   `vscode_install_script`: Converts `.vscode/extensions.json` into a bash script to install all recommended extensions.
 

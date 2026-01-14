@@ -32,70 +32,178 @@ impl CudaParser {
         Self { _config: config }
     }
 
-    fn extract_kernels(&self, content: &str, tree: &tree_sitter::Tree) -> VecqResult<Vec<DocumentElement>> {
-        let mut kernels = Vec::new();
-        self.extract_kernels_recursive(content, tree.root_node(), &mut kernels);
-        Ok(kernels)
-    }
-
-    fn extract_kernels_recursive(&self, content: &str, node: tree_sitter::Node, kernels: &mut Vec<DocumentElement>) {
+    fn process_nodes(
+        &self,
+        node: tree_sitter::Node,
+        content: &str,
+        source: &[u8],
+    ) -> Vec<DocumentElement> {
+        let mut elements = Vec::new();
         let mut cursor = node.walk();
 
         for child in node.children(&mut cursor) {
-            // Look for function definitions and check if they have CUDA qualifiers
-            if child.kind() == "function_definition" || child.kind() == "declaration" {
-                let text = child.utf8_text(content.as_bytes()).unwrap_or("");
-                
-                // Check for CUDA qualifiers
-                let is_global = text.contains("__global__");
-                let is_device = text.contains("__device__");
-                let is_host = text.contains("__host__");
+            let kind = child.kind();
+            
+            match kind {
+                "namespace_definition" => {
+                   if let Some(ns) = self.parse_namespace(content, child) {
+                       let mut children = Vec::new();
+                       if let Some(body) = child.child_by_field_name("body") {
+                           children = self.process_nodes(body, content, source);
+                       }
+                       elements.push(ns.with_children(children));
+                   }
+                }
+                "function_definition" => {
+                    if let Some(func) = self.parse_cuda_function(content, child) {
+                        elements.push(func);
+                    }
+                }
+                "class_specifier" | "struct_specifier" | "union_specifier" | "enum_specifier" => {
+                    let element_type = match kind {
+                         "class_specifier" => ElementType::Class,
+                         "struct_specifier" => ElementType::Struct,
+                         "union_specifier" => ElementType::Union,
+                         "enum_specifier" => ElementType::Enum,
+                         _ => ElementType::Struct,
+                    };
+                    
+                    let effective_type = match element_type {
+                         ElementType::Class | ElementType::Struct | ElementType::Union | ElementType::Enum => element_type,
+                         _ => ElementType::Struct,
+                    };
 
-                if is_global || is_device {
-                    if let Some(kernel) = self.parse_cuda_function(content, child, is_global, is_device, is_host) {
-                        kernels.push(kernel);
+                    let mut element = self.parse_complex_type(content, child, effective_type);
+                    
+                    if let Some(body) = child.child_by_field_name("body") {
+                        let children = self.process_nodes(body, content, source);
+                        element = element.with_children(children);
+                    }
+                    elements.push(element);
+                }
+                 "preproc_include" => {
+                     if let Some(include) = self.parse_include(content, child) {
+                         elements.push(include);
+                     }
+                }
+                "declaration" => {
+                     // Fields, Variables, or Function Declarations (prototypes)
+                     // If we are in a struct/class, these are fields.
+                     // If we are global, these are variables or prototypes.
+                     // For hierarchy, we care about fields inside structs.
+                     if let Some(field) = self.parse_field(content, child) {
+                         elements.push(field);
+                     }
+                }
+                 "template_declaration" => {
+                    // Handle templates by processing the declaration inside
+                     // Just recurse immediate children
+                     // A template_declaration usually has a child like function_definition or class_specifier
+                     // We can process those.
+                      // Elements inside template might duplicate if we just call process_nodes on children?
+                      // No, template_declaration wraps them.
+                      // We should likely extract attributes from template_declaration (template params) and attach to child.
+                      // For now, let's just descend.
+                      // Actually, if we descend, we might lose the "Template" context, but we get the function/class.
+                      // That is acceptable for now.
+                      // We can assume the child will be picked up.
+                      // Wait, if I call process_nodes(child, ...), it iterates children of child.
+                      // template_declaration structure: `template <...> declaration`.
+                      // The declaration child (e.g. function_definition) is what we want.
+                      // But `process_nodes` iterates children of the node passed.
+                      // So if I pass `child` (template_decl), `process_nodes` iterates its children.
+                      // One child is `function_definition`. It will match "function_definition" case.
+                      // So elements.extend(self.process_nodes(child, ...)) works.
+                      elements.extend(self.process_nodes(child, content, source));
+                }
+                _ => {
+                    if kind == "linkage_specification" {
+                        if let Some(body) = child.child_by_field_name("body") {
+                             elements.extend(self.process_nodes(body, content, source));
+                        }
                     }
                 }
             }
-            
-            // Recurse into namespaces
-            if child.kind() == "namespace_definition" {
-                self.extract_kernels_recursive(content, child, kernels);
-            }
         }
+        
+        elements
     }
 
-    fn parse_cuda_function(&self, content: &str, node: tree_sitter::Node, is_global: bool, is_device: bool, is_host: bool) -> Option<DocumentElement> {
-        let mut name = String::new();
-        let mut cursor = node.walk();
+    fn parse_namespace(&self, content: &str, node: tree_sitter::Node) -> Option<DocumentElement> {
+         let mut name = None;
+         let mut cursor = node.walk();
+         
+         for child in node.children(&mut cursor) {
+             if child.kind() == "identifier" || child.kind() == "namespace_identifier" {
+                 name = Some(child.utf8_text(content.as_bytes()).unwrap_or("").to_string());
+             }
+         }
+         
+         Some(DocumentElement::new(
+             ElementType::Namespace,
+             name,
+             node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
+             node.start_position().row + 1,
+             node.end_position().row + 1,
+         ).set_attributes(ElementAttributes::CFamily(CFamilyAttributes {
+             other: HashMap::new(),
+         })))
+    }
 
-        // Find the function name
+    fn parse_cuda_function(&self, content: &str, node: tree_sitter::Node) -> Option<DocumentElement> {
+        let mut name = String::new();
+        
+        // Find name
+        let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "function_declarator" {
                 let mut decl_cursor = child.walk();
                 for decl_child in child.children(&mut decl_cursor) {
-                    if decl_child.kind() == "identifier" {
+                    if decl_child.kind() == "identifier" || decl_child.kind() == "field_identifier" {
                         name = decl_child.utf8_text(content.as_bytes()).unwrap_or("").to_string();
-                        break;
+                    } else if decl_child.kind() == "qualified_identifier" {
+                         name = decl_child.utf8_text(content.as_bytes()).unwrap_or("").to_string();
                     }
                 }
             }
         }
-
+        
+        if name.is_empty() {
+             // Fallback for some definitions
+             if let Some(declarator) = node.child_by_field_name("declarator") {
+                 let text = declarator.utf8_text(content.as_bytes()).unwrap_or("");
+                 // rough extraction if complex declarator
+                 name = text.split('(').next().unwrap_or("").trim().to_string(); 
+                 // This might include * or &
+                 if let Some(idx) = name.rfind(|c: char| !c.is_alphanumeric() && c != '_') {
+                     name = name[idx+1..].to_string();
+                 }
+             }
+        }
+        
         if name.is_empty() {
             return None;
         }
 
+        let full_text = node.utf8_text(content.as_bytes()).unwrap_or("");
+        let is_global = full_text.contains("__global__");
+        let is_device = full_text.contains("__device__");
+        let is_host = full_text.contains("__host__"); // explicit host or implicit?
+        // Implicit host if neither global or device? No, __host__ can be explicit.
+        // If neither, it is standard Function.
+        
         let element_type = if is_global {
             ElementType::Kernel
-        } else {
+        } else if is_device {
             ElementType::DeviceFunction
+        } else {
+            ElementType::Function
         };
 
-        let element = DocumentElement::new(
+        Some(DocumentElement::new(
             element_type,
             Some(name),
-            node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
+            full_text.to_string(),
             node.start_position().row + 1,
             node.end_position().row + 1,
         )
@@ -107,99 +215,82 @@ impl CudaParser {
                 map.insert("is_host".to_string(), json!(is_host));
                 map
             }
-        }));
-
-        Some(element)
+        })))
     }
-
-    fn extract_includes(&self, content: &str, tree: &tree_sitter::Tree) -> VecqResult<Vec<DocumentElement>> {
-        let mut includes = Vec::new();
-        let root = tree.root_node();
-        let mut cursor = root.walk();
-
-        for child in root.children(&mut cursor) {
-            if child.kind() == "preproc_include" {
-                let text = child.utf8_text(content.as_bytes()).unwrap_or("");
-                let path = text.trim_start_matches("#include")
-                    .trim()
-                    .trim_matches(|c| c == '<' || c == '>' || c == '"');
-
-                let is_cuda = path.contains("cuda") || path.ends_with(".cuh");
-
-                let element = DocumentElement::new(
-                    ElementType::Import,
-                    Some(path.to_string()),
-                    text.to_string(),
-                    child.start_position().row + 1,
-                    child.end_position().row + 1,
-                )
-                .set_attributes(ElementAttributes::CFamily(CFamilyAttributes {
-                    other: {
-                        let mut map = HashMap::new();
-                        map.insert("is_cuda".to_string(), json!(is_cuda));
-                        map
-                    }
-                }));
-                
-                includes.push(element);
-            }
-        }
-
-        Ok(includes)
-    }
-
-    fn extract_regular_functions(&self, content: &str, tree: &tree_sitter::Tree) -> VecqResult<Vec<DocumentElement>> {
-        let mut functions = Vec::new();
-        let root = tree.root_node();
-        let mut cursor = root.walk();
-
-        for child in root.children(&mut cursor) {
-            if child.kind() == "function_definition" {
-                let text = child.utf8_text(content.as_bytes()).unwrap_or("");
-                
-                // Skip CUDA-qualified functions (they're extracted separately)
-                if text.contains("__global__") || text.contains("__device__") {
-                    continue;
-                }
-
-                if let Some(func) = self.parse_function(content, child) {
-                    functions.push(func);
-                }
-            }
-        }
-
-        Ok(functions)
-    }
-
-    fn parse_function(&self, content: &str, node: tree_sitter::Node) -> Option<DocumentElement> {
-        let mut name = String::new();
+    
+    fn parse_complex_type(&self, content: &str, node: tree_sitter::Node, element_type: ElementType) -> DocumentElement {
+        let mut name: Option<String> = None;
         let mut cursor = node.walk();
-
+        
         for child in node.children(&mut cursor) {
-            if child.kind() == "function_declarator" {
-                let mut decl_cursor = child.walk();
-                for decl_child in child.children(&mut decl_cursor) {
-                    if decl_child.kind() == "identifier" {
-                        name = decl_child.utf8_text(content.as_bytes()).unwrap_or("").to_string();
-                        break;
-                    }
-                }
-            }
+             if child.kind() == "type_identifier" || child.kind() == "identifier" {
+                  name = Some(child.utf8_text(content.as_bytes()).unwrap_or("").to_string());
+                  break;
+             }
         }
 
-        if name.is_empty() {
-            return None;
-        }
-
-        Some(DocumentElement::new(
-            ElementType::Function,
-            Some(name),
+        DocumentElement::new(
+            element_type,
+            name,
             node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
             node.start_position().row + 1,
             node.end_position().row + 1,
         ).set_attributes(ElementAttributes::CFamily(CFamilyAttributes {
             other: HashMap::new(),
+        }))
+    }
+    
+    fn parse_include(&self, content: &str, node: tree_sitter::Node) -> Option<DocumentElement> {
+        let text = node.utf8_text(content.as_bytes()).unwrap_or("");
+        let path = text.trim_start_matches("#include")
+            .trim()
+            .trim_matches(|c| c == '<' || c == '>' || c == '"');
+        let is_cuda = path.contains("cuda") || path.ends_with(".cuh") || path.ends_with(".cu");
+
+        Some(DocumentElement::new(
+            ElementType::Import,
+            Some(path.to_string()),
+            text.to_string(),
+            node.start_position().row + 1,
+            node.end_position().row + 1,
+        ).set_attributes(ElementAttributes::CFamily(CFamilyAttributes {
+            other: {
+                let mut map = HashMap::new();
+                map.insert("is_cuda".to_string(), json!(is_cuda));
+                map
+            }
         })))
+    }
+    
+    fn parse_field(&self, content: &str, node: tree_sitter::Node) -> Option<DocumentElement> {
+         let mut name = None;
+         let mut cursor = node.walk();
+        
+        for child in node.children(&mut cursor) {
+             if child.kind() == "init_declarator" || child.kind() == "field_declaration" {
+                  let mut d_cursor = child.walk();
+                   for d_child in child.children(&mut d_cursor) {
+                        if d_child.kind() == "identifier" || d_child.kind() == "field_identifier" {
+                            name = Some(d_child.utf8_text(content.as_bytes()).unwrap_or("").to_string());
+                            break;
+                        }
+                   }
+             }
+        }
+        
+        if let Some(n) = name {
+            Some(DocumentElement::new(
+                ElementType::Variable,
+                Some(n),
+                node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
+                node.start_position().row + 1,
+                node.end_position().row + 1,
+            ).set_attributes(ElementAttributes::CFamily(CFamilyAttributes {
+                other: HashMap::new(),
+            })))
+        } else {
+            None
+        }
     }
 }
 
@@ -249,14 +340,7 @@ impl Parser for CudaParser {
                 source: None,
             })?;
 
-        let kernels = self.extract_kernels(content, &tree)?;
-        let functions = self.extract_regular_functions(content, &tree)?;
-        let includes = self.extract_includes(content, &tree)?;
-
-        let mut elements = Vec::new();
-        elements.extend(kernels);
-        elements.extend(functions);
-        elements.extend(includes);
+        let elements = self.process_nodes(tree.root_node(), content, content.as_bytes());
 
         let mut doc = ParsedDocument::new(
             DocumentMetadata::new(PathBuf::from("file.cu"), content.len() as u64)
@@ -268,6 +352,8 @@ impl Parser for CudaParser {
         Ok(doc)
     }
 }
+
+
 
 #[cfg(test)]
 mod tests {

@@ -458,7 +458,7 @@ pub async fn handle_request(core: &Arc<Core>, config: &Config, req: &JsonRpcRequ
 
                 // Resolve collection using profile argument (if specified) or server default
                 let profile_name = args.profile.as_deref().unwrap_or(active_profile_name);
-                let profile = config.get_profile(Some(profile_name)).map_err(|e| JsonRpcError {
+                let profile = config.resolve_profile(Some(profile_name), args.collection.as_deref()).map_err(|e| JsonRpcError {
                     code: -32000,
                     message: format!("Profile '{}' not found: {}", profile_name, e),
                     data: None,
@@ -483,7 +483,8 @@ pub async fn handle_request(core: &Arc<Core>, config: &Config, req: &JsonRpcRequ
                     false, 
                     None, 
                     args.concurrency, 
-                    args.gpu_concurrency
+                    args.gpu_concurrency,
+                    profile.quantization.clone()
                 ).await.map_err(|e| JsonRpcError {
                     code: -32000,
                     message: e.to_string(),
@@ -518,7 +519,7 @@ pub async fn handle_request(core: &Arc<Core>, config: &Config, req: &JsonRpcRequ
 
                  // Resolve collection using profile argument (if specified) or server default
                  let profile_name = args.profile.as_deref().unwrap_or(active_profile_name);
-                 let profile = config.get_profile(Some(profile_name)).map_err(|e| JsonRpcError {
+                 let profile = config.resolve_profile(Some(profile_name), args.collection.as_deref()).map_err(|e| JsonRpcError {
                      code: -32000,
                      message: format!("Profile '{}' not found: {}", profile_name, e),
                      data: None,
@@ -527,7 +528,7 @@ pub async fn handle_request(core: &Arc<Core>, config: &Config, req: &JsonRpcRequ
                  // Resolve final collection: explicit > profile default
                  let collection = args.collection.as_deref().unwrap_or(&profile.default_collection_name);
 
-                  core.ingest_history(&args.repo_path, &args.git_ref, collection, 512).await.map_err(|e| JsonRpcError {
+                  core.ingest_history(&args.repo_path, &args.git_ref, collection, 512, profile.quantization.clone()).await.map_err(|e| JsonRpcError {
                     code: -32000,
                     message: e.to_string(),
                     data: None,
@@ -587,12 +588,11 @@ pub async fn handle_request(core: &Arc<Core>, config: &Config, req: &JsonRpcRequ
                       })?;
 
                       match vecq::query_json(&json, &args.query) {
-                          Ok(res) => {
-                               if let Some(arr) = res.as_array() {
-                                   arr.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\n")
-                               } else {
-                                   res.to_string()
-                               }
+                          Ok(results) => {
+                               results.iter()
+                                   .map(|v| v.as_str().unwrap_or(&v.to_string()).to_string())
+                                   .collect::<Vec<_>>()
+                                   .join("\n")
                           },
                           Err(e) => return Err(JsonRpcError {
                               code: -32000,

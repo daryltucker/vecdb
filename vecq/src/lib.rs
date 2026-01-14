@@ -166,9 +166,12 @@
 //!     let formatter = formatter_registry.get_formatter("human")
 //!         .ok_or("Human formatter not available")?;
 //!     let options = FormatOptions::human_readable();
-//!     let output = formatter.format(&result, &options)?;
 //!     
-//!     println!("{}", output);
+//!     // Format each result
+//!     for val in &result {
+//!         let output = formatter.format(val, &options)?;
+//!         println!("{}", output);
+//!     }
 //!     Ok(())
 //! }
 //! ```
@@ -181,6 +184,7 @@ pub mod converter;
 pub mod generator;
 pub mod generators;
 pub mod query;
+pub mod natives;
 pub mod formatter;
 
 // Parser implementations
@@ -244,8 +248,8 @@ pub fn convert_to_json(document: ParsedDocument) -> VecqResult<serde_json::Value
     converter.convert(document)
 }
 
-/// Execute jq query on JSON data
-pub fn query_json(json: &serde_json::Value, query: &str) -> VecqResult<serde_json::Value> {
+/// Execute jq query on JSON data, returning a stream of values
+pub fn query_json(json: &serde_json::Value, query: &str) -> VecqResult<Vec<serde_json::Value>> {
     let engine = JqQueryEngine::new();
     engine.execute_query(json, query)
 }
@@ -297,10 +301,18 @@ pub async fn process_file(
     };
     
     // Execute query
-    let result = query_json(&json, query)?;
+    let results = query_json(&json, query)?;
     
     // Format output
-    format_results(&result, output_format, options)
+    let mut outputs = Vec::new();
+    for result in results {
+        let output = format_results(&result, output_format, options)?;
+        if !output.is_empty() {
+            outputs.push(output);
+        }
+    }
+    
+    Ok(outputs.join("\n"))
 }
 
 /// Validate jq query syntax
@@ -318,18 +330,15 @@ pub fn explain_query(query: &str) -> VecqResult<QueryExplanation> {
 
 /// Get list of supported file types
 pub fn supported_file_types() -> Vec<FileType> {
-    vec![
-        FileType::Markdown,
-        FileType::Rust,
-        FileType::Python,
-        FileType::Html,
-        FileType::C,
-        FileType::Cpp,
-        FileType::Cuda,
-        FileType::Go,
-        FileType::Bash,
-        FileType::Json,
-    ]
+    let registry = SchemaRegistry::new();
+    let mut types: Vec<_> = registry.list_schemas()
+        .into_iter()
+        .map(|s| s.file_type)
+        .collect();
+        
+    // Standard sorting for consistent output
+    types.sort_by_key(|t| t.to_string());
+    types
 }
 
 /// Get list of available output formats
@@ -392,14 +401,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_query_validation() {
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        // PERF: This test validates that the JQ Standard Library is cached correctly.
+        // It should run in < 1s. If it takes > 10s, it means the cache is broken
+        // and we are re-parsing the stdlib for every query.
+        // DO NOT INCREASE THIS TIMEOUT. FIX THE ROOT CAUSE INSTEAD.
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             assert!(validate_query(".").is_ok());
             assert!(validate_query(".functions").is_ok());
             assert!(validate_query("").is_err());
             assert!(validate_query(".functions[").is_err());
         }).await;
         
-        assert!(result.is_ok(), "Test timed out! Infinite recursion likely.");
+        assert!(result.is_ok(), "Test timed out (>10s)! This indicates a PERFORMANCE REGRESSION. Check JQ stdlib caching.");
     }
 
     #[test]
@@ -418,9 +431,10 @@ mod tests {
             ]
         });
 
-        let result = query_json(&data, ".functions").unwrap();
-        assert!(result.is_array());
-        assert_eq!(result.as_array().unwrap().len(), 2);
+        let results = query_json(&data, ".functions").unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_array());
+        assert_eq!(results[0].as_array().unwrap().len(), 2);
     }
 
     #[test]

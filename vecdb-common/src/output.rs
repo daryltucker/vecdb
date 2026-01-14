@@ -33,15 +33,32 @@ use std::sync::LazyLock;
 /// Global output configuration, detected once at startup.
 pub static OUTPUT: LazyLock<OutputContext> = LazyLock::new(OutputContext::detect);
 
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum OutputFormat {
+    Json,
+    Text,
+    Markdown,
+    Grep,
+}
+
+impl Default for OutputFormat {
+    fn default() -> Self {
+        Self::Json
+    }
+}
+
 /// Runtime output context for TTY-aware formatting.
 /// 
 /// # Example
 /// ```
-/// use vecdb_common::OutputContext;
+/// use vecdb_common::{OutputContext, OutputFormat};
 /// 
 /// let ctx = OutputContext::detect();
-/// if ctx.is_interactive {
-///     println!("Hello, human!");
+/// match ctx.resolve_format() {
+///     OutputFormat::Json => println!("{{}}"),
+///     OutputFormat::Markdown => println!("# Hello"),
+///     _ => {},
 /// }
 /// ```
 #[derive(Debug, Clone)]
@@ -52,6 +69,9 @@ pub struct OutputContext {
     
     /// Explicit override for colors (None = auto-detect based on is_interactive)
     pub color_override: Option<bool>,
+
+    /// Explicit override for output format
+    pub format_override: Option<OutputFormat>,
 }
 
 impl OutputContext {
@@ -77,6 +97,41 @@ impl OutputContext {
             // Color detection is trickier. If we are printing to stdout, we follow stdout.
             // But usually, we want to know if colors are supported AT ALL in the current session.
             color_override: if no_color { Some(false) } else if !stdout_tty { Some(false) } else { None },
+            format_override: None,
+        }
+    }
+
+    /// Resolve the effective output format based on overrides and environment.
+    /// 
+    /// Logic:
+    /// 1. If overrides set, use it.
+    /// 2. If TTY (interactive), default to Markdown (Human Readable).
+    /// 3. If Pipe/File (non-interactive), default to JSON (Machine Readable).
+    pub fn resolve_format(&self) -> OutputFormat {
+        if let Some(fmt) = self.format_override {
+            return fmt;
+        }
+
+        // TTY = Markdown, Pipe = JSON
+        // Note: We use is_interactive check on STDOUT for this decision usually?
+        // Wait, is_interactive field in struct is based on STDERR (for progress bars).
+        // For output format (Data), we care about STDOUT.
+        // But `OutputContext` struct only has `is_interactive` which is stderr-based.
+        // We might want to re-eval stdout tty here or store it?
+        // Actually, let's look at `detect`:
+        // stdout_tty local var used for color.
+        
+        // Let's rely on standard practice: 
+        // If we are "interactive" (stderr is tty), we assume human is watching.
+        // But wait, `vecdb list | cat` -> stderr is TTY, stdout is Pipe.
+        // We want JSON in that case.
+        // So we need to correctly store stdout status or re-check.
+        // Re-checking is cheap.
+        
+        if std::io::stdout().is_terminal() {
+             OutputFormat::Markdown
+        } else {
+             OutputFormat::Json
         }
     }
     
@@ -104,6 +159,7 @@ impl OutputContext {
         Self {
             is_interactive: false,
             color_override: Some(false),
+            format_override: None,
         }
     }
     
@@ -121,6 +177,7 @@ impl OutputContext {
         Self {
             is_interactive: true,
             color_override: None,
+            format_override: None,
         }
     }
     
@@ -129,7 +186,14 @@ impl OutputContext {
         Self {
             is_interactive: use_color,
             color_override: Some(use_color),
+            format_override: None,
         }
+    }
+
+    /// Set explicit format override
+    pub fn with_format(mut self, format: OutputFormat) -> Self {
+        self.format_override = Some(format);
+        self
     }
 }
 
@@ -182,5 +246,14 @@ mod tests {
         let ctx = OutputContext::default();
         // Can't assert is_interactive value, but we can check it doesn't panic
         let _ = ctx.use_color();
+    }
+    
+    #[test]
+    fn test_resolve_format_overrides() {
+        let ctx = OutputContext::quiet().with_format(OutputFormat::Json);
+        assert_eq!(ctx.resolve_format(), OutputFormat::Json);
+        
+        let ctx = OutputContext::quiet().with_format(OutputFormat::Text);
+        assert_eq!(ctx.resolve_format(), OutputFormat::Text);
     }
 }

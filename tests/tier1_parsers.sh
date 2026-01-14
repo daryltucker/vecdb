@@ -56,7 +56,7 @@ for ext in "${!EXT_TYPES[@]}"; do
     
     # Extract file_type from JSON output (robustly)
     if command -v python3 &> /dev/null; then
-        detected_type=$(echo "$output" | python3 -c "import sys, json; print(json.load(sys.stdin)['metadata']['file_type'])")
+        detected_type=$(echo "$output" | python3 -c "import sys, json; d=json.load(sys.stdin); print('Text' if isinstance(d, str) else d.get('metadata', {}).get('file_type', 'Unknown'))")
     else
         # Fallback: look for file_type inside metadata block
         detected_type=$(echo "$output" | grep -A 20 '"metadata":' | grep '"file_type":' | head -1 | cut -d'"' -f4)

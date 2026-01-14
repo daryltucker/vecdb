@@ -179,6 +179,7 @@ impl Core {
         metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
         max_concurrent_requests: Option<usize>,
         gpu_batch_size: Option<usize>,
+        quantization: Option<config::QuantizationType>,
     ) -> Result<()> {
         let options = IngestionOptions {
             path: path.to_string(),
@@ -197,6 +198,7 @@ impl Core {
             path_rules: self.path_rules.clone(),
             max_concurrent_requests: max_concurrent_requests.unwrap_or(self.max_concurrent_requests),
             gpu_batch_size: gpu_batch_size.unwrap_or(self.gpu_batch_size),
+            quantization,
         };
         
         ingestion::ingest_path(&self.backend, &self.embedder, &self.file_detector, &self.parser_factory, options).await
@@ -234,8 +236,20 @@ impl Core {
         chunk_size: Option<usize>,
         max_chunk_size: Option<usize>,
         chunk_overlap: Option<usize>,
+        quantization: Option<config::QuantizationType>,
     ) -> Result<()> {
-        ingestion::ingest_memory(&self.backend, &self.embedder, content, metadata, collection, chunk_size, max_chunk_size, chunk_overlap).await
+        // We need to update ingestion::ingest_memory signature too or IngestionOptions just needs it set?
+        // ingestion::ingest_memory creates its own IngestionOptions. I need to update it to accept quantization arg effectively or pass it.
+        // Wait, ingest_memory signature in lib.rs calls ingestion::ingest_memory.
+        // I need to update ingestion::ingest_memory signature in `ingestion/mod.rs` first? 
+        // I already updated mod.rs? No, I updated `ingest_path` call usage, but `ingest_memory` function signature in `mod.rs` was likely NOT updated to take the arg, only its *internal* struct init.
+        // Checking my memory/logs on Step 123...
+        // I updated `backend.create_collection` call in `ingest_memory`, but did I update the function arguments? No.
+        // I updated `options` struct creation to `quantization: None`.
+        // So I need to update `ingestion::ingest_memory` signature in `mod.rs` as well.
+        // Let's assume I will do that in next step or use multi_replace here if possible? No, different file.
+        // I will update this file to assume `ingestion::ingest_memory` takes it.
+        ingestion::ingest_memory(&self.backend, &self.embedder, content, metadata, collection, chunk_size, max_chunk_size, chunk_overlap, quantization).await
     }
 
     /// Generate embeddings for a list of texts (Tool Access)
@@ -244,8 +258,9 @@ impl Core {
     }
 
     /// Ingest a historic version of a repository (Time Travel)
-    pub async fn ingest_history(&self, path: &str, git_ref: &str, collection: &str, chunk_size: usize) -> Result<()> {
-        crate::history::ingest_history(&self.backend, &self.embedder, &self.file_detector, &self.parser_factory, path, git_ref, collection, chunk_size).await
+    pub async fn ingest_history(&self, path: &str, git_ref: &str, collection: &str, chunk_size: usize, quantization: Option<config::QuantizationType>) -> Result<()> {
+        // history::ingest_history also needs update
+        crate::history::ingest_history(&self.backend, &self.embedder, &self.file_detector, &self.parser_factory, path, git_ref, collection, chunk_size, quantization).await
     }
 
     /// List all available collections with metadata
@@ -262,6 +277,7 @@ impl Core {
                         name,
                         vector_count: None,
                         vector_size: None,
+                        quantization: None,
                     });
                 }
             }
@@ -282,6 +298,11 @@ impl Core {
 
     // Removed misplaces doc comment
     // code_query removed from Core - use vecq directly in CLI/Server
+
+    /// Optimize collection (apply quantization)
+    pub async fn optimize_collection(&self, collection: &str, quantization: config::QuantizationType) -> Result<()> {
+        self.backend.update_collection_quantization(collection, quantization).await
+    }
 }
 
 /// Retrieve the version of the underlying ONNX Runtime (if available)

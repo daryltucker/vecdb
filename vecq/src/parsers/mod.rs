@@ -89,8 +89,7 @@ use crate::types::FileType;
 
 // Parser module declarations
 pub mod markdown;
-pub mod rust_parser;
-pub mod rust_tree_sitter;
+pub mod rust;
 
 // Conditional compilation for optional parsers
 pub mod python;
@@ -115,8 +114,7 @@ pub mod json;
 
 // Re-export parser implementations
 pub use markdown::MarkdownParser;
-pub use rust_parser::RustParser;
-pub use rust_tree_sitter::RustTreeSitterParser;
+pub use rust::RustParser;
 
 pub use python::PythonParser;
 
@@ -224,11 +222,9 @@ pub fn get_parser_info(file_type: FileType) -> Option<ParserInfo> {
                 "Enums".to_string(),
                 "Traits".to_string(),
                 "Implementations".to_string(),
-                "Generics".to_string(),
-                "Lifetimes".to_string(),
-                "Macros".to_string(),
+                "Comments".to_string(),
             ],
-            dependencies: vec!["syn".to_string()],
+            dependencies: vec!["tree-sitter-rust".to_string()],
         }),
         FileType::Toml => Some(ParserInfo {
             name: "TOML Parser".to_string(),

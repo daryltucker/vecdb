@@ -13,6 +13,8 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+bash ${SCRIPT_DIR}/scripts/prune_target.sh
+
 # Parse args
 QUIET_FLAG="--quiet"
 if [[ "$1" == "--verbose" ]]; then

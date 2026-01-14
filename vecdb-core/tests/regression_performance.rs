@@ -17,9 +17,10 @@ impl vecdb_core::backend::Backend for MockBackend {
     async fn search(&self, _collection: &str, _vector: &[f32], _limit: u64, _filter: Option<serde_json::Value>) -> anyhow::Result<Vec<vecdb_core::types::SearchResult>> { Ok(vec![]) }
     async fn delete_collection(&self, _collection: &str) -> anyhow::Result<()> { Ok(()) }
     async fn collection_exists(&self, _collection: &str) -> anyhow::Result<bool> { Ok(true) }
-    async fn create_collection(&self, _collection: &str, _vector_size: u64) -> anyhow::Result<()> { Ok(()) }
+    async fn create_collection(&self, _collection: &str, _vector_size: u64, _q: Option<vecdb_core::config::QuantizationType>) -> anyhow::Result<()> { Ok(()) }
+    async fn update_collection_quantization(&self, _: &str, _: vecdb_core::config::QuantizationType) -> anyhow::Result<()> { Ok(()) }
     async fn list_collections(&self) -> anyhow::Result<Vec<String>> { Ok(vec![]) }
-    async fn get_collection_info(&self, _collection: &str) -> anyhow::Result<vecdb_core::types::CollectionInfo> { Ok(vecdb_core::types::CollectionInfo { name: "test".to_string(), vector_count: None, vector_size: None }) }
+    async fn get_collection_info(&self, _collection: &str) -> anyhow::Result<vecdb_core::types::CollectionInfo> { Ok(vecdb_core::types::CollectionInfo { name: "test".to_string(), vector_count: None, vector_size: None, quantization: None }) }
     async fn points_exists(&self, _collection: &str, _ids: Vec<String>) -> anyhow::Result<Vec<String>> { Ok(vec![]) }
     async fn health_check(&self) -> anyhow::Result<()> { Ok(()) }
     async fn list_metadata_values(&self, _collection: &str, _key: &str) -> anyhow::Result<Vec<String>> { Ok(vec![]) }
@@ -96,6 +97,7 @@ async fn regression_lua_speed_and_structure() {
         path_rules: vec![],
         max_concurrent_requests: 1,
         gpu_batch_size: 1,
+        quantization: None,
     };
 
     let start = Instant::now();
@@ -188,6 +190,7 @@ async fn regression_text_performance() {
         path_rules: vec![],
         max_concurrent_requests: 1,
         gpu_batch_size: 1,
+        quantization: None,
     };
 
     println!("Starting Text Regression (Recursive/Smart)...");
@@ -233,6 +236,7 @@ async fn regression_pride_and_prejudice_file() {
         path_rules: vec![],
         max_concurrent_requests: 1,
         gpu_batch_size: 1,
+        quantization: None,
     };
 
     println!("Starting Real P&P Regression...");

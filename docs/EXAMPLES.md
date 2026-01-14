@@ -10,9 +10,12 @@ This guide serves as the definitive cookbook for using the `vecdb` suite (Databa
 ### 🔍 1.1 Structural Grep (Recursive Search)
 Replace `grep -r` with structure-aware queries. `vecq` automatically recurses into supported files (`-R`).
 
+> **💡 Agent Tip**: For a deep-dive into advanced recipes (Complexity Analysis, API Auditing, etc.), see:
+> [vecq & vecdb Recipe Cookbook](file:///home/daryl/Projects/NRG/vecdb-mcp/docs/vecq/EXAMPLES.md)
+
 **Find all public functions in `src/`:**
 ```bash
-vecq -R src/ -q '.functions[] | select(.visibility == "pub") | .name' --grep-format
+vecq -R src/ -q '(.functions // [])[] | select(.visibility == "pub") | .name' --grep-format
 ```
 *Why better than grep?* It ignores "pub" inside comments or strings.
 
@@ -55,6 +58,17 @@ vecq -R src/ -q '.functions[] | select(.content | contains("unsafe"))'
 **The Tech Debt Hunter (Find `todo!` macros):**
 ```bash
 vecq -R src/ -q '.functions[] | select(.content | contains("todo!"))'
+```
+
+**Find functions that lack documentation (missing doc attributes):**
+```bash
+vecq -R src/ -q '.functions[] | select(.attributes.docs == null) | .name' --grep-format
+```
+
+**Normalize a raw log to a canonical schema:**
+```bash
+
+cat access.log | vecq -q 'openwebui_to_chat | .[] | select(.role == "user")'
 ```
 
 ---

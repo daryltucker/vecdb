@@ -35,12 +35,12 @@ pub async fn process_single_file(
     let file_type = detector.detect(&path, content_preview);
     
     if !file_type.is_supported() {
-        if is_binary(content_preview) { return Ok(None); }
+        if is_binary(content_preview) { return Ok(None); } // Skipped
     }
 
     if let Some(ref exts) = options.extensions {
         let current_ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-        if !exts.iter().any(|e| e.eq_ignore_ascii_case(current_ext)) { return Ok(None); }
+        if !exts.iter().any(|e| e.eq_ignore_ascii_case(current_ext)) { return Ok(None); } // Skipped
     }
     
     if let Some(ref excludes) = options.excludes {
@@ -48,13 +48,28 @@ pub async fn process_single_file(
         for pattern in excludes {
             if let Ok(glob) = glob::Pattern::new(pattern) {
                 if glob.matches(&path_str) || glob.matches(path.file_name().unwrap_or_default().to_str().unwrap_or("")) {
-                    return Ok(None);
+                    return Ok(None); // Skipped
                 }
             }
         }
     }
 
-    if options.dry_run { return Ok(None); }
+    if options.dry_run {
+        let display_path = if rel_path.as_os_str().is_empty() {
+             path.file_name().and_then(|n| n.to_str()).unwrap_or(path.to_str().unwrap_or(""))
+        } else {
+             rel_path.to_str().unwrap_or("")
+        };
+        println!("Would ingest: {}", display_path);
+        
+        if let Some(ref meta) = options.metadata {
+             for (k, v) in meta {
+                 println!("  Metadata: {}={}", k, v);
+             }
+        }
+        
+        return Ok(Some(Vec::new())); // Count as processed
+    }
 
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("path".to_string(), serde_json::Value::String(rel_path.display().to_string()));
