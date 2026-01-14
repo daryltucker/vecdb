@@ -1105,14 +1105,14 @@ async fn handle_subcommand(command: Commands) -> VecqResult<()> {
 fn print_available_filters() {
     let mut filters = std::collections::HashSet::new();
     
-    // Core filters
-    for (name, _, _) in jaq_core::core() {
+    // Standard library filters
+    for (name, _, _) in jaq_std::funs::<jaq_core::data::JustLut<jaq_json::Val>>() {
         filters.insert(name);
     }
     
-    // Standard library filters
-    for def in jaq_std::std() {
-        filters.insert(def.lhs.name);
+    // JSON filters
+    for (name, _, _) in jaq_json::funs::<jaq_core::data::JustLut<jaq_json::Val>>() {
+        filters.insert(name);
     }
     
     let mut sorted_filters: Vec<_> = filters.into_iter().collect();
@@ -1121,10 +1121,9 @@ fn print_available_filters() {
     println!("Available jq filters (jaq engine):");
     println!("===================================");
     
-    // Group roughly by starting letter for readability, or just columns
     // Simple columns for now
     for chunk in sorted_filters.chunks(4) {
-        let line = chunk.iter().map(|s| format!("{:<20}", s)).collect::<Vec<String>>().join("");
+        let line = chunk.iter().map(|s| format!("{:<20}", s)).collect::<Vec<_>>().join("");
         println!("{}", line);
     }
     

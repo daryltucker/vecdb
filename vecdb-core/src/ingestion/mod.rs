@@ -60,6 +60,42 @@ pub async fn ingest_path(
             IngestionState::default()
         }
     };
+
+    // --- Collection ID Resolution Logic ---
+    let collection_name = options.collection.clone();
+    
+    // 1. Get or Create Remote ID
+    // We already ensured collection exists above.
+    let remote_id = match backend.get_collection_id(&collection_name).await? {
+        Some(id) => id,
+        None => {
+            // Collection exists but has no ID (legacy or just created without ID)
+            let new_id = uuid::Uuid::new_v4().to_string();
+            backend.set_collection_id(&collection_name, &new_id).await?;
+            new_id
+        }
+    };
+
+    // 2. Check Local State
+    let local_id = state.get_collection_id(&collection_name);
+    
+    // 3. Reconcile
+    if local_id.as_ref() != Some(&remote_id) {
+        if OUTPUT.is_interactive {
+            if local_id.is_some() {
+                eprintln!("Collection ID mismatch (Remote: {}, Local: {:?}). Assuming collection was recreated.", remote_id, local_id);
+                eprintln!("Cleaning up stale tracking data for '{}'...", collection_name);
+            } else {
+                eprintln!("Initializing tracking for collection '{}' (ID: {})...", collection_name, remote_id);
+            }
+        }
+        
+        // This clears the files map for THIS collection and sets the new ID
+        state.clear_collection(&collection_name, remote_id.clone());
+        // Force save immediately to lock in the new ID
+        state.save(root_path)?; 
+    }
+
     let mut state_changed = false;
 
     let builder = build_walker(&options);
@@ -101,8 +137,8 @@ pub async fn ingest_path(
     let mut files_skipped = 0;
     let mut files_processed = 0;
 
+    let collection_name = options.collection.clone();
     let options_arc = Arc::new(options); 
-    let collection_name = options_arc.collection.clone();
     
     let semaphore = Arc::new(tokio::sync::Semaphore::new(options_arc.max_concurrent_requests));
     let mut tasks = tokio::task::JoinSet::new();
@@ -118,7 +154,7 @@ pub async fn ingest_path(
                         continue;
                     }
                     
-                    let rel_path = path.strip_prefix(root_path).unwrap_or(&path).to_path_buf();
+                            let rel_path = path.strip_prefix(root_path).unwrap_or(&path).to_path_buf();
                     
                     if let Some(ref pb) = pb {
                         let short_path = rel_path.to_string_lossy();
@@ -132,7 +168,7 @@ pub async fn ingest_path(
                     }
 
                     if let Ok(meta_hash) = crate::state::compute_file_metadata_hash(&path) {
-                        if !state.update_file(rel_path.clone(), meta_hash.clone()) {
+                        if !state.update_file(&collection_name, rel_path.clone(), meta_hash.clone()) {
                             files_skipped += 1;
                             continue;
                         }
@@ -215,6 +251,7 @@ pub async fn ingest_path(
     }
 
     if state_changed {
+        state.touch_collection(&collection_name);
         if let Err(e) = state.save(root_path) {
             let msg = format!("Warning: Failed to save ingestion state: {}", e);
             if let Some(ref pb) = pb {

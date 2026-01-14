@@ -63,7 +63,7 @@ vecq allows AI Agents to query source code structure (AST) as if it were JSON.
 - `-q, --query <QUERY>`: Specify query filter as flag (useful for piped input)
 - `-L, --library-path <PATH>`: Add directory to search for library modules (.jq files)
 - `-o, --format <FORMAT>`: Output format (json, grep, human)
-- `-s, --slurp`: Read all inputs into array before querying
+- `-s, --slurp`: Read all inputs into array before querying (Required when piping multiple files if you want to treat them as a single dataset).
 - `--grep-format`: Shortcut for `-o grep` (Recommended for search tasks)
 - `-r, --raw-output`: Output raw strings, not JSON text (Critical for code extraction)
 - `-R, --recursive`: Recursively process directories

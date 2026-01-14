@@ -17,16 +17,16 @@ use std::path::PathBuf;
 /// JavaScript parser using tree-sitter
 #[derive(Debug, Clone)]
 pub struct JavaScriptParser {
-    config: ParserConfig,
+    _config: ParserConfig,
 }
 
 impl JavaScriptParser {
     pub fn new() -> Self {
-        Self { config: ParserConfig::default() }
+        Self { _config: ParserConfig::default() }
     }
 
     pub fn with_config(config: ParserConfig) -> Self {
-        Self { config }
+        Self { _config: config }
     }
 
     fn extract_functions(&self, content: &str, tree: &tree_sitter::Tree) -> VecqResult<Vec<DocumentElement>> {

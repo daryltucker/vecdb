@@ -7,7 +7,7 @@ import time
 
 # --- Configuration ---
 BINARY_PATH = "./target/debug/vecdb"
-TEST_DIR = "tier1_parsers_test_env"
+TEST_DIR = "tests/tier1_parsers_test_env"
 
 def run_command(cmd, check=True):
     """Runs a shell command."""
@@ -45,7 +45,7 @@ app:
 def test_ingestion():
     """Ingests the test directory."""
     print("--- Ingesting ---")
-    run_command(f"{BINARY_PATH} ingest {TEST_DIR}")
+    run_command(f"{BINARY_PATH} ingest {TEST_DIR} --extensions json yaml")
 
 def test_search_json():
     """Verifies JSON flattening."""
@@ -94,9 +94,8 @@ def test_search_yaml():
 
 def cleanup():
     """Cleans up."""
-    # if os.path.exists(TEST_DIR):
-    #     shutil.rmtree(TEST_DIR)
-    pass
+    if os.path.exists(TEST_DIR):
+        shutil.rmtree(TEST_DIR)
 
 def main():
     try:

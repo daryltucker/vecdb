@@ -34,11 +34,12 @@ vecq -R src/ -q '(.functions // [])[] | select((.line_end - .line_start) > 50) |
 ```
 
 ### 1.4 The "Dependency Mapper"
-**Goal**: Find which files import a specific module.
-**Why**: Understanding the blast radius of a change.
+**Goal**: Find which files import a specific module using Semantic Identity.
+**Why**: Understanding the blast radius of a change. Thanks to D027, we filter by `.name` (the target), not raw content lines.
 
 ```bash
-vecq -R src/ -q '(.imports // [])[] | select(.path | contains("my_module")) | .path' --grep-format
+# Find files importing 'std::io' (Rust) or 'fmt' (Go)
+vecq -R src/ -q '(.imports // [])[] | select(.name == "std::io")' --compact
 ```
 
 ### 1.5 The "Legacy Archaeologist" (Advanced)

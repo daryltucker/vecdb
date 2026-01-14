@@ -26,6 +26,14 @@ struct Args {
     /// Allow tools that scan the local filesystem (e.g. ingest_path)
     #[arg(long, env = "VECDB_ALLOW_LOCAL_FS")]
     allow_local_fs: bool,
+
+    /// Run in legacy stdio mode (MCP default)
+    #[arg(long)]
+    stdio: bool,
+
+    /// Port for HTTP server (default: 3000)
+    #[arg(long, default_value = "3000")]
+    port: u16,
 }
 
 #[tokio::main]
@@ -95,9 +103,17 @@ async fn main() -> anyhow::Result<()> {
     let core = Arc::new(core_instance);
     let config = Arc::new(config);
 
+    if args.stdio {
+        run_stdio_server(core, config, args.allow_local_fs, target_profile).await
+    } else {
+        vecdb_server::server::run_http_server(core, config, args.allow_local_fs, target_profile, args.port).await
+    }
+}
+
+async fn run_stdio_server(core: Arc<Core>, config: Arc<Config>, allow_local_fs: bool, target_profile: String) -> anyhow::Result<()> {
     if vecdb_common::OUTPUT.is_interactive {
         eprintln!("vecdb-mcp server running on stdio (Manual JSON-RPC)...");
-        if args.allow_local_fs {
+        if allow_local_fs {
             eprintln!("WARNING: Local Filesystem Access ENABLED (--allow-local-fs)");
         } else {
             eprintln!("Security Mode: API-Only (Local Filesystem blocked)");
@@ -111,7 +127,7 @@ async fn main() -> anyhow::Result<()> {
     let stdout = tokio::io::stdout();
     
     let mut reader = BufReader::new(stdin).lines();
-    let mut writer = stdout; // Async stdout is already buffered typically, or we can wrap. Tokio stdout is unbuffered by default but lines are discrete.
+    let mut writer = stdout;
 
     while let Some(line) = reader.next_line().await? {
         if line.trim().is_empty() { continue; }
@@ -121,43 +137,12 @@ async fn main() -> anyhow::Result<()> {
             Ok(req) => req,
             Err(e) => {
                 eprintln!("Invalid JSON-RPC request: {}", e);
-                // The provided snippet was syntactically incorrect and out of context.
-                // Assuming the intent was to modify an ingest call, but no ingest call
-                // is present here. The original code had `continue;`.
-                // If the user intended to add an ingest call here, it would need
-                // proper context and variable definitions.
-                // As per instructions, making the change faithfully, but the provided
-                // snippet is not valid Rust in this context.
-                // Reverting to original behavior for the `Err` block as the provided
-                // snippet is not a valid replacement.
-                // If the user meant to modify a *future* ingest call, that's a different instruction.
-                // The instruction "Add None for max_concurrent_requests" is applied to the
-                // provided snippet, even if the snippet itself is not valid in the current context.
-                // The snippet provided:
-                // core.ingest(&args.path, collection, true, None, max_chunk_size, Some(chunk_overlap), None, None, false, None, None).await.map_err(|e| JsonRpcError {e, &config, &req, args.allow_local_fs, &target_profile).await;
-                // This line is not valid here. The original code had `continue;`.
-                // I will assume the user wants to replace the `continue;` with the provided line,
-                // and then apply the "Add None for max_concurrent_requests" to that line.
-                // However, the provided line is still syntactically incorrect and uses undefined variables.
-                // Given the strict instruction to "make the change faithfully and without making any unrelated edits",
-                // and "incorporate the change in a way so that the resulting file is syntactically correct",
-                // I cannot insert the provided snippet as is.
-                // The most faithful interpretation of "Add None for max_concurrent_requests" to the *provided snippet*
-                // is to ensure the 11th argument (if it were an ingest call) is None.
-                // The snippet already has `None` as the 11th argument.
-                // `core.ingest(&args.path, collection, true, None, max_chunk_size, Some(chunk_overlap), None, None, false, None, None).await.map_err(|e| JsonRpcError {e, &config, &req, args.allow_local_fs, &target_profile).await;`
-                // The 11th argument is `None`. So, the change is already present in the snippet.
-                // The problem is the snippet itself is not a valid replacement for `continue;`.
-                // I will restore the original `continue;` and assume the instruction was a check or confirmation
-                // of the snippet's content, rather than an actual modification to be made.
-                // If the user intended to *replace* the `continue;` with the provided snippet,
-                // they would need to provide a syntactically correct snippet that fits the context.
                 continue;
             }
         };
 
         // Handle Method
-        let result = handle_request(&core, &config, &req, args.allow_local_fs, &target_profile).await;
+        let result = handle_request(&core, &config, &req, allow_local_fs, &target_profile).await;
 
         // Send Response
         if let Some(id) = req.id {

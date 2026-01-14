@@ -29,6 +29,8 @@ Canonical normalizers for common data types.
 *   **Artifacts** (`artifact.jq`): `cargo_to_artifact`
 *   **Diffs** (`diff.jq`): `git_status_to_diff`
 *   **Auto**: `auto_normalize` (Heuristic detection)
+*   **Graph** (`graph_src.jq`, `graph.jq`): `src_to_graph`, `graph_format`, `graph_format_mermaid`
+*   **Architecture** (`architecture.jq`): `src_to_architecture`, `architecture_format`, `architecture_format_mermaid`
 
 > **Note**: For more details on the schemas and their fields, see [schemas/README.md](../../schemas/README.md).
 

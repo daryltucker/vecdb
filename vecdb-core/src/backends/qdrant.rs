@@ -452,4 +452,61 @@ impl Backend for QdrantBackend {
 
         Ok(values.into_iter().collect())
     }
+
+    async fn get_collection_id(&self, collection: &str) -> Result<Option<String>> {
+        use qdrant_client::qdrant::GetPoints;
+        
+        let genesis_id = PointId::from(Uuid::nil().to_string()); // 00000000-0000-0000-0000-000000000000
+
+        let response = self.client.get_points(GetPoints {
+            collection_name: collection.to_string(),
+            ids: vec![genesis_id],
+            with_vectors: Some(qdrant_client::qdrant::WithVectorsSelector::from(false)),
+            with_payload: Some(qdrant_client::qdrant::WithPayloadSelector::from(true)),
+            ..Default::default()
+        }).await?;
+
+        if let Some(point) = response.result.first() {
+            if let Some(val) = point.payload.get("__meta_collection_identity") {
+                if let Some(Kind::StringValue(s)) = &val.kind {
+                    return Ok(Some(s.clone()));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn set_collection_id(&self, collection: &str, id: &str) -> Result<()> {
+        use qdrant_client::qdrant::UpsertPoints;
+
+        let genesis_id = Uuid::nil().to_string();
+        
+        // Create an empty (zero) vector for the genesis point.
+        // We need to know the dimension, but Qdrant allows sparse vector updates or we can try to fetch it.
+        // Easier: Just upsert payload if possible? No, Qdrant requires vector for new points usually.
+        // Better: Fetch collection info to get size.
+        let info = self.get_collection_info(collection).await?;
+        let size = info.vector_size.unwrap_or(768); // Default fallback slightly dangerous but usually dimension is known.
+        
+        let vector = vec![0.0; size as usize];
+        
+        let mut payload = HashMap::new();
+        payload.insert("__meta_collection_identity".to_string(), Value { kind: Some(Kind::StringValue(id.to_string())) });
+        payload.insert("type".to_string(), Value { kind: Some(Kind::StringValue("genesis".to_string())) });
+
+        let point = PointStruct::new(
+            PointId::from(genesis_id),
+            vector,
+            payload
+        );
+
+        self.client.upsert_points(UpsertPoints {
+            collection_name: collection.to_string(),
+            points: vec![point],
+            ..Default::default()
+        }).await?;
+
+        Ok(())
+    }
 }

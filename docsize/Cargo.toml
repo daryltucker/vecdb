@@ -20,8 +20,10 @@ toml = "0.8"
 dialoguer = "0.11"
 console = "0.15"
 futures-util = "0.3"
+ignore = "0.4"
+
 
 # Path-based dependencies for workspace members
 vecdb-common = { path = "../vecdb-common" }
-vecq = { path = "../vecq" }
+vecq = { path = "../vecq", features = ["python-parser", "c-parser", "cpp-parser", "go-parser", "javascript-parser"] }
 infer = "0.19.0"

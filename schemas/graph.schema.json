@@ -1,0 +1,103 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Unified Graph Schema (JGF v2)",
+    "description": "Canonical schema for structural relationships following JSON Graph Format (JGF) v2",
+    "type": "object",
+    "properties": {
+        "graphs": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "type": "string"
+                    },
+                    "label": {
+                        "type": "string"
+                    },
+                    "directed": {
+                        "type": "boolean",
+                        "default": true
+                    },
+                    "metadata": {
+                        "type": "object"
+                    },
+                    "nodes": {
+                        "type": "object",
+                        "description": "Map of stable IDs (SCIP-style) to node properties",
+                        "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                                "label": {
+                                    "type": "string"
+                                },
+                                "metadata": {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": {
+                                            "type": "string",
+                                            "description": "e.g. function, class, module"
+                                        },
+                                        "path": {
+                                            "type": "string"
+                                        },
+                                        "line_start": {
+                                            "type": "integer"
+                                        },
+                                        "line_end": {
+                                            "type": "integer"
+                                        },
+                                        "visibility": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "edges": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "source": {
+                                    "type": "string",
+                                    "description": "ID of source node"
+                                },
+                                "target": {
+                                    "type": "string",
+                                    "description": "ID of target node"
+                                },
+                                "relation": {
+                                    "type": "string",
+                                    "description": "e.g. calls, implements, imports"
+                                },
+                                "label": {
+                                    "type": "string"
+                                },
+                                "metadata": {
+                                    "type": "object"
+                                }
+                            },
+                            "required": [
+                                "source",
+                                "target"
+                            ]
+                        }
+                    }
+                },
+                "required": [
+                    "nodes",
+                    "edges"
+                ]
+            }
+        }
+    },
+    "required": [
+        "graphs"
+    ],
+    "additionalProperties": true
+}

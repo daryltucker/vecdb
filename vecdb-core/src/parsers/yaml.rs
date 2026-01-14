@@ -1,7 +1,7 @@
 use crate::parsers::Parser;
 use crate::types::Chunk;
 use anyhow::Result;
-use serde_yaml::Value;
+use serde_yml::Value;
 use std::path::Path;
 use uuid::Uuid;
 
@@ -53,8 +53,8 @@ use async_trait::async_trait;
 #[async_trait]
 impl Parser for YamlParser {
     async fn parse(&self, content: &str, path: &Path, base_metadata: Option<serde_json::Value>) -> Result<Vec<Chunk>> {
-        // serde_yaml can define multiple documents in one file
-        let docs: Vec<Value> = serde_yaml::from_str(content).unwrap_or_else(|_| vec![]);
+        // serde_yml can define multiple documents in one file
+        let docs: Vec<Value> = serde_yml::from_str(content).unwrap_or_else(|_| vec![]);
         
         let mut text_chunks = Vec::new();
         

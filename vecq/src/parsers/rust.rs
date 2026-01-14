@@ -256,9 +256,13 @@ impl RustParser {
                     elements.push(element);
                 }
                 "use_declaration" => {
+                    let name = child
+                        .child_by_field_name("argument")
+                        .and_then(|n| n.utf8_text(source).ok().map(|s| s.to_string()));
+
                     let mut element = DocumentElement::new(
                         ElementType::Import,
-                        None,
+                        name,
                         child.utf8_text(source).unwrap_or("").to_string(),
                         child.start_position().row + 1,
                         child.end_position().row + 1,
@@ -365,5 +369,30 @@ impl Parser for RustParser {
 
     fn language_name(&self) -> &str {
         "Rust (Tree-sitter)"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ElementType;
+
+    #[tokio::test]
+    async fn test_parse_complex_imports() {
+        let parser = RustParser::new();
+        let content = r#"
+        use std::collections::HashMap;
+        use crate::types::{TypeA, TypeB};
+        use std::io::Result as IoResult;
+        "#;
+
+        let result = parser.parse(content).await.unwrap();
+        let imports: Vec<_> = result.elements.iter()
+            .filter(|e| e.element_type == ElementType::Import)
+            .collect();
+
+        // 1. HashMap should be named
+        let hashmap = imports.iter().find(|i| i.content.contains("HashMap")).unwrap();
+        assert_eq!(hashmap.name, Some("std::collections::HashMap".to_string()));
     }
 }

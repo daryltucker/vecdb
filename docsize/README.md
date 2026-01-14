@@ -2,6 +2,23 @@
 
 `docsize` is a contextualized LLM wrapper designed to work seamlessly with `vecdb` and `vecq`. It gathers directory structure and semantic search results to provide a high-fidelity prompt to local LLMs (primarily Ollama).
 
+>  This tool serves a practical, useful purpose, while being an example of how to use `vecdb` and `vecq` libraries in your own project.
+
+## External Dependencies
+
+### Ollama (Docker)
+`docsize` needs an Ollama instance to work. Check `examples/docker-compose-qdrant` for an easy example to spin up your own Ollama.
+
+If you don't have one running, you can start one via Docker:
+
+```bash
+docker run -d \
+  --gpus=all \
+  -v ollama_ollama:/root/.ollama \
+  -p 11434:11434 \
+  --name ollama \
+  ollama/ollama
+```
 ## Architecture & Data Flow
 
 `docsize` implements a local RAG (Retrieval-Augmented Generation) pipeline:
@@ -38,6 +55,11 @@ cd docsize
 ./install.sh
 ```
 
+### Method 3: Cargo
+```bash
+cargo install --git https://github.com/daryltucker/vecdb-mcp docsize
+```
+
 ## Usage
 
 ```bash
@@ -69,14 +91,3 @@ Supported placeholders:
 - `{{ %DOCSIZE_TREE% }}`: Directory path list
 - `{{ %DOCSIZE_VECDB_EMBEDDING_RESPONSE% }}`: Semantic search blocks (Context)
 - `{{ %QUERY% }}`: User query
-
-
-
-```bash
-docker run -d \
-  --gpus=all \
-  -v ollama_ollama:/root/.ollama \
-  -p 11434:11434 \
-  --name ollama \
-  ollama/ollama
-```

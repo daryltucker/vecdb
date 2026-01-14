@@ -65,21 +65,21 @@ echo "[5/5] Running Parser Integration Test (Tier 1)..." | tee -a "logs/tier1_${
 echo "=== Core Unit Tests ===" | tee "logs/unit_${TIMESTAMP}.log"
 # 5.5. Run Vecq Unit & Integration Tests (The Spine: Property & Roundtrip)
 echo "[Core] Running vecq Tests (Spine)..." | tee -a "logs/unit_${TIMESTAMP}.log"
-cargo test -p vecq 2>&1 | tee -a "logs/unit_${TIMESTAMP}.log"
+cargo test -p vecq -- --nocapture 2>&1 | tee -a "logs/unit_${TIMESTAMP}.log"
 
 echo "[Core] Running vecdb-asm Tests..." | tee -a "logs/unit_${TIMESTAMP}.log"
-cargo test -p vecdb-asm 2>&1 | tee -a "logs/unit_${TIMESTAMP}.log"
+cargo test -p vecdb-asm -- --nocapture 2>&1 | tee -a "logs/unit_${TIMESTAMP}.log"
 
 echo "=== Tier 2 Test Suite (Integration) ===" | tee "logs/tier2_${TIMESTAMP}.log"
 # 6. Run Tier 2 Integration Tests
 echo "[Tier 2] Running Integration Tests..." | tee -a "logs/tier2_${TIMESTAMP}.log"
-cargo test --test 'tier2_*' --quiet 2>&1 | tee -a "logs/tier2_${TIMESTAMP}.log"
+cargo test --test 'tier2_*' -- --nocapture 2>&1 | tee -a "logs/tier2_${TIMESTAMP}.log"
 
 echo "=== Tier 3 Test Suite (Reality) ===" | tee "logs/tier3_${TIMESTAMP}.log"
 # 7. Run Tier 3 Fresh Install Journey (Now in Rust!)
 echo "[Tier 3] Running Fresh Install Journey (Rust Integration)..." | tee -a "logs/tier3_${TIMESTAMP}.log"
 # Replaces python3 tests/tier3_fresh_install.py
-cargo test -p vecdb-cli --test cli_integration 2>&1 | tee -a "logs/tier3_${TIMESTAMP}.log"
+cargo test -p vecdb-cli --test cli_integration -- --nocapture 2>&1 | tee -a "logs/tier3_${TIMESTAMP}.log"
 
 # 8. Post Test Tests (Maintenance & Audit)
 echo "" | tee -a "logs/tier3_${TIMESTAMP}.log"

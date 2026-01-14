@@ -16,9 +16,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bash ${SCRIPT_DIR}/scripts/prune_target.sh
 
 # Parse args
-QUIET_FLAG="--quiet"
-if [[ "$1" == "--verbose" ]]; then
-    QUIET_FLAG=""
+# Default to verbose to avoid "frozen" appearance
+QUIET_FLAG=""
+if [[ "$1" == "--quiet" ]]; then
+    QUIET_FLAG="--quiet"
 fi
 
 echo "=== Installing vecdb binaries ==="

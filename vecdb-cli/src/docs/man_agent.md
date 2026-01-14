@@ -76,6 +76,20 @@ Trigger background optimization (quantization) for a collection.
 - Applies the configured quantization setting to the collection in Qdrant.
 - Useful after `config set-quantization` or bulk ingestion.
 
+### history
+Time Travel / History Operations.
+`vecdb history [COMMAND] [OPTIONS]`
+
+**Commands:**
+- `ingest [PATH]`: Ingest a specific version of a repository (requires `--git-ref`).
+
+**Options:**
+- `--git-ref [REF]`: Git commit, tag, or branch to ingest.
+- `--collection [NAME]`: Target collection.
+
+**Agent Usage:**
+`vecdb history ingest . --git-ref v1.0.0 --collection legacy_v1`
+
 ### delete
 Delete a collection (requires confirmation).
 `vecdb delete [COLLECTION] --yes`

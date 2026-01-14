@@ -125,6 +125,14 @@ impl Backend for MockBackend {
     async fn list_metadata_values(&self, _collection: &str, _key: &str) -> Result<Vec<String>> {
         Ok(vec![])
     }
+
+    async fn get_collection_id(&self, _collection: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    async fn set_collection_id(&self, _collection: &str, _id: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[tokio::test]

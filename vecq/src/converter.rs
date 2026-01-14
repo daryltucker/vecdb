@@ -215,7 +215,7 @@ impl SchemaRegistry {
             .with_attribute_definition(ElementType::Trait, "docstring".to_string())
             .with_element_mapping(ElementType::Implementation, "implementations".to_string())
             .with_attribute_definition(ElementType::Implementation, "docstring".to_string())
-            .with_element_mapping(ElementType::Import, "use_statements".to_string())
+            .with_element_mapping(ElementType::Import, "imports".to_string())
             .with_attribute_definition(ElementType::Import, "visibility".to_string());
         self.register(rust_schema);
 
@@ -276,6 +276,7 @@ impl SchemaRegistry {
             .with_required_field("structs".to_string())
             .with_element_mapping(ElementType::Function, "functions".to_string())
             .with_element_mapping(ElementType::Struct, "structs".to_string())
+            .with_element_mapping(ElementType::Import, "imports".to_string()) // Standardize C includes
             .with_element_mapping(ElementType::Macro, "macros".to_string());
         self.register(c_schema);
 
@@ -286,7 +287,8 @@ impl SchemaRegistry {
             .with_required_field("namespaces".to_string())
             .with_element_mapping(ElementType::Function, "functions".to_string())
             .with_element_mapping(ElementType::Class, "classes".to_string())
-            .with_element_mapping(ElementType::Namespace, "namespaces".to_string());
+            .with_element_mapping(ElementType::Namespace, "namespaces".to_string())
+            .with_element_mapping(ElementType::Import, "imports".to_string()); // Standardize C++ includes
         self.register(cpp_schema);
     }
 
@@ -297,7 +299,8 @@ impl SchemaRegistry {
             .with_required_field("host_functions".to_string())
             .with_element_mapping(ElementType::Kernel, "kernels".to_string())
             .with_element_mapping(ElementType::DeviceFunction, "device_functions".to_string())
-            .with_element_mapping(ElementType::Function, "host_functions".to_string());
+            .with_element_mapping(ElementType::Function, "host_functions".to_string())
+            .with_element_mapping(ElementType::Import, "imports".to_string());
         self.register(cuda_schema);
     }
 
@@ -309,7 +312,8 @@ impl SchemaRegistry {
             .with_element_mapping(ElementType::Function, "functions".to_string())
             .with_element_mapping(ElementType::Struct, "structs".to_string())
             .with_element_mapping(ElementType::Interface, "interfaces".to_string())
-            .with_element_mapping(ElementType::Package, "package".to_string());
+            .with_element_mapping(ElementType::Package, "package".to_string())
+            .with_element_mapping(ElementType::Import, "imports".to_string());
         self.register(go_schema);
     }
 

@@ -65,6 +65,8 @@ impl Backend for MockBackend {
     ) -> anyhow::Result<()> {
         Ok(())
     }
+    async fn get_collection_id(&self, _collection: &str) -> anyhow::Result<Option<String>> { Ok(None) }
+    async fn set_collection_id(&self, _collection: &str, _id: &str) -> anyhow::Result<()> { Ok(()) }
 }
 
 pub struct MockEmbedder;

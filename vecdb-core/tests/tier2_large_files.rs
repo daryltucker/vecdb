@@ -30,6 +30,8 @@ impl vecdb_core::backend::Backend for MockBackend {
     async fn points_exists(&self, _: &str, _: Vec<String>) -> anyhow::Result<Vec<String>> { Ok(vec![]) }
     async fn health_check(&self) -> anyhow::Result<()> { Ok(()) }
     async fn list_metadata_values(&self, _: &str, _: &str) -> anyhow::Result<Vec<String>> { Ok(vec![]) }
+    async fn get_collection_id(&self, _collection: &str) -> anyhow::Result<Option<String>> { Ok(None) }
+    async fn set_collection_id(&self, _collection: &str, _id: &str) -> anyhow::Result<()> { Ok(()) }
 }
 
 struct MockEmbedder;

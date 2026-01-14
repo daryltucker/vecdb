@@ -17,6 +17,7 @@ We provide **lenient normalizer examples**, not strict validators. Users fork an
 | `artifact.schema.json` | Build/Test artifacts | `cargo_to_artifact`, `junit_to_artifact` |
 | `diff.schema.json` | Code changes and hunks | `git_diff_to_diff` |
 | `chat.schema.json` | Conversational messages | `openwebui_to_chat` |
+| `graph.schema.json` | Structural relationships (JGF v2) | `src_to_graph`, `graph_to_architecture`, `src_to_architecture` |
 
 ## Extension Mechanism
 
@@ -30,6 +31,16 @@ All schemas support `x-` prefixed fields for custom metadata:
   "x-metadata": { "custom": "data" }
 }
 ```
+
+## Renderers vs Normalizers
+
+> RAW_DATA -> vecq Normalizer [-> vecq Normalizer] -> vecq Renderer   # Human View/
+> RAW_DATA -> vecq Normalizer [-> vecq Normalizer] -> --json          # Agent View
+
+1. **Normalizer**: Transforms a type of data to a proper Schema (ie: `github_to_task`)
+1. **Renderer**: Creates and outputs a 'view' of the Schema'd data (ie: `task_format`)
+  * `task_format` is a shortcut for `task_format_markdown` or `task_format_text` (ie: Standard)
+  * `graph_format_mermaid`: True, long-name with specific output target (ie: Special)
 
 Extensions are **ignored by standard processors** and can be promoted to standard fields via RFC.
 
@@ -54,8 +65,3 @@ vecq -L examples raw.json -q 'webui_to_chat | .[-5:]'
 *   [Thunar Integration](../docs/examples/THUNAR_INTEGRATION.md)
 *   `vecq man --agent` : Agent-focused documentation
 
-## See Also
-
-*   [Querying & Filtering Guide](../docs/examples/QUERYING.md)
-*   [Thunar Integration](../docs/examples/THUNAR_INTEGRATION.md)
-*   `vecq man --agent` : Agent-focused documentation

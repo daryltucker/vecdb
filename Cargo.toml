@@ -33,7 +33,7 @@ uuid = { version = "1.19.0", features = ["v4", "v5", "serde"] }
 chrono = { version = "0.4.42", features = ["serde"] }
 
 # Configuration
-toml = "0.9"
+toml = "0.9.11"
 dotenvy = "0.15.7"
 
 # CLI
@@ -42,9 +42,6 @@ clap_complete = "4.5.65"
 
 # Vector DB
 qdrant-client = "1.16.0"
-
-# MCP
-mcp-protocol-sdk = "0.6.0"
 
 # ML / Embeddings
 infer = "0.19.0"

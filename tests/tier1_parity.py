@@ -22,7 +22,7 @@ def run_parity_test():
         return False
 
     process = subprocess.Popen(
-        [server_path, '--allow-local-fs'],
+        [server_path, '--allow-local-fs', '--stdio'],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=sys.stderr,

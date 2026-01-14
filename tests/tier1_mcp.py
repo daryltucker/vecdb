@@ -70,7 +70,7 @@ def run_tier1_test():
     # Note: --allow-local-fs is REQUIRED for ingest_path
     config_path = os.path.join(os.path.dirname(__file__), "fixtures", "config.toml")
     process = subprocess.Popen(
-        [server_path, '--allow-local-fs'],
+        [server_path, '--allow-local-fs', '--stdio'],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=sys.stderr,

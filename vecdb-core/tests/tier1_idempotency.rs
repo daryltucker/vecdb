@@ -49,6 +49,8 @@ impl Backend for MockBackend {
         })
     }
     async fn list_metadata_values(&self, _c: &str, _k: &str) -> Result<Vec<String>> { Ok(vec![]) }
+    async fn get_collection_id(&self, _collection: &str) -> anyhow::Result<Option<String>> { Ok(None) }
+    async fn set_collection_id(&self, _collection: &str, _id: &str) -> anyhow::Result<()> { Ok(()) }
 }
 
 struct CountingEmbedder {

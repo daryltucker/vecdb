@@ -138,19 +138,76 @@ impl GoParser {
 
     fn parse_import_declaration(&self, content: &str, node: tree_sitter::Node) -> Vec<DocumentElement> {
         let mut imports = Vec::new();
-        let text = node.utf8_text(content.as_bytes()).unwrap_or("");
+        let mut cursor = node.walk();
+
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "import_spec" => {
+                    if let Some(import_el) = self.parse_import_spec(content, child) {
+                        imports.push(import_el);
+                    }
+                }
+                "import_spec_list" => {
+                    let mut list_cursor = child.walk();
+                    for spec in child.children(&mut list_cursor) {
+                        if spec.kind() == "import_spec" {
+                            if let Some(import_el) = self.parse_import_spec(content, spec) {
+                                imports.push(import_el);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         
-        imports.push(DocumentElement::new(
+        imports
+    }
+
+    fn parse_import_spec(&self, content: &str, node: tree_sitter::Node) -> Option<DocumentElement> {
+        // import_spec: name? path(string_literal)
+        let mut alias = None;
+        let mut path_str = String::new();
+        
+        if let Some(path_node) = node.child_by_field_name("path") {
+            let raw = path_node.utf8_text(content.as_bytes()).unwrap_or("");
+            path_str = raw.trim_matches('"').to_string();
+        } else {
+             // Fallback iteration
+             let mut cursor = node.walk();
+             for child in node.children(&mut cursor) {
+                 if child.kind() == "string_literal" {
+                     let raw = child.utf8_text(content.as_bytes()).unwrap_or("");
+                     path_str = raw.trim_matches('"').to_string();
+                 }
+             }
+        }
+        
+        if path_str.is_empty() { 
+            return None; 
+        }
+
+        if let Some(name_node) = node.child_by_field_name("name") {
+            alias = Some(name_node.utf8_text(content.as_bytes()).unwrap_or("").to_string());
+        }
+        
+        // Name is the path (D027)
+        let name = Some(path_str.clone());
+
+        let mut attributes = HashMap::new();
+        if let Some(a) = alias {
+            attributes.insert("alias".to_string(), json!(a));
+        }
+
+        Some(DocumentElement::new(
             ElementType::Import,
-            None,
-            text.to_string(),
+            name,
+            node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
             node.start_position().row + 1,
             node.end_position().row + 1,
         ).set_attributes(ElementAttributes::Go(GoAttributes {
-            other: HashMap::new(),
-        })));
-        
-        imports
+            other: attributes,
+        })))
     }
 
     /// Link methods to their receiver structs
@@ -353,5 +410,36 @@ func (p Point) Dist() int {
             .collect();
          assert_eq!(functions.len(), 1);
          assert_eq!(functions[0].name, Some("Foo".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_parse_complex_go_imports() {
+         let parser = GoParser::new();
+         let content = r#"
+         package main
+         
+         import "fmt"
+         import (
+             "os"
+             json "encoding/json"
+         )
+         "#;
+         let result = parser.parse(content).await.unwrap();
+         
+         let imports: Vec<_> = result.elements.iter()
+            .filter(|e| e.element_type == ElementType::Import)
+            .collect();
+            
+         // Should have 3 imports: fmt, os, encoding/json
+         assert_eq!(imports.len(), 3, "Should extract individual imports from groups");
+         
+         let fmt = imports.iter().find(|i| i.name.as_deref() == Some("fmt")).expect("fmt missing");
+         let os = imports.iter().find(|i| i.name.as_deref() == Some("os")).expect("os missing");
+         let json_pkg = imports.iter().find(|i| i.name.as_deref() == Some("encoding/json")).expect("json missing");
+         
+         // attributes check (alias)
+         if let ElementAttributes::Go(attrs) = &json_pkg.attributes {
+             assert_eq!(attrs.other.get("alias"), Some(&serde_json::json!("json")));
+         }
     }
 }

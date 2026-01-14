@@ -14,5 +14,21 @@ services:
       - vecdb-data:/qdrant/storage
     restart: unless-stopped
 
+# Uncomment if you want Ollama and don't already have one
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: vecdb-ollama
+  #   devices:
+  #     - nvidia.com/gpu=all
+  #   ports:
+  #     - "11434:11434"
+  #   environment:
+  #     - CUDA_VISIBLE_DEVICES=all
+  #     - CUDA_DEVICE_ORDER=PCI_BUS_ID
+  #   volumes:
+  #   - ollama-data:/root/.ollama
+
+
 volumes:
   vecdb-data:
+  #ollama-data:

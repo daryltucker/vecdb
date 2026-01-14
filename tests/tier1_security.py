@@ -25,7 +25,7 @@ def run_security_test():
 
     # Start server WITHOUT --allow-local-fs (default secure mode)
     process = subprocess.Popen(
-        [server_path],  # NO --allow-local-fs flag
+        [server_path, '--stdio'],  # NO --allow-local-fs flag
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

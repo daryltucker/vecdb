@@ -2,7 +2,20 @@
 
 This directory contains example resources for learning and testing `vecdb` and `vecq`.
 
-## Structure
+## Qdrant
+
+In order to use `vecdb`, you must have a Qdrant instance available.  The easiest way is to use the `docker-compose-qdrant.yml` example.
+If you wish to add Ollama capabilities and do not already have Ollama, you can uncomment the Ollama portion.
+
+```bash
+cd examples/
+docker compose -f docker-compose-qdrant.yml up -d
+```
+
+
+## Functions
+
+### Structure
 
 *   **`functions/`**: Reusable `jq` macro libraries for `vecq`.
     *   `chat_format.jq`: Renders chat logs to Markdown.
@@ -10,7 +23,7 @@ This directory contains example resources for learning and testing `vecdb` and `
     *   `tree.jq`: Navigates JSON file trees.
     *   (And more...)
 
-## Usage
+### Usage
 
 You can use these functions by passing the directory to `vecq` via the `-L` (library path) flag:
 
