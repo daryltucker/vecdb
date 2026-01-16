@@ -31,9 +31,11 @@ vecq allows AI Agents to query source code structure (AST) as if it were JSON.
 - **Action**: Dump the full AST as JSON.
 - **Usage**: `vecq --convert <INPUT>`
 
-### 4. Introspection (`list-filters`)
-- **Action**: List all available jq filters and functions (standard library).
-- **Usage**: `vecq list-filters`
+### 4. Introspection (`list-filters`, `elements`)
+- **Action**: List tools and AST structures.
+- **Usage**: 
+    - `vecq list-filters` : List available jq filters.
+    - `vecq elements <EXT>` : List available AST elements for a language.
 
 ### 5. Documentation (`doc`)
 - **Action**: Generate standardized Markdown documentation from semantic code structure.

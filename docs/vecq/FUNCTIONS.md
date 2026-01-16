@@ -1,4 +1,4 @@
-# User Defined Functions (Macros)
+q# User Defined Functions (Macros)
 
 `vecq` allows you to define reusable `jq` functions. This helps complex queries become readable, reusable "macros".
 
@@ -74,7 +74,7 @@ Turn `npm audit --json` into a developer-friendly security report.
 Generate setup scripts from project configuration JSON.
 *   `vscode_install_script`: Converts `.vscode/extensions.json` into a bash script to install all recommended extensions.
 
-### 8. Lighthouse (`lighthouse.jq`)
+### 7. Lighthouse (`lighthouse.jq`)
 Extract Web Vitals and scores from Lighthouse JSON.
 *   `lighthouse_badges`: One-line summary (e.g., "🟢 Performance: 98 | 🟢 Accessibility: 100").
 *   `lighthouse_table`: Detailed Markdown table of scores.

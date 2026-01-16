@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use vecdb_core::Core;
 use vecdb_core::config::Config;
-use vecdb_core::tools::{SearchArgs, EmbedArgs, IngestPathArgs, IngestHistoryArgs, VecqToolArgs};
+use vecdb_core::tools::{SearchArgs, EmbedArgs, IngestPathArgs, IngestHistoryArgs, VecqToolArgs, JobStatusArgs};
 use schemars::schema_for;
 use vecq; // Direct access to vecq logic
 
@@ -60,6 +60,7 @@ pub async fn handle_request(core: &Arc<Core>, config: &Config, req: &JsonRpcRequ
             let ingest_schema = schema_for!(IngestPathArgs);
             let history_schema = schema_for!(IngestHistoryArgs);
             let vecq_schema = schema_for!(VecqToolArgs);
+            let job_status_schema = schema_for!(JobStatusArgs);
             
             let to_json = |val| serde_json::to_value(val).map_err(|e| JsonRpcError {
                 code: -32603,
@@ -112,14 +113,19 @@ pub async fn handle_request(core: &Arc<Core>, config: &Config, req: &JsonRpcRequ
                         "inputSchema": to_json(ingest_schema)?
                     },
                     {
-                        "name": "ingest_historic_version",
-                        "description": "Ingest a specific git revision ('Time Travel'). Query historical code states.\n\nExample: ingest_historic_version(repo_path='https://github.com/user/repo', git_ref='v1.0.0', collection='repo-v1')\n\nUse case: Compare implementations across versions, understand evolution.\nSafety: Sandboxed execution for security.",
+                        "name": "ingest_history",
+                        "description": "Ingest a specific git revision ('Time Travel'). Query historical code states.\n\nExample: ingest_history(repo_path='https://github.com/user/repo', git_ref='v1.0.0', collection='repo-v1')\n\nUse case: Compare implementations across versions, understand evolution.\nSafety: Sandboxed execution for security.",
                         "inputSchema": to_json(history_schema)?
                     },
                     {
                         "name": "code_query",
-                        "description": "Query source code structure using jq-style syntax (vecq). Extract functions, classes, or code ranges.\n\nExample: code_query(path='src/main.rs', query='.functions[] | select(.name==\"main\")')\n\nUse case: Structural analysis without ingestion. Fast queries for specific code elements.\nSecurity: Requires --allow-local-fs for local files.",
+                        "description": "Execute AST-aware structural queries (jq-style) against code files.\n\nExample: code_query(path='src/main.rs', query='.functions[] | select(.name == \"main\")')\n\nUse case: High-precision extraction of specific code elements (classes, functions, docs) without full file ingestion.\nSupported: Rust (rs), Python (py), Markdown (md), Javascript (js/ts), SQL, Go.",
                         "inputSchema": to_json(vecq_schema)?
+                    },
+                    {
+                        "name": "get_job_status",
+                        "description": "Check the status of background jobs (ingestion, optimization). Returns progress, PID, and status.\n\nExample: get_job_status(id='abc-123')\n\nWorkflow: Start ingestion → use job ID to track progress → search once complete.",
+                        "inputSchema": to_json(job_status_schema)?
                     }
                 ]
             }))
@@ -499,11 +505,11 @@ pub async fn handle_request(core: &Arc<Core>, config: &Config, req: &JsonRpcRequ
                         }
                     ]
                 }))
-            } else if name == "ingest_historic_version" {
+            } else if name == "ingest_history" {
                  let args_val = &params["arguments"];
                  let args: IngestHistoryArgs = serde_json::from_value(args_val.clone()).map_err(|e| JsonRpcError {
                     code: -32602,
-                    message: format!("Invalid arguments for ingest_historic_version: {}", e),
+                    message: format!("Invalid arguments for {}: {}", name, e),
                     data: None,
                 })?;
 
@@ -631,6 +637,31 @@ pub async fn handle_request(core: &Arc<Core>, config: &Config, req: &JsonRpcRequ
                         }
                     ]
                  }))
+            } else if name == "get_job_status" {
+                 let args_val = &params["arguments"];
+                 let args: JobStatusArgs = serde_json::from_value(args_val.clone()).map_err(|e| JsonRpcError {
+                    code: -32602,
+                    message: format!("Invalid arguments for get_job_status: {}", e),
+                    data: None,
+                })?;
+
+                let job_registry = vecdb_core::jobs::JobRegistry::new().ok();
+                let local_jobs = job_registry.as_ref().and_then(|r| r.load().ok()).unwrap_or_default();
+                let remote_tasks = core.list_tasks().await.unwrap_or_default();
+
+                if let Some(target_id) = args.id {
+                    let job = local_jobs.into_iter().find(|j| j.id == target_id);
+                    Ok(json!({
+                        "id": target_id,
+                        "local_job": job,
+                        "remote_tasks": remote_tasks.into_iter().filter(|t| t.id == target_id).collect::<Vec<_>>()
+                    }))
+                } else {
+                    Ok(json!({
+                        "local_jobs": local_jobs,
+                        "remote_tasks": remote_tasks
+                    }))
+                }
             } else {
                 Err(JsonRpcError {
                     code: -32601,

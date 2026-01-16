@@ -54,6 +54,7 @@ once_cell = "1.21.3"
 regex = "1.12.2"
 indicatif = "0.18.3"
 figment = { version = "0.10.19", features = ["toml", "env"] }
+sysinfo = "0.33.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 openssl = { version = "0.10", features = ["vendored"] }

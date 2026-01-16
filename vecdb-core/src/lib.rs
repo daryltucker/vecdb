@@ -34,6 +34,7 @@ pub mod state;
 pub mod parsers;
 pub mod chunking;
 pub mod snapshot;
+pub mod jobs;
 
 // Re-export output from vecdb-common for backwards compatibility
 pub use vecdb_common::output;
@@ -302,6 +303,11 @@ impl Core {
     /// Optimize collection (apply quantization)
     pub async fn optimize_collection(&self, collection: &str, quantization: config::QuantizationType) -> Result<()> {
         self.backend.update_collection_quantization(collection, quantization).await
+    }
+
+    /// List background tasks from the backend
+    pub async fn list_tasks(&self) -> Result<Vec<types::TaskInfo>> {
+        self.backend.list_tasks().await
     }
 }
 

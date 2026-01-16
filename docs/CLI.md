@@ -64,6 +64,16 @@ List available collections and their statistics.
 ### `status`
 Show system health, connectivity, and detailed collection stats.
 
+### `config <SUBCOMMAND>`
+Manage configuration settings.
+*   **Subcommands**:
+    *   `set-quantization <COLLECTION> <TYPE>`: Set quantization config (scalar, binary, none).
+    *   `get`: View current config values.
+
+### `optimize <COLLECTION>`
+Apply optimization (quantization) to a collection based on its config.
+*   **Arguments**: `<COLLECTION>` name.
+
 ### `delete <COLLECTION>`
 Safely delete a collection.
 *   **Options**:

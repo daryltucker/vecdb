@@ -32,6 +32,7 @@ impl vecdb_core::backend::Backend for MockBackend {
     async fn list_metadata_values(&self, _: &str, _: &str) -> anyhow::Result<Vec<String>> { Ok(vec![]) }
     async fn get_collection_id(&self, _collection: &str) -> anyhow::Result<Option<String>> { Ok(None) }
     async fn set_collection_id(&self, _collection: &str, _id: &str) -> anyhow::Result<()> { Ok(()) }
+    async fn list_tasks(&self) -> anyhow::Result<Vec<vecdb_core::types::TaskInfo>> { Ok(vec![]) }
 }
 
 struct MockEmbedder;

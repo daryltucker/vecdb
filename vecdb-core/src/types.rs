@@ -44,6 +44,7 @@
  */
 
 use serde::{Deserialize, Serialize};
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -128,4 +129,37 @@ pub struct CollectionInfo {
     pub vector_count: Option<u64>,
     pub vector_size: Option<u64>,
     pub quantization: Option<crate::config::QuantizationType>,
+}
+
+/// Information about a background task in the backend (e.g., optimization).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskInfo {
+    pub id: String,
+    pub collection: Option<String>,
+    pub status: String, // "running", "completed", "failed"
+    pub progress: Option<f32>,
+    pub description: String,
+}
+
+/// Status of a local ingestion job.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed(String),
+}
+
+/// Represents a long-running local ingestion job.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Job {
+    pub id: String,
+    pub job_type: String, // "ingest", "history"
+    pub collection: String,
+    pub status: JobStatus,
+    pub progress: f32, // 0.0 to 1.0
+    pub pid: u32,
+    pub started_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }

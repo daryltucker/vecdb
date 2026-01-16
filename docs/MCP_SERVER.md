@@ -114,6 +114,7 @@ Structural code search/extraction using `vecq` syntax (jq-for-code).
 
 The server exposes machine-readable resources for agents:
 *   `vecdb://registry`: JSON summary of the server status and collections.
+*   `vecdb://services`: Alias for registry.
 *   `vecdb://manual`: The Agent Interface Specification (this guide).
 *   `vecdb://collections/{name}`: Full metadata stats for a specific collection.
 

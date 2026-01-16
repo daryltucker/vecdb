@@ -10,6 +10,8 @@
 
 Uses **Qdrant** as the robust storage backend.
 
+`vecq` is now available as a standalone tool! [Read the Guide](docs/vecq/README.md).
+
 ---
 
 ## 🚀 Quick Start
@@ -62,16 +64,6 @@ Tip: Use './install.sh --verbose' to see compilation output
 
 See [docs/BUILDING.md](docs/BUILDING.md).
 
-**Python Environment (for tests & tools)**
-
-The project includes several orchestration and test scripts that require Python 3.10+. It is recommended to use a virtual environment:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
 ### 2. Initialization
 
 Run the initialization command to set up your configuration:
@@ -92,12 +84,14 @@ docker run -d -p 6333:6333 \
     qdrant/qdrant
 ```
 
+See [Examples README.md](examples/README.md#qdrant) and [docker-compose.qdrant](examples/docker-compose.qdrant)
+
 **Option B: Manual / Cloud**
 Install/Sign-up at [qdrant.tech](https://qdrant.tech/documentation/quick-start/).
 Then update your config:
 Edit your config manually:
 ```bash
-nano ~/.config/vecdb/config.toml
+vim ~/.config/vecdb/config.toml
 ```
 
 ### 4. Basic Usage
@@ -124,6 +118,8 @@ By default, `vecdb` is built with CUDA support enabled (via `ort` static linking
     *   Set `local_use_gpu = true` in `~/.config/vecdb/config.toml` (default).
     *   **No manual library paths needed**: The ONNX Runtime is statically linked into the binary.
 
+> **Tip**: GPU is really not required, and you will still benefit from `vecdb` when using the CPU embeddings. However, this feature is here for those who want or need it.
+
 ### Opting Out (CPU Only)
 If you do not need GPU support or want to reduce binary size, you can disable the default CUDA features during build:
 
@@ -132,6 +128,8 @@ cargo install --path vecdb-cli --no-default-features
 ```
 
 > **Note**: `vecdb` uses `ort` with static linking. You do **not** need to set `LD_LIBRARY_PATH` or manually manage `libonnxruntime.so` files.
+
+> **Note**: You will still need the `libonnxruntime_providers` ref: [GPU.md](docs/GPU.md).
 
 ### File Ignoring (`.vectorignore`)
 
@@ -159,6 +157,8 @@ vecdb search "latest rust files" --smart
 # Pipe-friendly JSON output
 vecdb search "auth policy" --json | jq .
 ```
+
+ **Tip**: `vecdb search` returns raw embeddings.  Use `docsize` to do a more proper search to show what these embeddings can do for your Agent (Even 1B or 4B models).
 
 **Check Status:**
 ```bash
@@ -193,8 +193,8 @@ To use with an MCP client (like Claude Desktop or an IDE):
 *   `search_vectors`: Semantic search.
 *   `embed`: Generate embeddings.
 *   `ingest_path`: Ingest local files/folders.
-*   `ingest_historic_version`: Time-travel ingestion (Git).
-*   `code_query`: Analyze code structure with `vecq` (supports `-f`, `-L` flags). Now supports comment-aware queries for Rust!
+*   `ingest_history`: Time-travel ingestion (Git).
+*   `code_query`: Analyze code structure with `vecq`.
 
 See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for API details.
 
@@ -205,7 +205,7 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for API details.
 *   **[EXAMPLES.md](docs/EXAMPLES.md)**: Common usage patterns and tricks.
 *   **[CONFIG.md](docs/CONFIG.md)**: Full configuration reference.
 *   **[BUILDING.md](docs/BUILDING.md)**: Compile from source.
-*   **[Vecq Guide](docs/vecq/README.md)**: Manual for the `vecq` code query tool.
+*   **[vecq Guide](docs/vecq/README.md)**: Manual for the `vecq` code query tool.
 *   **Specs**: Detailed feature modules in `docs/specs/` (e.g. [Ingestion Design](docs/specs/INGESTION_DESIGN.md)).
 
 ## 🤝 Contributing & support

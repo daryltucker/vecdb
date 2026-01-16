@@ -133,6 +133,10 @@ impl Backend for MockBackend {
     async fn set_collection_id(&self, _collection: &str, _id: &str) -> Result<()> {
         Ok(())
     }
+
+    async fn list_tasks(&self) -> Result<Vec<vecdb_core::types::TaskInfo>> {
+        Ok(vec![])
+    }
 }
 
 #[tokio::test]

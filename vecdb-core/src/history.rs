@@ -30,6 +30,9 @@ pub async fn ingest_history(
         eprintln!("Starting Time Travel Ingestion: {} @ {}", repo_path, git_ref);
     }
 
+    let job_registry = crate::jobs::JobRegistry::new().ok();
+    let _job_id = job_registry.as_ref().and_then(|r| r.register("history", collection).ok());
+
     // 1. Create Sandbox
     let sandbox = GitSandbox::new(repo_path, git_ref)?;
     if OUTPUT.is_interactive {

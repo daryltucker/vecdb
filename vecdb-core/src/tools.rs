@@ -98,6 +98,14 @@ pub struct VecqToolArgs {
     pub repo_path: Option<String>,
 }
 
+/// Tool: Check status of background jobs
+#[derive(Debug, Args, Serialize, Deserialize, JsonSchema, Clone)]
+pub struct JobStatusArgs {
+    /// Optional Job ID to filter for a specific task
+    #[arg(long, short)]
+    pub id: Option<String>,
+}
+
 /// Enum for easy CLI dispatch (Optional)
 #[derive(Debug, Parser)]
 pub enum ToolCommand {

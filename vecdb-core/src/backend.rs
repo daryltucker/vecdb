@@ -100,11 +100,13 @@ pub trait Backend: Send + Sync {
     /// Used for dynamic discovery of versions, themes, etc.
     async fn list_metadata_values(&self, collection: &str, key: &str) -> Result<Vec<String>>;
 
-    /// Get the unique Collection ID (UUID) from the backend.
-    /// Returns None if the collection exists but has no ID (legacy).
-    async fn get_collection_id(&self, collection: &str) -> Result<Option<String>>;
-
     /// Set the unique Collection ID (UUID) for a collection.
     /// Should be idempotent.
     async fn set_collection_id(&self, collection: &str, id: &str) -> Result<()>;
+
+    /// Get the unique Collection ID (UUID) for a collection if it exists.
+    async fn get_collection_id(&self, collection: &str) -> Result<Option<String>>;
+
+    /// List background tasks (optimization, etc.) from the backend.
+    async fn list_tasks(&self) -> Result<Vec<crate::types::TaskInfo>>;
 }

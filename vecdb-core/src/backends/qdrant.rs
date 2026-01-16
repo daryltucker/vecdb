@@ -509,4 +509,11 @@ impl Backend for QdrantBackend {
 
         Ok(())
     }
+
+    async fn list_tasks(&self) -> Result<Vec<crate::types::TaskInfo>> {
+        // qdrant-client v1.16.0 handles tasks differently (often via a separate service client
+        // or builder pattern that isn't immediately obvious in the flat Qdrant struct).
+        // Returning empty list for now to fix build.
+        Ok(Vec::new())
+    }
 }

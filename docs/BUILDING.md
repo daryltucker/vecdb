@@ -9,6 +9,16 @@
 *   **Git**: To clone the repository.
 *   **Build Tools**: Standard build-essential (Linux) or Xcode Command Line Tools (macOS).
 
+**Python Environment (for tests & tools)**
+
+The project includes several orchestration and test scripts that require Python 3.10+. It is recommended to use a virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
 ## Step-by-Step Build
 
 1.  **Clone the Repository**:

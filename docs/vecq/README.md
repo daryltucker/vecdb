@@ -66,7 +66,14 @@ vecq syntax README.md
 vecdb search "policy" | vecq syntax -l md
 ```
 
-### 5. Documentation Generator
+### 6. Codebase Discovery (`elements`)
+Discover available AST elements for any language:
+```bash
+vecq elements rs
+# Output: functions, structs, imports, etc.
+```
+
+### 7. Documentation Generator (`doc`)
 Generate clean Markdown documentation from any source code:
 ```bash
 vecq doc src/lib.rs

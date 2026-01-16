@@ -30,6 +30,8 @@ pub async fn ingest_path(
     parser_factory: &Arc<dyn ParserFactory>,
     options: IngestionOptions,
 ) -> Result<()> {
+    let job_registry = crate::jobs::JobRegistry::new().ok();
+    let job_id = job_registry.as_ref().and_then(|r| r.register("ingest", &options.collection).ok());
     if OUTPUT.is_interactive {
         eprintln!("Ingesting path: {}", options.path);
     }
@@ -206,18 +208,34 @@ pub async fn ingest_path(
             }
         }
         
+        let mut files_finished = 0;
+        let total_detect = files_scanned.max(1); // Avoid div by zero
+
         while let Some(res) = tasks.try_join_next() {
              match res {
                  Ok(Ok(Some(mut file_chunks))) => {
                      files_processed += 1;
+                     files_finished += 1;
                      chunks_buffer.append(&mut file_chunks);
                      
                      if chunks_buffer.len() >= batch_size {
                          flush_chunks(backend, embedder, &collection_name, &mut chunks_buffer, options_arc.gpu_batch_size).await?;
                      }
+
+                     if let Some(ref j_id) = job_id {
+                         if let Some(ref r) = job_registry {
+                             let _ = r.update_progress(j_id, files_finished as f32 / total_detect as f32);
+                         }
+                     }
                  },
                  Ok(Ok(None)) => {
                      files_skipped += 1;
+                     files_finished += 1;
+                     if let Some(ref j_id) = job_id {
+                         if let Some(ref r) = job_registry {
+                             let _ = r.update_progress(j_id, files_finished as f32 / total_detect as f32);
+                         }
+                     }
                  },
                  Ok(Err(e)) => {
                      if OUTPUT.is_interactive { eprintln!("File processing error: {}", e); }
@@ -229,17 +247,32 @@ pub async fn ingest_path(
         }
     }
     
+    let mut files_finished = files_processed + files_skipped;
+    let total_detect = files_scanned.max(1);
+
     while let Some(res) = tasks.join_next().await {
          match res {
              Ok(Ok(Some(mut file_chunks))) => {
                  files_processed += 1;
+                 files_finished += 1;
                  chunks_buffer.append(&mut file_chunks);
                  if chunks_buffer.len() >= batch_size {
                       flush_chunks(backend, embedder, &collection_name, &mut chunks_buffer, options_arc.gpu_batch_size).await?;
                   }
+                 if let Some(ref j_id) = job_id {
+                     if let Some(ref r) = job_registry {
+                         let _ = r.update_progress(j_id, files_finished as f32 / total_detect as f32);
+                     }
+                 }
              },
              Ok(Ok(None)) => {
                  files_skipped += 1;
+                 files_finished += 1;
+                 if let Some(ref j_id) = job_id {
+                     if let Some(ref r) = job_registry {
+                         let _ = r.update_progress(j_id, files_finished as f32 / total_detect as f32);
+                     }
+                 }
              },
              Ok(Err(e)) => { if OUTPUT.is_interactive { eprintln!("File processing error: {}", e); } },
              Err(e) => { if OUTPUT.is_interactive { eprintln!("Task join error: {}", e); } }
@@ -248,6 +281,12 @@ pub async fn ingest_path(
 
     if !chunks_buffer.is_empty() {
         flush_chunks(backend, embedder, &collection_name, &mut chunks_buffer, options_arc.gpu_batch_size).await?;
+    }
+
+    if let Some(ref j_id) = job_id {
+        if let Some(ref r) = job_registry {
+            let _ = r.complete(j_id);
+        }
     }
 
     if state_changed {

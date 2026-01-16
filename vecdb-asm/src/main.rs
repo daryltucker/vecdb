@@ -28,6 +28,10 @@ struct Args {
     #[arg(long)]
     stitch: bool,
 
+    /// Detect divergent timelines (State strategy only)
+    #[arg(long)]
+    detect_timelines: bool,
+
     /// Input file (optional, defaults to stdin)
     #[arg(value_name = "INPUT")]
     input: Option<PathBuf>,
@@ -35,11 +39,35 @@ struct Args {
     /// Verbose output
     #[arg(short, long)]
     verbose: bool,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Parser, Debug)]
+enum Commands {
+    /// Display manual entry
+    Man {
+        /// Display agent-optimized manual
+        #[arg(long)]
+        agent: bool,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Check for subcommand first (e.g. `man`)
+    if let Some(Commands::Man { agent }) = args.command {
+        if agent {
+            print!("{}", include_str!("docs/man_agent.md"));
+        } else {
+            print!("{}", include_str!("docs/man_human.md"));
+        }
+        return Ok(());
+    }
+
     let input_ctx = InputContext::detect();
     let _output_ctx = OutputContext::detect();
 
@@ -92,7 +120,7 @@ async fn main() -> Result<()> {
         "state" => {
             if args.verbose { eprintln!("Executing State Strategy..."); }
             let loader = FileSystemSnapshotLoader;
-            process_state(input_val, &loader)?
+            process_state(input_val, &loader, args.detect_timelines)?
         },
         _ => anyhow::bail!("Unknown strategy: {}", args.strategy),
     };

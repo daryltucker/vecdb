@@ -2,9 +2,6 @@
  * PURPOSE:
  *   Implements the `status` command.
  *   Displays current configuration, connectivity, and collection stats.
- *
- * AESTHETICS:
- *   "Sexy/Sleek Hacker" - ANSI colors, clear tables, status indicators.
  */
 
 use clap::Args;
@@ -16,22 +13,26 @@ use vecq::detection::HybridDetector;
 
 #[derive(Args, Debug)]
 pub struct StatusArgs {
-    // No specific args for status anymore, overrides handled globally
+    /// Show details for a specific Job ID
+    #[arg(short, long)]
+    pub id: Option<String>,
 }
 
-pub async fn run(_args: StatusArgs, config: &Config, profile_name: &str, format: vecdb_common::output::OutputFormat) -> anyhow::Result<()> {
-    // 1. Resolve Profile
+pub async fn run(
+    _args: StatusArgs,
+    config: &Config,
+    profile_name: &str,
+    format: vecdb_common::output::OutputFormat,
+) -> anyhow::Result<()> {
     let profile = config.get_profile(Some(profile_name))?;
-
-    // Prepare shared services
+    
     let file_detector = Arc::new(HybridDetector::new());
     let parser_factory = Arc::new(VecqParserFactory);
 
-    // 2. Connectivity Check & Core Init
     let core_result = vecdb_core::Core::new(
         &profile.qdrant_url,
         &profile.ollama_url,
-        &profile.embedding_model,
+        &config.resolve_embedding_model(&profile),
         profile.accept_invalid_certs,
         &profile.embedder_type,
         Some(config.fastembed_cache_path.clone()),
@@ -45,6 +46,9 @@ pub async fn run(_args: StatusArgs, config: &Config, profile_name: &str, format:
         file_detector.clone(),
         parser_factory.clone(),
     ).await;
+
+    let job_registry = vecdb_core::jobs::JobRegistry::new().ok();
+    let local_jobs = job_registry.as_ref().and_then(|r| r.load().ok()).unwrap_or_default();
 
     if matches!(format, vecdb_common::output::OutputFormat::Json) {
         use serde_json::json;
@@ -60,11 +64,13 @@ pub async fn run(_args: StatusArgs, config: &Config, profile_name: &str, format:
                 "qdrant": false,
                 "error": serde_json::Value::Null
             },
-            "collections": []
+            "collections": [],
+            "background_tasks": [],
+            "local_jobs": local_jobs
         });
 
         match core_result {
-            Ok(core) => {
+            Ok(ref core) => {
                 status["connectivity"]["qdrant"] = json!(true);
                 match core.list_collections().await {
                     Ok(collections) => {
@@ -80,14 +86,44 @@ pub async fn run(_args: StatusArgs, config: &Config, profile_name: &str, format:
                          status["connectivity"]["collections_error"] = json!(e.to_string());
                     }
                 }
+                
+                if let Ok(tasks) = core.list_tasks().await {
+                    status["background_tasks"] = json!(tasks);
+                }
             },
             Err(e) => {
                  status["connectivity"]["error"] = json!(e.to_string());
             }
         }
         
-        println!("{}", serde_json::to_string_pretty(&status)?);
+        if let Some(target_id) = &_args.id {
+             if let Some(job) = local_jobs.iter().find(|j| &j.id == target_id) {
+                 println!("{}", serde_json::to_string_pretty(&job)?);
+             } else {
+                 println!("{}", serde_json::to_string_pretty(&status)?);
+             }
+        } else {
+            println!("{}", serde_json::to_string_pretty(&status)?);
+        }
         return Ok(());
+    }
+
+    // Detail View
+    if let Some(target_id) = &_args.id {
+         let skin = make_custom_skin();
+         if let Some(job) = local_jobs.iter().find(|j| &j.id == target_id) {
+             skin.print_text(&format!(" # Job Details: `{}`", target_id));
+             skin.print_text(&format!("* **Type**: `{}`", job.job_type));
+             skin.print_text(&format!("* **Collection**: `{}`", job.collection));
+             skin.print_text(&format!("* **Status**: `{:?}`", job.status));
+             skin.print_text(&format!("* **Progress**: `{:.1}%`", job.progress * 100.0));
+             skin.print_text(&format!("* **PID**: `{}`", job.pid));
+             skin.print_text(&format!("* **Started**: `{}`", job.started_at));
+             skin.print_text(&format!("* **Updated**: `{}`", job.updated_at));
+         } else {
+             skin.print_text(&format!(" # Job ID `{}` not found.", target_id));
+         }
+         return Ok(());
     }
 
     // Interactive Mode (Original)
@@ -112,38 +148,60 @@ pub async fn run(_args: StatusArgs, config: &Config, profile_name: &str, format:
         Ok(core) => {
              skin.print_text("* **Qdrant**: **ONLINE** (Connected)");
              
-             // Collection Stats
+             // Background Tasks (from Backend)
+             skin.print_text("\n## Active Remote Tasks (Qdrant)");
+             if let Ok(tasks) = core.list_tasks().await {
+                 if tasks.is_empty() {
+                      skin.print_text(" *No active remote tasks.*");
+                 } else {
+                     println!("{:<10} | {:<20} | {:<20}", "ID", "Type", "Status");
+                     println!("{:-<10}-+-{:-<20}-+-{:-<20}", "", "", "");
+                     for t in tasks {
+                         println!("{:<10} | {:<20} | {:<20}", t.id, t.description, t.status);
+                     }
+                 }
+             }
+
+             // Local Jobs
+             skin.print_text("\n## Active Local Jobs (Ingestion)");
+             if local_jobs.is_empty() {
+                 skin.print_text(" *No active local jobs.*");
+             } else {
+                 println!("{:<10} | {:<10} | {:<15} | {:<10} | {:<10}", "ID", "Type", "Collection", "Progress", "PID");
+                 println!("{:-<10}-+-{:-<10}-+-{:-<15}-+-{:-<10}-+-{:-<10}", "", "", "", "", "");
+                 for j in local_jobs {
+                      println!("{:<10} | {:<10} | {:<15} | {:<10.1}% | {:<10}", 
+                        j.id, j.job_type, j.collection, j.progress * 100.0, j.pid);
+                 }
+             }
+
+             // Collection Overview
              skin.print_text("\n## Collections");
              match core.list_collections().await {
                  Ok(collections) => {
-                     if collections.is_empty() {
-                         skin.print_text(" *No collections found.*");
-                     } else {
-                         // Table Header
-                         println!("{:<20} | {:<15} | {:<10}", "Name", "Vectors", "Dim");
-                         println!("{:-<20}-+-{:-<15}-+-{:-<10}", "", "", "");
-                         
-                         for c in collections {
-                             let count_str = c.vector_count.map(|v| v.to_string()).unwrap_or_else(|| "?".to_string());
-                             let dim_str = c.vector_size.map(|v| v.to_string()).unwrap_or_else(|| "?".to_string());
-                             
-                             // Highlight the active collection from profile
-                             if c.name == profile.default_collection_name {
-                                 skin.print_text(&format!("**{:<20}** | {:<15} | {:<10} *(Active)*", c.name, count_str, dim_str));
-                             } else {
-                                 println!("{:<20} | {:<15} | {:<10}", c.name, count_str, dim_str);
-                             }
-                         }
-                     }
-                 }
+                    if collections.is_empty() {
+                        skin.print_text(" *No collections found.*");
+                    } else {
+                        println!("{:<15} | {:<10} | {:<10} | {:<10}", "Name", "Vectors", "Size", "Active");
+                        println!("{:-<15}-+-{:-<10}-+-{:-<10}-+-{:-<10}", "", "", "", "");
+                        for c in collections {
+                            let active_str = if c.name == profile.default_collection_name { "YES" } else { "" };
+                            println!("{:<15} | {:<10} | {:<10} | {:<10}", 
+                                c.name, 
+                                c.vector_count.unwrap_or(0), 
+                                c.vector_size.unwrap_or(0),
+                                active_str
+                            );
+                        }
+                    }
+                 },
                  Err(e) => {
-                     skin.print_text(&format!("* **Error fetching collections**: {}", e));
+                     skin.print_text(&format!("* **Collections Error**: `{}`", e));
                  }
              }
-        }
+        },
         Err(e) => {
-            skin.print_text(&format!("* **Qdrant**: **OFFLINE** (Error: {})", e));
-            skin.print_text("\n> [!WARNING]\n> Cannot connect to backend. Ensure Qdrant is running.");
+             skin.print_text(&format!("* **Qdrant**: **OFFLINE** ({})", e));
         }
     }
     
