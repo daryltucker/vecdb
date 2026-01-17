@@ -1,5 +1,15 @@
-mod types;
-mod strategy;
+mod types; // Still needed? No, lib exposes it.
+// Actually main might use types if it deserializes.
+// But we should use the lib's types.
+// But wait, strategy folders are inside src/.
+// If I move them to lib, main can't see them as mods if main is still inside src/?
+// Rust file structure:
+// if src/lib.rs exists, `vecdb_asm` is the crate name.
+// main.rs can verify `use vecdb_asm::*`.
+// BUT, `types.rs` and `strategy` are siblings of `lib.rs` and `main.rs`.
+// They can be modules of `lib.rs`.
+// `main.rs` should NOT declare `mod types;` if `lib.rs` does.
+// `main.rs` should use everything from `vecdb_asm`.
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -8,9 +18,8 @@ use vecdb_common::{InputContext, OutputContext};
 use anyhow::Result;
 use std::io::{Read, Write};
 
-// Import strategy handlers
-use strategy::stream::process_stream;
-use strategy::state::{process_state, FileSystemSnapshotLoader};
+// Use the library crate
+use vecdb_asm::{process_stream, process_state, FileSystemSnapshotLoader};
 
 #[derive(Parser, Debug)]
 #[command(name = "vecdb-asm")]
@@ -84,7 +93,6 @@ async fn main() -> Result<()> {
         std::io::stdin().read_to_string(&mut buffer)?;
     } else {
         // No input file, no piped data -> Show Help or Error
-        // No input file, no piped data -> Show Help or Error
         eprintln!("Error: No input provided. Pipe data via stdin or provide a file path.");
         return Ok(());
     }
@@ -132,4 +140,3 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
-
