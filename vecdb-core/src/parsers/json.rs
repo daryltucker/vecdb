@@ -18,28 +18,47 @@ impl JsonParser {
         Self
     }
 
-    fn flatten_value(&self, value: &Value, prefix: String, chunks: &mut Vec<String>) {
-        match value {
-            Value::Object(map) => {
-                for (k, v) in map {
-                    let new_prefix = if prefix.is_empty() {
-                        k.clone()
-                    } else {
-                        format!("{}.{}", prefix, k)
-                    };
-                    self.flatten_value(v, new_prefix, chunks);
-                }
+    fn flatten_value_iterative(&self, root: &Value, chunks: &mut Vec<String>) {
+        // Use a stack for iterative traversal to avoid recursion limits
+        // (prefix, value)
+        let mut stack = vec![("".to_string(), root)];
+
+        // Safety limit to prevent memory exhaustion on malicious inputs
+        let mut processed_nodes = 0;
+        const MAX_NODES: usize = 100_000;
+
+        while let Some((prefix, value)) = stack.pop() {
+            processed_nodes += 1;
+            if processed_nodes > MAX_NODES {
+                chunks.push(format!("...[TRUNCATED: JSON structure exceeded {} nodes]...", MAX_NODES));
+                break;
             }
-            Value::Array(arr) => {
-                for (i, v) in arr.iter().enumerate() {
-                    let new_prefix = format!("{}[{}]", prefix, i);
-                    self.flatten_value(v, new_prefix, chunks);
+
+            match value {
+                Value::Object(map) => {
+                    // Push in reverse order so they are popped in natural order
+                    for (k, v) in map.iter().rev() {
+                        let new_prefix = if prefix.is_empty() {
+                            k.clone()
+                        } else {
+                            format!("{}.{}", prefix, k)
+                        };
+                        stack.push((new_prefix, v));
+                    }
                 }
-            }
-            _ => {
-                // Leaf node
-                if !prefix.is_empty() {
-                    chunks.push(format!("{}: {}", prefix, value));
+                Value::Array(arr) => {
+                    // Push in reverse order so they are popped in natural order
+                    for (i, v) in arr.iter().enumerate().rev() {
+                        let new_prefix = format!("{}[{}]", prefix, i);
+                        stack.push((new_prefix, v));
+                    }
+                }
+                _ => {
+                    // Leaf node
+                    if !prefix.is_empty() {
+                        // Avoid deep string cloning if possible, but for now format is fine
+                        chunks.push(format!("{}: {}", prefix, value));
+                    }
                 }
             }
         }
@@ -56,7 +75,6 @@ impl Parser for JsonParser {
             Ok(v) => v,
             Err(_) => {
                 // Fallback to JSON5 for files with comments (tsconfig.json, .eslintrc.json, etc.)
-                // Fallback to JSON5 for files with comments (tsconfig.json, .eslintrc.json, etc.)
                 if crate::output::OUTPUT.is_interactive {
                     eprintln!("Notice: Standard JSON parse failed for '{}' (trailing comma/comments detected). Falling back to JSON5 parser...", path.display());
                 }
@@ -65,15 +83,27 @@ impl Parser for JsonParser {
             }
         };
         
+        // 1. Heuristic: Adaptive Chunking Strategy
+        // We want to avoid creating thousands of tiny chunks for large files.
+        // Target around 500 chunks per file maximum to keep embedding pipeline healthy.
+        // Base chunk size is 1000 chars.
+        // If file is 2MB, 2MB / 500 = 4000 chars per chunk.
+        
+        let content_len = content.len();
+        let target_chunk_count = 500;
+        let adaptive_chunk_size = std::cmp::max(1000, content_len / target_chunk_count);
+        
         let mut text_chunks = Vec::new();
-        self.flatten_value(&json, "".to_string(), &mut text_chunks);
+        // Use iterative flattening
+        self.flatten_value_iterative(&json, &mut text_chunks);
 
         let mut chunks = Vec::new();
         let mut current_chunk_text = String::new();
         let mut start_line = 1;
         
         for text in text_chunks {
-            if current_chunk_text.len() + text.len() > 1000 
+            // Use adaptive_chunk_size instead of fixed 1000
+            if current_chunk_text.len() + text.len() > adaptive_chunk_size 
                 && !current_chunk_text.is_empty() {
                     let mut metadata: std::collections::HashMap<String, serde_json::Value> = match &base_metadata {
                         Some(Value::Object(map)) => map.clone().into_iter().collect(),
@@ -81,6 +111,7 @@ impl Parser for JsonParser {
                     };
 
                     metadata.insert("source".to_string(), serde_json::Value::String(path.to_string_lossy().to_string()));
+                    metadata.insert("calculated_chunk_size".to_string(), serde_json::json!(adaptive_chunk_size));
 
                     chunks.push(Chunk {
                         id: Uuid::new_v4().to_string(),
@@ -110,6 +141,7 @@ impl Parser for JsonParser {
             };
 
             metadata.insert("source".to_string(), serde_json::Value::String(path.to_string_lossy().to_string()));
+            metadata.insert("calculated_chunk_size".to_string(), serde_json::json!(adaptive_chunk_size));
 
             chunks.push(Chunk {
                 id: Uuid::new_v4().to_string(),

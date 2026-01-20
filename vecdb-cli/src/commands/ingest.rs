@@ -132,7 +132,7 @@ pub async fn run(args: IngestArgs, config: &Config, profile_name: &str) -> anyho
             _ = tokio::signal::ctrl_c() => {
                 // Flush stdout/stderr
                 println!("\nCancelled by user.");
-                return Ok(());
+                std::process::exit(0);
             }
         }
     

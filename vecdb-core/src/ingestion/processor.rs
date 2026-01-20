@@ -137,9 +137,9 @@ pub async fn process_single_file(
             Ok(c) => c,
             Err(e) => {
                 if OUTPUT.is_interactive {
-                    eprintln!("Warning: Parser failed for {}: {}. Falling back to simple chunking.", rel_path.display(), e);
+                    eprintln!("Warning: Parser failed for {}: {}. Falling back to text-based chunking.", rel_path.display(), e);
                 }
-                process_content(&content, &options, &path, &metadata, file_type).await?
+                process_content(&content, &options, &path, &metadata, vecdb_common::FileType::Text).await?
             }
         }
     } else {

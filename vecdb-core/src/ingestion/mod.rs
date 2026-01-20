@@ -158,24 +158,30 @@ pub async fn ingest_path(
                     
                             let rel_path = path.strip_prefix(root_path).unwrap_or(&path).to_path_buf();
                     
-                    if let Some(ref pb) = pb {
-                        let short_path = rel_path.to_string_lossy();
-                        let msg = if short_path.len() > 40 {
-                            format!("...{}", &short_path[short_path.len().saturating_sub(37)..])
-                        } else {
-                            short_path.to_string()
-                        };
-                        pb.set_message(msg);
-                        pb.inc(1);
-                    }
-
                     if let Ok(meta_hash) = crate::state::compute_file_metadata_hash(&path) {
                         if !state.update_file(&collection_name, rel_path.clone(), meta_hash.clone()) {
+                            // Skipped
+                            if let Some(ref pb) = pb {
+                                pb.set_message("⏭️  Skipping...");
+                                pb.inc(1);
+                            }
                             files_skipped += 1;
                             continue;
                         }
                         state_changed = true;
                     } else { state_changed = true; }
+
+                    // Not skipped - Ingesting
+                    if let Some(ref pb) = pb {
+                        let short_path = rel_path.to_string_lossy();
+                        let msg = if short_path.len() > 40 {
+                            format!("📥 ...{}", &short_path[short_path.len().saturating_sub(37)..])
+                        } else {
+                            format!("📥 {}", short_path)
+                        };
+                        pb.set_message(msg);
+                        pb.inc(1);
+                    }
 
                     let permit = semaphore.clone().acquire_owned().await?;
 
