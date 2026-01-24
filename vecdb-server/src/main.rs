@@ -10,7 +10,7 @@ use clap::Parser;
 use std::sync::Arc;
 use vecdb_core::config::Config;
 use vecdb_core::Core;
-use vecdb_server::handler::{handle_request, JsonRpcRequest, JsonRpcResponse}; // Use the lib module
+use vecdb_server::rpc::{handle_request, types::{JsonRpcRequest, JsonRpcResponse}}; // Use the new rpc module
 mod vecq_adapter;
 use crate::vecq_adapter::VecqParserFactory;
 use vecq::detection::HybridDetector;

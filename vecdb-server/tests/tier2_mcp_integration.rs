@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use vecdb_core::config::Config;
 use vecdb_core::parsers::ParserFactory;
 use vecdb_core::Core;
-use vecdb_server::handler::{handle_request, JsonRpcRequest};
+use vecdb_server::rpc::{handle_request, types::JsonRpcRequest};
 use vecq::detection::HybridDetector;
 
 mod common;

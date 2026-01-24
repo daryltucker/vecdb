@@ -1,4 +1,4 @@
-use crate::handler::{handle_request, JsonRpcRequest, JsonRpcResponse};
+use crate::rpc::{handle_request, types::{JsonRpcRequest, JsonRpcResponse}};
 use axum::{extract::State, routing::post, Json, Router};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
