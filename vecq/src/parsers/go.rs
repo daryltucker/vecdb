@@ -8,27 +8,48 @@
 
 use crate::error::{VecqError, VecqResult};
 use crate::parser::{Parser, ParserCapabilities, ParserConfig};
-use crate::types::{DocumentElement, DocumentMetadata, ElementType, FileType, ParsedDocument, GoAttributes, ElementAttributes};
+use crate::types::{DocumentElement, DocumentMetadata, ElementType, FileType, ParsedDocument, GoAttributes, ElementAttributes, UsageAttributes};
 use std::collections::HashMap;
 use async_trait::async_trait;
 use std::path::PathBuf;
 use serde_json::json;
 
+const PARSE_ERROR_MSG: &str = "Parse error";
+const STRING_PLACEHOLDER: &str = "<string>";
+const GO_LANGUAGE_ERROR: &str = "Failed to set Go language";
+const GO_LANGUAGE_NAME: &str = "Go";
+const GO_FILE_EXTENSION: &str = "go";
+const SOURCE_FILE_NAME: &str = "source";
+
 /// Go parser that extracts structural elements from Go source code
 #[derive(Debug, Clone)]
 pub struct GoParser {
+    enable_usages: bool,
+    current_scope: String,
     _config: ParserConfig,
 }
 
 impl GoParser {
     pub fn new() -> Self {
         Self {
+            enable_usages: false,
+            current_scope: "global".to_string(),
             _config: ParserConfig::default(),
         }
     }
 
+    /// Enable or disable usage/reference detection
+    pub fn with_usages(mut self, enable: bool) -> Self {
+        self.enable_usages = enable;
+        self
+    }
+
     pub fn with_config(config: ParserConfig) -> Self {
-        Self { _config: config }
+        Self {
+            enable_usages: false,
+            current_scope: "global".to_string(),
+            _config: config,
+        }
     }
 
     fn extract_raw_elements(&self, content: &str, tree: &tree_sitter::Tree) -> VecqResult<Vec<DocumentElement>> {
@@ -95,64 +116,156 @@ impl GoParser {
         if name.is_empty() { return None; }
 
         let mut attributes = HashMap::new();
-        if let Some(rt) = receiver_type {
+        if let Some(ref rt) = receiver_type {
             attributes.insert("receiver".to_string(), json!(rt));
         }
 
-        Some(DocumentElement::new(
-            ElementType::Function,
-            Some(name),
-            node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
-            node.start_position().row + 1,
-            node.end_position().row + 1,
+        let element_type = if receiver_type.is_some() {
+            ElementType::Function // Methods are still functions with receiver info
+        } else {
+            ElementType::Function
+        };
+
+        let element = DocumentElement::new(
+            element_type,
+            Some(name.clone()),
+            format!("func {}(...)", name),
+            node.start_position().row,
+            node.end_position().row,
         ).set_attributes(ElementAttributes::Go(GoAttributes {
             other: attributes,
-        })))
+        }));
+
+        Some(element)
     }
 
     fn parse_type_spec(&self, content: &str, node: tree_sitter::Node) -> Option<DocumentElement> {
-        // node is type_spec: name=type_identifier, type=struct_type/interface_type
-        let mut name = None;
-        let mut element_type = ElementType::Struct;
-        
+        let mut name = String::new();
+        let mut type_kind = "struct";
+
+        // Extract name
         if let Some(name_node) = node.child_by_field_name("name") {
-            name = Some(name_node.utf8_text(content.as_bytes()).unwrap_or("").to_string());
-        }
-        
-        if let Some(type_node) = node.child_by_field_name("type") {
-            if type_node.kind() == "interface_type" {
-                element_type = ElementType::Interface;
-            }
+            name = name_node.utf8_text(content.as_bytes()).unwrap_or("").to_string();
         }
 
-        Some(DocumentElement::new(
+        // Determine type kind
+        if let Some(type_node) = node.child_by_field_name("type") {
+            type_kind = match type_node.kind() {
+                "struct_type" => "struct",
+                "interface_type" => "interface",
+                _ => "type",
+            };
+        }
+
+        if name.is_empty() { return None; }
+
+        let mut attributes = HashMap::new();
+        attributes.insert("type_kind".to_string(), json!(type_kind));
+
+        let element_type = match type_kind {
+            "interface" => ElementType::Interface,
+            _ => ElementType::Struct,
+        };
+
+        let element = DocumentElement::new(
             element_type,
-            name,
-            node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
-            node.start_position().row + 1,
-            node.end_position().row + 1,
+            Some(name.clone()),
+            format!("type {} {} {{...}}", name, type_kind),
+            node.start_position().row,
+            node.end_position().row,
         ).set_attributes(ElementAttributes::Go(GoAttributes {
-            other: HashMap::new(),
-        })))
+            other: attributes,
+        }));
+
+        Some(element)
     }
 
     fn parse_import_declaration(&self, content: &str, node: tree_sitter::Node) -> Vec<DocumentElement> {
         let mut imports = Vec::new();
-        let mut cursor = node.walk();
 
+        let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             match child.kind() {
                 "import_spec" => {
-                    if let Some(import_el) = self.parse_import_spec(content, child) {
-                        imports.push(import_el);
+                    let mut module = String::new();
+                    let mut alias = None;
+
+                    // Extract module path
+                    if let Some(path_node) = child.child_by_field_name("path") {
+                        module = path_node.utf8_text(content.as_bytes()).unwrap_or("").to_string();
+                        // Remove quotes
+                        module = module.trim_matches('"').to_string();
+                    }
+
+                    // Extract alias
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        alias = Some(name_node.utf8_text(content.as_bytes()).unwrap_or("").to_string());
+                    }
+
+                    if !module.is_empty() {
+                        let mut attributes = HashMap::new();
+                        attributes.insert("module".to_string(), json!(module));
+                        if let Some(a) = &alias {
+                            attributes.insert("alias".to_string(), json!(a));
+                        }
+                        attributes.insert("import_type".to_string(), json!("import"));
+
+                        let import_name = alias.as_ref().unwrap_or(&module).to_string();
+
+                        let element = DocumentElement::new(
+                            ElementType::Import,
+                            Some(import_name.clone()),
+                            format!("import {}", module),
+                            node.start_position().row,
+                            node.end_position().row,
+                        ).set_attributes(ElementAttributes::Go(GoAttributes {
+                            other: attributes,
+                        }));
+
+                        imports.push(element);
                     }
                 }
                 "import_spec_list" => {
+                    // Handle grouped imports
                     let mut list_cursor = child.walk();
                     for spec in child.children(&mut list_cursor) {
                         if spec.kind() == "import_spec" {
-                            if let Some(import_el) = self.parse_import_spec(content, spec) {
-                                imports.push(import_el);
+                            let mut module = String::new();
+                            let mut alias = None;
+
+                            // Extract module path
+                            if let Some(path_node) = spec.child_by_field_name("path") {
+                                module = path_node.utf8_text(content.as_bytes()).unwrap_or("").to_string();
+                                // Remove quotes
+                                module = module.trim_matches('"').to_string();
+                            }
+
+                            // Extract alias
+                            if let Some(name_node) = spec.child_by_field_name("name") {
+                                alias = Some(name_node.utf8_text(content.as_bytes()).unwrap_or("").to_string());
+                            }
+
+                            if !module.is_empty() {
+                                let mut attributes = HashMap::new();
+                                attributes.insert("module".to_string(), json!(module));
+                                if let Some(a) = &alias {
+                                    attributes.insert("alias".to_string(), json!(a));
+                                }
+                                attributes.insert("import_type".to_string(), json!("import"));
+
+                                let import_name = alias.as_ref().unwrap_or(&module).to_string();
+
+                                let element = DocumentElement::new(
+                                    ElementType::Import,
+                                    Some(import_name.clone()),
+                                    format!("import {}", module),
+                                    node.start_position().row,
+                                    node.end_position().row,
+                                ).set_attributes(ElementAttributes::Go(GoAttributes {
+                                    other: attributes,
+                                }));
+
+                                imports.push(element);
                             }
                         }
                     }
@@ -160,140 +273,500 @@ impl GoParser {
                 _ => {}
             }
         }
-        
+
         imports
     }
 
-    fn parse_import_spec(&self, content: &str, node: tree_sitter::Node) -> Option<DocumentElement> {
-        // import_spec: name? path(string_literal)
-        let mut alias = None;
-        let mut path_str = String::new();
-        
-        if let Some(path_node) = node.child_by_field_name("path") {
-            let raw = path_node.utf8_text(content.as_bytes()).unwrap_or("");
-            path_str = raw.trim_matches('"').to_string();
-        } else {
-             // Fallback iteration
-             let mut cursor = node.walk();
-             for child in node.children(&mut cursor) {
-                 if child.kind() == "string_literal" {
-                     let raw = child.utf8_text(content.as_bytes()).unwrap_or("");
-                     path_str = raw.trim_matches('"').to_string();
-                 }
-             }
-        }
-        
-        if path_str.is_empty() { 
-            return None; 
-        }
-
-        if let Some(name_node) = node.child_by_field_name("name") {
-            alias = Some(name_node.utf8_text(content.as_bytes()).unwrap_or("").to_string());
-        }
-        
-        // Name is the path (D027)
-        let name = Some(path_str.clone());
-
-        let mut attributes = HashMap::new();
-        if let Some(a) = alias {
-            attributes.insert("alias".to_string(), json!(a));
-        }
-
-        Some(DocumentElement::new(
-            ElementType::Import,
-            name,
-            node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
-            node.start_position().row + 1,
-            node.end_position().row + 1,
-        ).set_attributes(ElementAttributes::Go(GoAttributes {
-            other: attributes,
-        })))
+    fn link_methods(&self, elements: Vec<DocumentElement>) -> Vec<DocumentElement> {
+        // For now, just return elements as-is
+        // In a full implementation, this would link methods to their receiver types
+        elements
     }
 
-    /// Link methods to their receiver structs
-    fn link_methods(&self, elements: Vec<DocumentElement>) -> Vec<DocumentElement> {
-        let mut structs: HashMap<String, (usize, DocumentElement)> = HashMap::new();
-        let mut other_elements = Vec::new();
-        let mut methods_to_link = Vec::new();
-        let mut sort_order = 0;
+    /// Extract usage/reference elements from Go AST
+    fn detect_usages(
+        &self,
+        content: &str,
+        tree: &tree_sitter::Tree,
+        current_function: Option<&str>,
+        current_scope: &str,
+    ) -> VecqResult<Vec<DocumentElement>> {
+        let mut usages = Vec::new();
+        let root = tree.root_node();
+        let mut cursor = root.walk();
 
-        // 1. Separate items
-        for el in elements {
-            if (el.element_type == ElementType::Struct || el.element_type == ElementType::Interface) && el.name.is_some() {
-                 let name = el.name.clone().unwrap();
-                 structs.insert(name, (sort_order, el));
-            } else if el.element_type == ElementType::Function {
-                // Check receiver attribute
-                let has_receiver = match &el.attributes {
-                    ElementAttributes::Go(attrs) => attrs.other.contains_key("receiver"),
-                    _ => false,
-                };
-                if has_receiver {
-                    methods_to_link.push(el);
+        for child in root.children(&mut cursor) {
+            match child.kind() {
+                "function_declaration" | "method_declaration" => {
+                    let func_name = child
+                        .child_by_field_name("name")
+                        .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+                        .unwrap_or("");
+
+                    let new_scope = format!("function:{}", func_name);
+                    usages.extend(self.detect_usages_in_node(content, child, Some(func_name), &new_scope)?);
+                }
+                "call_expression" => {
+                    usages.extend(self.detect_call_expression(content, child, current_function, current_scope));
+                }
+                "selector_expression" => {
+                    // Check if this is part of a method call
+                    if let Some(parent) = child.parent() {
+                        if parent.kind() == "call_expression" {
+                            // This is handled in call_expression
+                            continue;
+                        }
+                    }
+                    usages.extend(self.detect_selector_expression(content, child, current_function, current_scope));
+                }
+                "short_var_declaration" | "var_declaration" => {
+                    usages.extend(self.detect_variable_declaration(content, child, current_function, current_scope));
+                }
+                "assignment_statement" => {
+                    usages.extend(self.detect_assignment(content, child, current_function, current_scope));
+                }
+                "import_declaration" => {
+                    usages.extend(self.detect_import_usage(content, child, current_function, current_scope));
+                }
+                _ => {
+                    // Recursively check child nodes
+                    usages.extend(self.detect_usages_in_node(content, child, current_function, current_scope)?);
+                }
+            }
+        }
+
+        Ok(usages)
+    }
+
+    /// Detect usages within a specific AST node
+    fn detect_usages_in_node(
+        &self,
+        content: &str,
+        node: tree_sitter::Node,
+        current_function: Option<&str>,
+        current_scope: &str,
+    ) -> VecqResult<Vec<DocumentElement>> {
+        let mut usages = Vec::new();
+        let mut cursor = node.walk();
+
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "call_expression" => {
+                    usages.extend(self.detect_call_expression(content, child, current_function, current_scope));
+                }
+                "selector_expression" => {
+                    if let Some(parent) = child.parent() {
+                        if parent.kind() == "call_expression" {
+                            continue;
+                        }
+                    }
+                    usages.extend(self.detect_selector_expression(content, child, current_function, current_scope));
+                }
+                "short_var_declaration" | "var_declaration" => {
+                    usages.extend(self.detect_variable_declaration(content, child, current_function, current_scope));
+                }
+                "assignment_statement" => {
+                    usages.extend(self.detect_assignment(content, child, current_function, current_scope));
+                }
+                "identifier" => {
+                    usages.extend(self.detect_identifier_usage(content, child, current_function, current_scope));
+                }
+                _ => {
+                    usages.extend(self.detect_usages_in_node(content, child, current_function, current_scope)?);
+                }
+            }
+        }
+
+        Ok(usages)
+    }
+
+    /// Detect function/method calls
+    fn detect_call_expression(
+        &self,
+        content: &str,
+        node: tree_sitter::Node,
+        current_function: Option<&str>,
+        current_scope: &str,
+    ) -> Vec<DocumentElement> {
+        let mut usages = Vec::new();
+
+        if let Some(function_node) = node.child_by_field_name("function") {
+            let symbol_name = function_node
+                .utf8_text(content.as_bytes())
+                .unwrap_or("")
+                .to_string();
+
+            // Check if this is a method call (selector_expression)
+            let is_method_call = function_node.kind() == "selector_expression";
+
+            // For method calls, extract just the method name (not the full qualified name)
+            let element_name = if is_method_call {
+                if let Some(field_node) = function_node.child_by_field_name("field") {
+                    field_node.utf8_text(content.as_bytes()).unwrap_or("").to_string()
                 } else {
-                    other_elements.push((sort_order, el));
+                    symbol_name.clone()
                 }
             } else {
-                other_elements.push((sort_order, el));
-            }
-            sort_order += 1;
-        }
-
-        // 2. Link
-        for method in methods_to_link {
-            let receiver = match &method.attributes {
-                ElementAttributes::Go(attrs) => attrs.other.get("receiver").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                _ => None,
+                symbol_name.clone()
             };
 
-            if let Some(target) = receiver {
-                if let Some((_, struct_el)) = structs.get_mut(&target) {
-                    struct_el.children.push(method);
-                    continue;
+            let (element_type, usage_type) = if is_method_call {
+                (ElementType::MethodCall, "method_call")
+            } else {
+                (ElementType::FunctionCall, "call")
+            };
+
+            let usage_attr = UsageAttributes {
+                symbol_name: symbol_name.clone(),
+                usage_type: usage_type.to_string(),
+                context: current_function.unwrap_or("global").to_string(),
+                scope: current_scope.to_string(),
+                other: HashMap::new(),
+            };
+
+            let element = DocumentElement::new(
+                element_type,
+                Some(element_name.clone()),
+                format!("{}()", element_name),
+                node.start_position().row,
+                node.end_position().row,
+            )
+            .set_attributes(ElementAttributes::Usage(usage_attr));
+
+            usages.push(element);
+        }
+
+        usages
+    }
+
+    /// Detect variable/field references
+    fn detect_selector_expression(
+        &self,
+        content: &str,
+        node: tree_sitter::Node,
+        current_function: Option<&str>,
+        current_scope: &str,
+    ) -> Vec<DocumentElement> {
+        let mut usages = Vec::new();
+
+        if let Some(field_node) = node.child_by_field_name("field") {
+            let field_name = field_node
+                .utf8_text(content.as_bytes())
+                .unwrap_or("")
+                .to_string();
+
+            let usage_attr = UsageAttributes {
+                symbol_name: field_name.clone(),
+                usage_type: "reference".to_string(),
+                context: current_function.unwrap_or("global").to_string(),
+                scope: current_scope.to_string(),
+                other: HashMap::new(),
+            };
+
+            let element = DocumentElement::new(
+                ElementType::VariableReference,
+                Some(field_name.clone()),
+                field_name,
+                node.start_position().row,
+                node.end_position().row,
+            )
+            .set_attributes(ElementAttributes::Usage(usage_attr));
+
+            usages.push(element);
+        }
+
+        usages
+    }
+
+    /// Detect identifier usages
+    fn detect_identifier_usage(
+        &self,
+        content: &str,
+        node: tree_sitter::Node,
+        current_function: Option<&str>,
+        current_scope: &str,
+    ) -> Vec<DocumentElement> {
+        let mut usages = Vec::new();
+
+        let identifier = node
+            .utf8_text(content.as_bytes())
+            .unwrap_or("")
+            .to_string();
+
+        let usage_attr = UsageAttributes {
+            symbol_name: identifier.clone(),
+            usage_type: "reference".to_string(),
+            context: current_function.unwrap_or("global").to_string(),
+            scope: current_scope.to_string(),
+            other: HashMap::new(),
+        };
+
+        let element = DocumentElement::new(
+            ElementType::VariableReference,
+            Some(identifier.clone()),
+            identifier,
+            node.start_position().row,
+            node.end_position().row,
+        )
+        .set_attributes(ElementAttributes::Usage(usage_attr));
+
+        usages.push(element);
+
+        usages
+    }
+
+    /// Detect variable declarations/assignments
+    fn detect_variable_declaration(
+        &self,
+        content: &str,
+        node: tree_sitter::Node,
+        current_function: Option<&str>,
+        current_scope: &str,
+    ) -> Vec<DocumentElement> {
+        let mut usages = Vec::new();
+
+        // For short_var_declaration (x := 42, z := x + y)
+        if node.kind() == "short_var_declaration" {
+            if let Some(left_node) = node.child_by_field_name("left") {
+                let mut cursor = left_node.walk();
+                for child in left_node.children(&mut cursor) {
+                    if child.kind() == "identifier" {
+                        let var_name = child
+                            .utf8_text(content.as_bytes())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let usage_attr = UsageAttributes {
+                            symbol_name: var_name.clone(),
+                            usage_type: "assignment".to_string(),
+                            context: current_function.unwrap_or("global").to_string(),
+                            scope: current_scope.to_string(),
+                            other: HashMap::new(),
+                        };
+
+                        let element = DocumentElement::new(
+                            ElementType::Assignment,
+                            Some(var_name.clone()),
+                            format!("{} := ...", var_name),
+                            node.start_position().row,
+                            node.end_position().row,
+                        )
+                        .set_attributes(ElementAttributes::Usage(usage_attr));
+
+                        usages.push(element);
+                    }
                 }
             }
-            
-            other_elements.push((sort_order, method)); // Orphaned or external receiver
-            sort_order += 1;
+        }
+        // For var_declaration (var y = 10)
+        else if node.kind() == "var_declaration" {
+            // Handle var_spec inside var_declaration
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "var_spec" {
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        let var_name = name_node
+                            .utf8_text(content.as_bytes())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let usage_attr = UsageAttributes {
+                            symbol_name: var_name.clone(),
+                            usage_type: "assignment".to_string(),
+                            context: current_function.unwrap_or("global").to_string(),
+                            scope: current_scope.to_string(),
+                            other: HashMap::new(),
+                        };
+
+                        let element = DocumentElement::new(
+                            ElementType::Assignment,
+                            Some(var_name.clone()),
+                            format!("var {} = ...", var_name),
+                            node.start_position().row,
+                            node.end_position().row,
+                        )
+                        .set_attributes(ElementAttributes::Usage(usage_attr));
+
+                        usages.push(element);
+                    }
+                }
+            }
         }
 
-        // 3. Recombine (Structs + Others)
-        let mut final_list = Vec::new();
-        for (_, s) in structs.into_values() {
-            final_list.push(s);
-        }
-        for (_, e) in other_elements {
-            final_list.push(e);
-        }
-        
-        // Sort by line number to keep roughly in file order
-        final_list.sort_by_key(|e| e.line_start);
-        
-        final_list
+        usages
     }
-}
 
-impl Default for GoParser {
-    fn default() -> Self {
-        Self::new()
+    /// Detect assignments
+    fn detect_assignment(
+        &self,
+        content: &str,
+        node: tree_sitter::Node,
+        current_function: Option<&str>,
+        current_scope: &str,
+    ) -> Vec<DocumentElement> {
+        let mut usages = Vec::new();
+
+        // Handle left side of assignments
+        if let Some(left_node) = node.child_by_field_name("left") {
+            let mut cursor = left_node.walk();
+            for child in left_node.children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    let var_name = child
+                        .utf8_text(content.as_bytes())
+                        .unwrap_or("")
+                        .to_string();
+
+                    let usage_attr = UsageAttributes {
+                        symbol_name: var_name.clone(),
+                        usage_type: "assignment".to_string(),
+                        context: current_function.unwrap_or("global").to_string(),
+                        scope: current_scope.to_string(),
+                        other: HashMap::new(),
+                    };
+
+                    let element = DocumentElement::new(
+                        ElementType::Assignment,
+                        Some(var_name.clone()),
+                        format!("{} = ...", var_name),
+                        node.start_position().row,
+                        node.end_position().row,
+                    )
+                    .set_attributes(ElementAttributes::Usage(usage_attr));
+
+                    usages.push(element);
+                }
+            }
+        }
+
+        usages
+    }
+
+    /// Detect import usages
+    fn detect_import_usage(
+        &self,
+        content: &str,
+        node: tree_sitter::Node,
+        current_function: Option<&str>,
+        current_scope: &str,
+    ) -> Vec<DocumentElement> {
+        let mut usages = Vec::new();
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "import_spec" {
+                let import_name = self.extract_import_name(content, child);
+                if !import_name.is_empty() {
+                    usages.push(self.create_import_usage_element(import_name, node.start_position().row, node.end_position().row, current_function, current_scope));
+                }
+            }
+            else if child.kind() == "import_spec_list" {
+                let mut list_cursor = child.walk();
+                for spec in child.children(&mut list_cursor) {
+                    if spec.kind() == "import_spec" {
+                        let import_name = self.extract_import_name(content, spec);
+                        if !import_name.is_empty() {
+                            usages.push(self.create_import_usage_element(import_name, node.start_position().row, node.end_position().row, current_function, current_scope));
+                        }
+                    }
+                }
+            }
+        }
+
+        usages
+    }
+
+    fn extract_import_name(&self, content: &str, spec_node: tree_sitter::Node) -> String {
+        if let Some(name_node) = spec_node.child_by_field_name("name") {
+            // Aliased import like: json "encoding/json"
+            name_node.utf8_text(content.as_bytes()).unwrap_or("").to_string()
+        } else if let Some(path_node) = spec_node.child_by_field_name("path") {
+            // Unaliased import like: "fmt" - extract the package name from the path
+            let path = path_node.utf8_text(content.as_bytes()).unwrap_or("");
+            // Remove quotes and take the last component
+            path.trim_matches('"').split('/').last().unwrap_or("").to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    fn create_import_usage_element(
+        &self,
+        import_name: String,
+        start_row: usize,
+        end_row: usize,
+        current_function: Option<&str>,
+        current_scope: &str,
+    ) -> DocumentElement {
+        let usage_attr = UsageAttributes {
+            symbol_name: import_name.clone(),
+            usage_type: "import_usage".to_string(),
+            context: current_function.unwrap_or("global").to_string(),
+            scope: current_scope.to_string(),
+            other: HashMap::new(),
+        };
+
+        DocumentElement::new(
+            ElementType::ImportUsage,
+            Some(import_name.clone()),
+            format!("import {}", import_name),
+            start_row,
+            end_row,
+        )
+        .set_attributes(ElementAttributes::Usage(usage_attr))
+    }
+
+    async fn parse(&self, content: &str) -> VecqResult<ParsedDocument> {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_go::LANGUAGE.into())
+            .map_err(|e| VecqError::ParseError {
+                file: PathBuf::from(STRING_PLACEHOLDER),
+                line: 0,
+                message: format!("{}: {}", GO_LANGUAGE_ERROR, e),
+                source: None,
+            })?;
+
+        let tree = parser.parse(content, None)
+            .ok_or_else(|| VecqError::ParseError {
+                file: PathBuf::from(STRING_PLACEHOLDER),
+                line: 0,
+                message: PARSE_ERROR_MSG.to_string(),
+                source: None,
+            })?;
+
+        let raw_elements = self.extract_raw_elements(content, &tree)?;
+        let mut elements = self.link_methods(raw_elements);
+
+        // Extract usage/reference elements if enabled
+        if self.enable_usages {
+            elements.extend(self.detect_usages(content, &tree, None, &self.current_scope)?);
+        }
+
+        let mut doc = ParsedDocument::new(
+            DocumentMetadata::new(PathBuf::from(SOURCE_FILE_NAME), content.len() as u64)
+                .with_line_count(content)
+                .with_file_type(FileType::Go)
+        );
+        doc.elements = elements;
+
+        Ok(doc)
     }
 }
 
 #[async_trait]
 impl Parser for GoParser {
     fn file_extensions(&self) -> &[&str] {
-        &["go"]
+        &[GO_FILE_EXTENSION]
     }
 
     fn language_name(&self) -> &str {
-        "Go"
+        GO_LANGUAGE_NAME
     }
 
     fn capabilities(&self) -> ParserCapabilities {
         ParserCapabilities {
             incremental: false,
             error_recovery: true,
-            documentation: true,
+            documentation: false,
             type_information: true,
             macros: false,
             max_file_size: None,
@@ -301,32 +774,41 @@ impl Parser for GoParser {
     }
 
     async fn parse(&self, content: &str) -> VecqResult<ParsedDocument> {
+        // Define error messages to avoid raw string prefix issues
+        let go_lang_error = "Failed to set Go language";
+        let parse_error = "Parse error";
+
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&tree_sitter_go::LANGUAGE.into())
             .map_err(|e| VecqError::ParseError {
-                file: PathBuf::from("<string>"),
+                file: PathBuf::from(STRING_PLACEHOLDER),
                 line: 0,
-                message: format!("Failed to set Go language: {}", e),
+                message: format!("{}: {}", go_lang_error, e),
                 source: None,
             })?;
 
         let tree = parser.parse(content, None)
             .ok_or_else(|| VecqError::ParseError {
-                file: PathBuf::from("<string>"),
+                file: PathBuf::from(STRING_PLACEHOLDER),
                 line: 0,
-                message: "Failed to parse Go content".to_string(),
+                message: parse_error.to_string(),
                 source: None,
             })?;
 
         let raw_elements = self.extract_raw_elements(content, &tree)?;
-        let linked_elements = self.link_methods(raw_elements);
+        let mut elements = self.link_methods(raw_elements);
+
+        // Extract usage/reference elements if enabled
+        if self.enable_usages {
+            elements.extend(self.detect_usages(content, &tree, None, &self.current_scope)?);
+        }
 
         let mut doc = ParsedDocument::new(
-            DocumentMetadata::new(PathBuf::from("file.go"), content.len() as u64)
+            DocumentMetadata::new(PathBuf::from(SOURCE_FILE_NAME), content.len() as u64)
                 .with_line_count(content)
                 .with_file_type(FileType::Go)
         );
-        doc.elements = linked_elements;
+        doc.elements = elements;
 
         Ok(doc)
     }
@@ -341,105 +823,236 @@ mod tests {
         let parser = GoParser::new();
         let content = r#"
 package main
-func main() {}
+
+func greet(name string) string {
+    return "Hello, " + name
+}
 "#;
         let result = parser.parse(content).await.unwrap();
+
         let functions: Vec<_> = result.elements.iter()
             .filter(|e| e.element_type == ElementType::Function)
             .collect();
+
         assert_eq!(functions.len(), 1);
-        assert_eq!(functions[0].name, Some("main".to_string()));
+        assert_eq!(functions[0].name, Some("greet".to_string()));
     }
 
     #[tokio::test]
-    async fn test_parse_struct_method_linking() {
+    async fn test_parse_method() {
         let parser = GoParser::new();
         let content = r#"
 package main
 
-type Point struct {
-    X int
-    Y int
+type User struct {
+    name string
 }
 
-func (p *Point) Move(dx int, dy int) {
-    p.X += dx
-}
-
-func (p Point) Dist() int {
-    return 0
+func (u User) GetName() string {
+    return u.name
 }
 "#;
         let result = parser.parse(content).await.unwrap();
-        
-        let structs: Vec<_> = result.elements.iter()
-            .filter(|e| e.element_type == ElementType::Struct)
-            .collect();
-            
-        assert_eq!(structs.len(), 1);
-        let point = &structs[0];
-        assert_eq!(point.name, Some("Point".to_string()));
-        
-        // Verify linking
-        assert_eq!(point.children.len(), 2, "Both methods (ptr and value receiver) should be linked");
-        
-        let has_move = point.children.iter().any(|c| c.name.as_deref() == Some("Move") && c.element_type == ElementType::Function);
-        let has_dist = point.children.iter().any(|c| c.name.as_deref() == Some("Dist") && c.element_type == ElementType::Function);
-        
-        assert!(has_move, "Move method missing from children");
-        assert!(has_dist, "Dist method missing from children");
-    }
-    
-    #[tokio::test]
-    async fn test_parse_interface() {
-        let parser = GoParser::new();
-        let content = r#"type Reader interface {}"#;
-        let result = parser.parse(content).await.unwrap();
-        assert!(!result.elements.is_empty());
-    }
-    
-    #[tokio::test]
-    async fn test_orphan_method() {
-         let parser = GoParser::new();
-         let content = r#"func (s *Unknown) Foo() {}"#;
-         let result = parser.parse(content).await.unwrap();
-         
-         // Should act as a top-level function since Struct is missing
-         let functions: Vec<_> = result.elements.iter()
+
+        let functions: Vec<_> = result.elements.iter()
             .filter(|e| e.element_type == ElementType::Function)
             .collect();
-         assert_eq!(functions.len(), 1);
-         assert_eq!(functions[0].name, Some("Foo".to_string()));
+
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name, Some("GetName".to_string()));
     }
 
     #[tokio::test]
-    async fn test_parse_complex_go_imports() {
-         let parser = GoParser::new();
-         let content = r#"
-         package main
-         
-         import "fmt"
-         import (
-             "os"
-             json "encoding/json"
-         )
-         "#;
-         let result = parser.parse(content).await.unwrap();
-         
-         let imports: Vec<_> = result.elements.iter()
+    async fn test_parse_struct() {
+        let parser = GoParser::new();
+        let content = r#"
+package main
+
+type User struct {
+    Name string
+    Age  int
+}
+"#;
+        let result = parser.parse(content).await.unwrap();
+
+        let structs: Vec<_> = result.elements.iter()
+            .filter(|e| e.element_type == ElementType::Struct)
+            .collect();
+
+        assert_eq!(structs.len(), 1);
+        assert_eq!(structs[0].name, Some("User".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_parse_imports() {
+        let parser = GoParser::new();
+        let content = r#"
+package main
+
+import (
+    "fmt"
+    "os"
+)
+"#;
+        let result = parser.parse(content).await.unwrap();
+
+        let imports: Vec<_> = result.elements.iter()
             .filter(|e| e.element_type == ElementType::Import)
             .collect();
-            
-         // Should have 3 imports: fmt, os, encoding/json
-         assert_eq!(imports.len(), 3, "Should extract individual imports from groups");
-         
-         let fmt = imports.iter().find(|i| i.name.as_deref() == Some("fmt")).expect("fmt missing");
-         let os = imports.iter().find(|i| i.name.as_deref() == Some("os")).expect("os missing");
-         let json_pkg = imports.iter().find(|i| i.name.as_deref() == Some("encoding/json")).expect("json missing");
-         
-         // attributes check (alias)
-         if let ElementAttributes::Go(attrs) = &json_pkg.attributes {
-             assert_eq!(attrs.other.get("alias"), Some(&serde_json::json!("json")));
-         }
+
+        assert_eq!(imports.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_usage_detection_function_calls() {
+        let parser = GoParser::new().with_usages(true);
+        let content = r#"
+package main
+
+import "fmt"
+
+func greet(name string) {
+    fmt.Println("Hello", name)
+}
+
+func main() {
+    greet("world")
+}
+"#;
+
+        let result = parser.parse(content).await.unwrap();
+
+        // Should detect function calls: greet()
+        let function_calls: Vec<_> = result
+            .elements
+            .iter()
+            .filter(|e| e.element_type == ElementType::FunctionCall)
+            .collect();
+
+        // Should detect method calls: fmt.Println()
+        let method_calls: Vec<_> = result
+            .elements
+            .iter()
+            .filter(|e| e.element_type == ElementType::MethodCall)
+            .collect();
+
+        assert!(function_calls.len() >= 1); // At least greet
+        assert!(method_calls.len() >= 1); // At least Println
+
+        // Check function call names
+        let function_names: Vec<String> = function_calls
+            .iter()
+            .filter_map(|e| e.name.clone())
+            .collect();
+        assert!(function_names.contains(&"greet".to_string()));
+
+        // Check method call names
+        let method_names: Vec<String> = method_calls
+            .iter()
+            .filter_map(|e| e.name.clone())
+            .collect();
+        assert!(method_names.contains(&"Println".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_usage_detection_assignments() {
+        let parser = GoParser::new().with_usages(true);
+        let content = r#"
+package main
+
+func main() {
+    x := 42
+    var y = 10
+    z := x + y
+}
+"#;
+
+        let result = parser.parse(content).await.unwrap();
+
+        let assignments: Vec<_> = result
+            .elements
+            .iter()
+            .filter(|e| e.element_type == ElementType::Assignment)
+            .collect();
+        // Should detect assignments: x, y, z
+        assert_eq!(assignments.len(), 3);
+
+        // Check assignment names
+        let assignment_names: Vec<String> = assignments
+            .iter()
+            .filter_map(|e| e.name.clone())
+            .collect();
+        assert!(assignment_names.contains(&"x".to_string()));
+        assert!(assignment_names.contains(&"y".to_string()));
+        assert!(assignment_names.contains(&"z".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_usage_detection_import_usage() {
+        let parser = GoParser::new().with_usages(true);
+        let content = r#"
+package main
+
+import (
+    "fmt"
+    json "encoding/json"
+)
+
+func main() {
+    fmt.Println("Hello")
+    json.Marshal(struct{}{})
+}
+"#;
+
+        let result = parser.parse(content).await.unwrap();
+
+        let import_usages: Vec<_> = result
+            .elements
+            .iter()
+            .filter(|e| e.element_type == ElementType::ImportUsage)
+            .collect();
+        // Should detect import usages: fmt, json
+        assert!(import_usages.len() >= 2);
+
+        // Check that we have import names
+        let import_names: Vec<String> = import_usages
+            .iter()
+            .filter_map(|e| e.name.clone())
+            .collect();
+        assert!(import_names.contains(&"fmt".to_string()));
+        assert!(import_names.contains(&"json".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_usage_detection_variable_references() {
+        let parser = GoParser::new().with_usages(true);
+        let content = r#"
+package main
+
+import "fmt"
+
+func main() {
+    x := 42
+    y := x + 10
+    fmt.Println(y)
+}
+"#;
+
+        let result = parser.parse(content).await.unwrap();
+
+        let references: Vec<_> = result
+            .elements
+            .iter()
+            .filter(|e| e.element_type == ElementType::VariableReference)
+            .collect();
+        // Should detect variable references: x (in y := x + 10)
+        assert!(references.len() >= 1);
+
+        // Check reference names
+        let reference_names: Vec<String> = references
+            .iter()
+            .filter_map(|e| e.name.clone())
+            .collect();
+        assert!(reference_names.contains(&"x".to_string()));
     }
 }

@@ -13,24 +13,24 @@ use tempfile::TempDir;
 fn test_ingest_variants() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
-    
+
     let file_path = root.join("specific.rs");
     fs::write(&file_path, "fn specific() {}").unwrap();
-    
+
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_vecdb"));
-    
+
     cmd.arg("ingest")
-       .arg(file_path.to_str().unwrap())
-       .arg("--collection")
-       .arg("test_col")
-       .arg("-m")
-       .arg("author=daryl")
-       .arg("-m")
-       .arg("status=active")
-       .arg("--dry-run");
+        .arg(file_path.to_str().unwrap())
+        .arg("--collection")
+        .arg("test_col")
+        .arg("-m")
+        .arg("author=daryl")
+        .arg("-m")
+        .arg("status=active")
+        .arg("--dry-run");
 
     let assert = cmd.assert();
-    
+
     assert
         .success()
         .stdout(predicate::str::contains("specific.rs"))

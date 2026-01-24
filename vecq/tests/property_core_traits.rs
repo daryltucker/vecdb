@@ -10,7 +10,7 @@
 //   - Must ensure trait implementations work correctly with any valid input
 //   - Must run minimum 1000 iterations per property test for comprehensive coverage
 //   - Must catch edge cases and boundary conditions that unit tests might miss
-//   
+//
 //   Implementation-discovered:
 //   - Requires proptest crate for property-based test generation
 //   - Must generate realistic test data that represents actual file content
@@ -20,19 +20,19 @@
 // IMPLEMENTATION RULES:
 //   1. All property tests must run minimum 1000 iterations for statistical confidence
 //      Rationale: Property tests need large sample sizes to catch rare edge cases
-//   
+//
 //   2. Test data generators must produce realistic file content, not random strings
 //      Rationale: Unrealistic test data doesn't validate real-world usage patterns
-//   
+//
 //   3. Every property test must validate specific correctness properties from design
 //      Rationale: Tests must map directly to formal correctness requirements
-//   
+//
 //   4. Property tests must never panic, always return Result for error handling
 //      Rationale: Panics in tests indicate bugs in error handling, not test failures
-//   
+//
 //   5. Tag each test with feature and property references for traceability
 //      Rationale: Enables mapping test failures back to design requirements
-//   
+//
 //   Critical:
 //   - DO NOT reduce iteration counts below 1000 without strong justification
 //   - DO NOT use unrealistic test data that doesn't represent actual files
@@ -41,10 +41,10 @@
 // USAGE:
 //   # Run property tests with default iterations
 //   cargo test property_
-//   
+//
 //   # Run with custom iteration count for debugging
 //   PROPTEST_CASES=100 cargo test property_core_traits
-//   
+//
 //   # Run specific property test
 //   cargo test property_json_conversion_completeness
 //
@@ -55,7 +55,7 @@
 //   3. Ensure new tests run minimum 1000 iterations
 //   4. Add test tags referencing design document properties
 //   5. Update this file's documentation with new test coverage
-//   
+//
 //   When property tests fail:
 //   1. Capture the failing test case from proptest output
 //   2. Create minimal reproduction case as unit test
@@ -86,8 +86,8 @@ use proptest::test_runner::Config as ProptestConfig;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use vecq::{
+    converter::{JsonConverter, UnifiedJsonConverter},
     types::{DocumentElement, DocumentMetadata, ElementType, FileType, ParsedDocument},
-    converter::{UnifiedJsonConverter, JsonConverter},
 };
 
 // Test configuration
@@ -142,10 +142,11 @@ fn arbitrary_document_metadata() -> impl Strategy<Value = DocumentMetadata> {
         "[a-zA-Z0-9_/.-]{1,50}\\.(rs|py|md|c|cpp|cu|go|sh)",
         1u64..1000000u64,
         1usize..10000usize,
-    ).prop_map(|(_file_type, path_str, size, line_count)| {
-        DocumentMetadata::new(PathBuf::from(path_str), size)
-            .with_line_count(&"x\n".repeat(line_count))
-    })
+    )
+        .prop_map(|(_file_type, path_str, size, line_count)| {
+            DocumentMetadata::new(PathBuf::from(path_str), size)
+                .with_line_count(&"x\n".repeat(line_count))
+        })
 }
 
 /// Generate arbitrary document elements with realistic structure
@@ -155,23 +156,25 @@ fn arbitrary_document_element() -> impl Strategy<Value = DocumentElement> {
         prop::option::of("[a-zA-Z_][a-zA-Z0-9_]*"),
         "[a-zA-Z0-9_\\s\\{\\}\\(\\)\\[\\];.,]{1,50}",
         1usize..100usize,
-    ).prop_map(|(element_type, name, content, line_start)| {
-        // Ensure line_end doesn't exceed reasonable bounds
-        let content_lines = content.lines().count().max(1);
-        let line_end = line_start + content_lines - 1;
-        DocumentElement::new(element_type, name, content, line_start, line_end)
-    });
+    )
+        .prop_map(|(element_type, name, content, line_start)| {
+            // Ensure line_end doesn't exceed reasonable bounds
+            let content_lines = content.lines().count().max(1);
+            let line_end = line_start + content_lines - 1;
+            DocumentElement::new(element_type, name, content, line_start, line_end)
+        });
 
     leaf.prop_recursive(
-        3, // Max depth
+        3,  // Max depth
         10, // Max total elements
-        5, // Max children per node
+        5,  // Max children per node
         |inner| {
-            (inner.clone(), prop::collection::vec(inner, 0..3))
-                .prop_map(|(mut parent, children)| {
+            (inner.clone(), prop::collection::vec(inner, 0..3)).prop_map(
+                |(mut parent, children)| {
                     parent.children = children;
                     parent
-                })
+                },
+            )
         },
     )
 }
@@ -183,37 +186,38 @@ fn arbitrary_parsed_document() -> impl Strategy<Value = ParsedDocument> {
         "[a-zA-Z0-9_/.-]{1,50}\\.(rs|py|md|c|cpp|cu|go|sh)",
         1u64..10000u64,
         prop::collection::vec(arbitrary_element_type(), 0..10),
-    ).prop_map(|(file_type, path_str, size, element_types)| {
-        // Calculate total lines needed for all elements
-        let mut total_lines = 1; // At least 1 line
-        let mut elements = Vec::new();
-        let mut current_line = 1;
-        
-        for element_type in element_types {
-            let content = format!("element_content_{}", current_line);
-            let content_lines = content.lines().count().max(1);
-            let line_start = current_line;
-            let line_end = current_line + content_lines - 1;
-            
-            elements.push(DocumentElement::new(
-                element_type,
-                Some(format!("element_{}", current_line)),
-                content,
-                line_start,
-                line_end,
-            ));
-            
-            current_line = line_end + 1;
-            total_lines = current_line;
-        }
-        
-        // Create metadata with consistent line count and explicit file type
-        let mut metadata = DocumentMetadata::new(PathBuf::from(path_str), size)
-            .with_line_count(&"x\n".repeat(total_lines));
-        metadata.file_type = file_type; // Override the file type from path detection
-        
-        ParsedDocument::new(metadata).add_elements(elements)
-    })
+    )
+        .prop_map(|(file_type, path_str, size, element_types)| {
+            // Calculate total lines needed for all elements
+            let mut total_lines = 1; // At least 1 line
+            let mut elements = Vec::new();
+            let mut current_line = 1;
+
+            for element_type in element_types {
+                let content = format!("element_content_{}", current_line);
+                let content_lines = content.lines().count().max(1);
+                let line_start = current_line;
+                let line_end = current_line + content_lines - 1;
+
+                elements.push(DocumentElement::new(
+                    element_type,
+                    Some(format!("element_{}", current_line)),
+                    content,
+                    line_start,
+                    line_end,
+                ));
+
+                current_line = line_end + 1;
+                total_lines = current_line;
+            }
+
+            // Create metadata with consistent line count and explicit file type
+            let mut metadata = DocumentMetadata::new(PathBuf::from(path_str), size)
+                .with_line_count(&"x\n".repeat(total_lines));
+            metadata.file_type = file_type; // Override the file type from path detection
+
+            ParsedDocument::new(metadata).add_elements(elements)
+        })
 }
 
 // fn arbitrary_json_attributes() -> impl Strategy<Value = HashMap<String, serde_json::Value>> {
@@ -232,54 +236,54 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(1000))]
 
     /// Property Test 1: JSON Conversion Completeness
-    /// 
+    ///
     /// **Feature: structured-file-parsers, Property 1: JSON Conversion Completeness**
-    /// 
+    ///
     /// For any valid structured document, converting to JSON should preserve all
     /// structural elements including line numbers, metadata, and hierarchical relationships.
     #[test]
     fn property_json_conversion_completeness(document in arbitrary_parsed_document()) {
         let converter = UnifiedJsonConverter::with_default_schemas();
-        
+
         // Convert document to JSON
         let json_result = converter.convert(document.clone());
         prop_assert!(json_result.is_ok(), "JSON conversion should not fail for valid documents");
-        
+
         let json = json_result.unwrap();
-        
+
         // Validate JSON structure
         prop_assert!(json.is_object(), "JSON output must be an object");
         let json_obj = json.as_object().unwrap();
-        
+
         // Check required metadata fields
         prop_assert!(json_obj.contains_key("metadata"), "JSON must contain metadata");
         let metadata = json_obj.get("metadata").unwrap();
         prop_assert!(metadata.is_object(), "Metadata must be an object");
-        
+
         let metadata_obj = metadata.as_object().unwrap();
         prop_assert!(metadata_obj.contains_key("file_type"), "Metadata must contain file_type");
         prop_assert!(metadata_obj.contains_key("path"), "Metadata must contain path");
         prop_assert!(metadata_obj.contains_key("line_count"), "Metadata must contain line_count");
-        
+
         // Validate line count preservation
         let json_line_count = metadata_obj.get("line_count").unwrap().as_u64().unwrap() as usize;
         prop_assert_eq!(json_line_count, document.metadata.line_count, "Line count must be preserved");
-        
+
         // Validate file type preservation
         let json_file_type = metadata_obj.get("file_type").unwrap().as_str().unwrap();
         prop_assert_eq!(json_file_type, document.metadata.file_type.to_string(), "File type must be preserved");
-        
+
         // Validate element preservation
         validate_elements_preserved(&document.elements, json_obj)?;
-        
+
         // Validate line number consistency
         validate_line_number_consistency(json_obj)?;
     }
 
     /// Property Test 2: Schema Consistency Across File Types
-    /// 
+    ///
     /// **Feature: structured-file-parsers, Property 2: Schema Consistency Across File Types**
-    /// 
+    ///
     /// For any file type supported by vecq, the JSON output should follow consistent
     /// schema patterns with standardized field names and structure.
     #[test]
@@ -291,34 +295,34 @@ proptest! {
         PathBuf::from(format!("test.{}", file_type.file_extensions()[0])),
         1000,
     ).with_line_count("test content\nline 2\nline 3");
-    
+
     let document = ParsedDocument::new(metadata).add_elements(elements);
     let converter = UnifiedJsonConverter::with_default_schemas();
-    
+
     let json_result = converter.convert(document);
     prop_assert!(json_result.is_ok(), "Conversion should succeed for supported file types");
-    
+
     let json = json_result.unwrap();
     prop_assert!(json.is_object(), "JSON output must be an object");
-    
+
     let json_obj = json.as_object().unwrap();
-    
+
     // Validate consistent metadata structure
     prop_assert!(json_obj.contains_key("metadata"), "All file types must have metadata");
     let metadata = json_obj.get("metadata").unwrap().as_object().unwrap();
-    
+
     // Check required metadata fields are present and correctly typed
     prop_assert!(metadata.contains_key("file_type"), "Metadata must contain file_type");
     prop_assert!(metadata.contains_key("path"), "Metadata must contain path");
     prop_assert!(metadata.contains_key("line_count"), "Metadata must contain line_count");
     prop_assert!(metadata.contains_key("size"), "Metadata must contain size");
-    
+
     // Validate field types
     prop_assert!(metadata.get("file_type").unwrap().is_string(), "file_type must be string");
     prop_assert!(metadata.get("path").unwrap().is_string(), "path must be string");
     prop_assert!(metadata.get("line_count").unwrap().is_number(), "line_count must be number");
     prop_assert!(metadata.get("size").unwrap().is_number(), "size must be number");
-    
+
     // Validate consistent field naming (snake_case)
     for key in json_obj.keys() {
         prop_assert!(
@@ -327,13 +331,13 @@ proptest! {
             key
         );
     }
-    
+
     // Validate element arrays have consistent structure
     for (key, value) in json_obj {
         if key == "metadata" {
             continue;
         }
-        
+
         if let Some(array) = value.as_array() {
             for element in array {
                 validate_element_schema_consistency(element)?;
@@ -343,9 +347,9 @@ proptest! {
 }
 
     /// Property Test 3: Error Handling Graceful Degradation
-    /// 
+    ///
     /// **Feature: structured-file-parsers, Property 3: Malformed File Graceful Handling**
-    /// 
+    ///
     /// For any malformed or partially parseable file, the system should not crash
     /// and should provide meaningful error information without losing valid structural elements.
     #[test]
@@ -387,7 +391,7 @@ proptest! {
                 1,
                 1,
             );
-            
+
             // Create deep nesting
             for i in 0..100 {
                 let child = DocumentElement::new(
@@ -403,15 +407,15 @@ proptest! {
         }
         _ => unreachable!(),
     }
-    
+
     let converter = UnifiedJsonConverter::with_default_schemas();
-    
+
     // Conversion should either succeed or fail gracefully
     match converter.convert(document) {
         Ok(json) => {
             // If conversion succeeds, JSON should still be valid
             prop_assert!(json.is_object(), "Successful conversion must produce valid JSON object");
-            
+
             let json_obj = json.as_object().unwrap();
             prop_assert!(json_obj.contains_key("metadata"), "JSON must contain metadata even with corruption");
         }
@@ -420,11 +424,11 @@ proptest! {
             let error_message = error.to_string();
             prop_assert!(!error_message.is_empty(), "Error message must not be empty");
             prop_assert!(!error_message.contains("panic"), "Error should not mention panics");
-            
+
             // Error should contain useful information about the problem
             prop_assert!(
-                error_message.contains("parse") || 
-                error_message.contains("malformed") || 
+                error_message.contains("parse") ||
+                error_message.contains("malformed") ||
                 error_message.contains("invalid") ||
                 error_message.contains("unsupported") ||
                 error_message.contains("Unsupported"),
@@ -445,22 +449,34 @@ mod unit_tests {
     fn test_generators_produce_valid_data() {
         // Test that our generators produce valid data
         let mut runner = proptest::test_runner::TestRunner::default();
-        
+
         // Test file type generator
-        let file_type = arbitrary_file_type().new_tree(&mut runner).unwrap().current();
+        let file_type = arbitrary_file_type()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
         assert_ne!(file_type, FileType::Unknown);
-        
+
         // Test element type generator
-        let element_type = arbitrary_element_type().new_tree(&mut runner).unwrap().current();
+        let element_type = arbitrary_element_type()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
         assert_ne!(element_type, ElementType::Unknown);
-        
+
         // Test document metadata generator
-        let metadata = arbitrary_document_metadata().new_tree(&mut runner).unwrap().current();
+        let metadata = arbitrary_document_metadata()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
         assert!(metadata.line_count > 0);
         assert!(metadata.size > 0);
-        
+
         // Test document element generator
-        let element = arbitrary_document_element().new_tree(&mut runner).unwrap().current();
+        let element = arbitrary_document_element()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
         assert!(element.line_start > 0);
         assert!(element.line_end >= element.line_start);
         assert!(!element.content.is_empty());
@@ -469,19 +485,36 @@ mod unit_tests {
     #[test]
     fn test_element_counting() {
         let elements = vec![
-            DocumentElement::new(ElementType::Function, Some("f1".to_string()), "content".to_string(), 1, 1),
-            DocumentElement::new(ElementType::Function, Some("f2".to_string()), "content".to_string(), 2, 2),
-            DocumentElement::new(ElementType::Struct, Some("s1".to_string()), "content".to_string(), 3, 3),
+            DocumentElement::new(
+                ElementType::Function,
+                Some("f1".to_string()),
+                "content".to_string(),
+                1,
+                1,
+            ),
+            DocumentElement::new(
+                ElementType::Function,
+                Some("f2".to_string()),
+                "content".to_string(),
+                2,
+                2,
+            ),
+            DocumentElement::new(
+                ElementType::Struct,
+                Some("s1".to_string()),
+                "content".to_string(),
+                3,
+                3,
+            ),
         ];
-        
+
         let mut counts = HashMap::new();
         count_elements_recursive(&elements, &mut counts);
-        
+
         assert_eq!(counts.get(&ElementType::Function), Some(&2));
         assert_eq!(counts.get(&ElementType::Struct), Some(&1));
         assert_eq!(counts.get(&ElementType::Class), None);
     }
-
 } // End of proptest! macro
 
 /// Helper function to count elements recursively
@@ -503,14 +536,14 @@ fn validate_elements_preserved(
     // Count elements by type in original document
     let mut original_counts: HashMap<ElementType, usize> = HashMap::new();
     count_elements_recursive(original_elements, &mut original_counts);
-    
+
     // Count elements in JSON representation
     let mut json_counts: HashMap<ElementType, usize> = HashMap::new();
     for (key, value) in json_obj {
         if key == "metadata" {
             continue; // Skip metadata
         }
-        
+
         if let Some(array) = value.as_array() {
             // Determine element type from field name
             let element_type = match key.as_str() {
@@ -542,15 +575,15 @@ fn validate_elements_preserved(
                 "unknowns" | "unknown" => ElementType::Unknown,
                 _ => continue, // Unknown field, skip
             };
-            
+
             json_counts.insert(element_type, array.len());
         }
     }
-    
+
     // Verify counts match (allowing for unmapped elements to be in generic fields)
     for (element_type, original_count) in original_counts {
         let json_count = json_counts.get(&element_type).copied().unwrap_or(0);
-        
+
         // If the element type isn't found in its expected field, it might be in a generic field
         // This is acceptable behavior for unmapped element types
         if json_count < original_count {
@@ -560,31 +593,69 @@ fn validate_elements_preserved(
                 if key == "metadata" {
                     continue;
                 }
-                
+
                 // Check if this is a generic field (not in our known mappings)
-                let is_known_field = matches!(key.as_str(),
-                    "functions" | "function" | "classes" | "class" | "structs" | "struct" |
-                    "enums" | "enum" | "headers" | "header" | "code_blocks" | "code_block" |
-                    "links" | "link" | "tables" | "table" | "lists" | "list" |
-                    "traits" | "trait" | "implementations" | "implementation" |
-                    "imports" | "use_statements" | "import" | "variables" | "variable" |
-                    "constants" | "constant" | "modules" | "module" | "decorators" | "decorator" |
-                    "macros" | "macro" | "namespaces" | "namespace" | "packages" | "package" |
-                    "kernels" | "kernel" | "device_functions" | "device_function"
+                let is_known_field = matches!(
+                    key.as_str(),
+                    "functions"
+                        | "function"
+                        | "classes"
+                        | "class"
+                        | "structs"
+                        | "struct"
+                        | "enums"
+                        | "enum"
+                        | "headers"
+                        | "header"
+                        | "code_blocks"
+                        | "code_block"
+                        | "links"
+                        | "link"
+                        | "tables"
+                        | "table"
+                        | "lists"
+                        | "list"
+                        | "traits"
+                        | "trait"
+                        | "implementations"
+                        | "implementation"
+                        | "imports"
+                        | "use_statements"
+                        | "import"
+                        | "variables"
+                        | "variable"
+                        | "constants"
+                        | "constant"
+                        | "modules"
+                        | "module"
+                        | "decorators"
+                        | "decorator"
+                        | "macros"
+                        | "macro"
+                        | "namespaces"
+                        | "namespace"
+                        | "packages"
+                        | "package"
+                        | "kernels"
+                        | "kernel"
+                        | "device_functions"
+                        | "device_function"
                 );
-                
+
                 if !is_known_field && value.is_array() && !value.as_array().unwrap().is_empty() {
                     found_in_generic = true;
                     break;
                 }
             }
-            
+
             // Only fail if we can't find the elements anywhere
             if !found_in_generic {
                 prop_assert!(
                     json_count >= original_count,
                     "JSON must preserve all elements of type {:?}: original={}, json={}",
-                    element_type, original_count, json_count
+                    element_type,
+                    original_count,
+                    json_count
                 );
             }
         }
@@ -599,13 +670,13 @@ fn validate_line_number_consistency(
 ) -> Result<(), proptest::test_runner::TestCaseError> {
     let metadata = json_obj.get("metadata").unwrap().as_object().unwrap();
     let total_lines = metadata.get("line_count").unwrap().as_u64().unwrap() as usize;
-    
+
     // Check all elements have valid line numbers
     for (key, value) in json_obj {
         if key == "metadata" {
             continue;
         }
-        
+
         if let Some(array) = value.as_array() {
             for element in array {
                 if let Some(element_obj) = element.as_object() {
@@ -615,7 +686,7 @@ fn validate_line_number_consistency(
                     ) {
                         let line_start = line_start as usize;
                         let line_end = line_end as usize;
-                        
+
                         prop_assert!(line_start > 0, "Line numbers must be 1-based");
                         prop_assert!(line_start <= line_end, "Line start must be <= line end");
                         prop_assert!(line_end <= total_lines, "Line end must be <= total lines");
@@ -624,7 +695,7 @@ fn validate_line_number_consistency(
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -632,38 +703,66 @@ fn validate_line_number_consistency(
 fn validate_element_schema_consistency(
     element: &serde_json::Value,
 ) -> Result<(), proptest::test_runner::TestCaseError> {
-    let element_obj = element.as_object()
+    let element_obj = element
+        .as_object()
         .ok_or_else(|| proptest::test_runner::TestCaseError::fail("Element must be an object"))?;
-    
+
     // Check required fields
-    prop_assert!(element_obj.contains_key("type"), "Element must have type field");
-    prop_assert!(element_obj.contains_key("content"), "Element must have content field");
-    prop_assert!(element_obj.contains_key("line_start"), "Element must have line_start field");
-    prop_assert!(element_obj.contains_key("line_end"), "Element must have line_end field");
-    
+    prop_assert!(
+        element_obj.contains_key("type"),
+        "Element must have type field"
+    );
+    prop_assert!(
+        element_obj.contains_key("content"),
+        "Element must have content field"
+    );
+    prop_assert!(
+        element_obj.contains_key("line_start"),
+        "Element must have line_start field"
+    );
+    prop_assert!(
+        element_obj.contains_key("line_end"),
+        "Element must have line_end field"
+    );
+
     // Validate field types
-    prop_assert!(element_obj.get("type").unwrap().is_string(), "type must be string");
-    prop_assert!(element_obj.get("content").unwrap().is_string(), "content must be string");
-    prop_assert!(element_obj.get("line_start").unwrap().is_number(), "line_start must be number");
-    prop_assert!(element_obj.get("line_end").unwrap().is_number(), "line_end must be number");
-    
+    prop_assert!(
+        element_obj.get("type").unwrap().is_string(),
+        "type must be string"
+    );
+    prop_assert!(
+        element_obj.get("content").unwrap().is_string(),
+        "content must be string"
+    );
+    prop_assert!(
+        element_obj.get("line_start").unwrap().is_number(),
+        "line_start must be number"
+    );
+    prop_assert!(
+        element_obj.get("line_end").unwrap().is_number(),
+        "line_end must be number"
+    );
+
     // Validate optional fields if present
     if let Some(name) = element_obj.get("name") {
         prop_assert!(name.is_string(), "name must be string if present");
     }
-    
+
     if let Some(attributes) = element_obj.get("attributes") {
-        prop_assert!(attributes.is_object(), "attributes must be object if present");
+        prop_assert!(
+            attributes.is_object(),
+            "attributes must be object if present"
+        );
     }
-    
+
     if let Some(children) = element_obj.get("children") {
         prop_assert!(children.is_array(), "children must be array if present");
-        
+
         // Recursively validate children
         for child in children.as_array().unwrap() {
             validate_element_schema_consistency(child)?;
         }
     }
-    
+
     Ok(())
 }

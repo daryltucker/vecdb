@@ -35,15 +35,23 @@ pub enum ElementType {
     HtmlElement,
 
     // Language-specific
-    Trait,        // Rust
+    Trait,          // Rust
     Implementation, // Rust impl blocks
-    Decorator,    // Python
-    Macro,        // Rust, C/C++
-    Namespace,    // C++
-    Package,      // Go
-    Kernel,       // CUDA __global__
+    Decorator,      // Python
+    Macro,          // Rust, C/C++
+    Namespace,      // C++
+    Package,        // Go
+    Kernel,         // CUDA __global__
     DeviceFunction, // CUDA __device__
     TypeAlias,      // Rust type alias
+
+    // Usage/Reference types (new feature)
+    FunctionCall,      // Function/method calls
+    VariableReference, // Variable/constant references
+    TypeReference,     // Type annotations and references
+    MethodCall,        // Method calls on objects
+    Assignment,        // Variable assignments
+    ImportUsage,       // Import/re-export usages
 
     // Generic container
     Block,
@@ -88,6 +96,12 @@ impl fmt::Display for ElementType {
             Self::Kernel => "kernel",
             Self::DeviceFunction => "device_function",
             Self::TypeAlias => "type_alias",
+            Self::FunctionCall => "function_call",
+            Self::VariableReference => "variable_reference",
+            Self::TypeReference => "type_reference",
+            Self::MethodCall => "method_call",
+            Self::Assignment => "assignment",
+            Self::ImportUsage => "import_usage",
             Self::Block => "block",
             Self::Unknown => "unknown",
         };

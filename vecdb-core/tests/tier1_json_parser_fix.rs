@@ -1,9 +1,9 @@
 use anyhow::Result;
+use serde_json::json;
+use std::path::Path;
 use vecdb_core::parsers::json::JsonParser;
 use vecdb_core::parsers::Parser;
 use vecdb_core::types::Chunk;
-use std::path::Path;
-use serde_json::json;
 
 #[tokio::test]
 async fn test_json_parser_invalid_metadata() -> Result<()> {
@@ -20,7 +20,7 @@ async fn test_json_parser_invalid_metadata() -> Result<()> {
     let bad_metadata = json!(["not", "an", "object"]);
     let chunks: Vec<Chunk> = parser.parse(content, path, Some(bad_metadata)).await?;
     assert!(!chunks.is_empty());
-    
+
     // Verify metadata was ignored/reset
     let first_chunk = &chunks[0];
     assert!(first_chunk.metadata.contains_key("source"));

@@ -5,7 +5,8 @@ members = [
     "vecdb-server", 
     "vecdb-cli",
     "vecq",
-    "vecdb-asm"
+    "vecdb-asm",
+    "xtask"
 ]
 resolver = "2"
 

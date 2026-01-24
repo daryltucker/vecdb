@@ -34,10 +34,15 @@ struct EmbeddingResponse {
 }
 
 impl OllamaEmbedder {
-    pub fn new(base_url: String, model: String, accept_invalid_certs: bool, api_key: Option<String>) -> Self {
-        let mut builder = reqwest::ClientBuilder::new()
-            .danger_accept_invalid_certs(accept_invalid_certs);
-        
+    pub fn new(
+        base_url: String,
+        model: String,
+        accept_invalid_certs: bool,
+        api_key: Option<String>,
+    ) -> Self {
+        let mut builder =
+            reqwest::ClientBuilder::new().danger_accept_invalid_certs(accept_invalid_certs);
+
         if let Some(key) = api_key {
             // Create default headers with Authorization
             let mut headers = reqwest::header::HeaderMap::new();
@@ -48,10 +53,8 @@ impl OllamaEmbedder {
             builder = builder.default_headers(headers);
         }
 
-        let client = builder
-            .build()
-            .expect("Failed to build HTTP client");
-        
+        let client = builder.build().expect("Failed to build HTTP client");
+
         Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -64,13 +67,14 @@ impl OllamaEmbedder {
 impl Embedder for OllamaEmbedder {
     async fn embed(&self, text: &str) -> Result<Vec<f32>> {
         let url = format!("{}/api/embeddings", self.base_url);
-        
+
         let request = EmbeddingRequest {
             model: &self.model,
             prompt: text,
         };
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .json(&request)
             .send()
@@ -95,14 +99,12 @@ impl Embedder for OllamaEmbedder {
 
         // Create owned data to avoid lifetime issues with async stream
         let text_list: Vec<String> = texts.to_vec();
-        
+
         // Create a stream of futures, buffered to limit concurrency while PRESERVING ORDER
         let vectors = stream::iter(text_list)
             .map(|text| {
                 let this = self.clone();
-                async move {
-                    this.embed(&text).await
-                }
+                async move { this.embed(&text).await }
             })
             .buffered(5) // Max 5 concurrent requests, ordered
             .collect::<Vec<_>>()
@@ -113,7 +115,7 @@ impl Embedder for OllamaEmbedder {
         for res in vectors {
             results.push(res?);
         }
-        
+
         Ok(results)
     }
 

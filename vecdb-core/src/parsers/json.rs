@@ -30,7 +30,10 @@ impl JsonParser {
         while let Some((prefix, value)) = stack.pop() {
             processed_nodes += 1;
             if processed_nodes > MAX_NODES {
-                chunks.push(format!("...[TRUNCATED: JSON structure exceeded {} nodes]...", MAX_NODES));
+                chunks.push(format!(
+                    "...[TRUNCATED: JSON structure exceeded {} nodes]...",
+                    MAX_NODES
+                ));
                 break;
             }
 
@@ -69,7 +72,12 @@ use async_trait::async_trait;
 
 #[async_trait]
 impl Parser for JsonParser {
-    async fn parse(&self, content: &str, path: &Path, base_metadata: Option<Value>) -> Result<Vec<Chunk>> {
+    async fn parse(
+        &self,
+        content: &str,
+        path: &Path,
+        base_metadata: Option<Value>,
+    ) -> Result<Vec<Chunk>> {
         // Try standard JSON first (fastest path)
         let json: Value = match serde_json::from_str(content) {
             Ok(v) => v,
@@ -82,17 +90,17 @@ impl Parser for JsonParser {
                     .map_err(|e| anyhow::anyhow!("JSON5 parse also failed: {}", e))?
             }
         };
-        
+
         // 1. Heuristic: Adaptive Chunking Strategy
         // We want to avoid creating thousands of tiny chunks for large files.
         // Target around 500 chunks per file maximum to keep embedding pipeline healthy.
         // Base chunk size is 1000 chars.
         // If file is 2MB, 2MB / 500 = 4000 chars per chunk.
-        
+
         let content_len = content.len();
         let target_chunk_count = 500;
         let adaptive_chunk_size = std::cmp::max(1000, content_len / target_chunk_count);
-        
+
         let mut text_chunks = Vec::new();
         // Use iterative flattening
         self.flatten_value_iterative(&json, &mut text_chunks);
@@ -100,34 +108,42 @@ impl Parser for JsonParser {
         let mut chunks = Vec::new();
         let mut current_chunk_text = String::new();
         let mut start_line = 1;
-        
+
         for text in text_chunks {
             // Use adaptive_chunk_size instead of fixed 1000
-            if current_chunk_text.len() + text.len() > adaptive_chunk_size 
-                && !current_chunk_text.is_empty() {
-                    let mut metadata: std::collections::HashMap<String, serde_json::Value> = match &base_metadata {
+            if current_chunk_text.len() + text.len() > adaptive_chunk_size
+                && !current_chunk_text.is_empty()
+            {
+                let mut metadata: std::collections::HashMap<String, serde_json::Value> =
+                    match &base_metadata {
                         Some(Value::Object(map)) => map.clone().into_iter().collect(),
                         _ => std::collections::HashMap::new(),
                     };
 
-                    metadata.insert("source".to_string(), serde_json::Value::String(path.to_string_lossy().to_string()));
-                    metadata.insert("calculated_chunk_size".to_string(), serde_json::json!(adaptive_chunk_size));
+                metadata.insert(
+                    "source".to_string(),
+                    serde_json::Value::String(path.to_string_lossy().to_string()),
+                );
+                metadata.insert(
+                    "calculated_chunk_size".to_string(),
+                    serde_json::json!(adaptive_chunk_size),
+                );
 
-                    chunks.push(Chunk {
-                        id: Uuid::new_v4().to_string(),
-                        document_id: "".to_string(),
-                        content: current_chunk_text.clone(),
-                        vector: None,
-                        metadata,
-                        page_num: None,
-                        char_start: 0,
-                        char_end: 0,
-                        start_line: Some(start_line),
-                        end_line: Some(start_line),
-                    });
-                    current_chunk_text.clear();
-                    start_line += 1;
-                }
+                chunks.push(Chunk {
+                    id: Uuid::new_v4().to_string(),
+                    document_id: "".to_string(),
+                    content: current_chunk_text.clone(),
+                    vector: None,
+                    metadata,
+                    page_num: None,
+                    char_start: 0,
+                    char_end: 0,
+                    start_line: Some(start_line),
+                    end_line: Some(start_line),
+                });
+                current_chunk_text.clear();
+                start_line += 1;
+            }
             if !current_chunk_text.is_empty() {
                 current_chunk_text.push('\n');
             }
@@ -135,13 +151,20 @@ impl Parser for JsonParser {
         }
 
         if !current_chunk_text.is_empty() {
-            let mut metadata: std::collections::HashMap<String, serde_json::Value> = match &base_metadata {
-                Some(Value::Object(map)) => map.clone().into_iter().collect(),
-                _ => std::collections::HashMap::new(),
-            };
+            let mut metadata: std::collections::HashMap<String, serde_json::Value> =
+                match &base_metadata {
+                    Some(Value::Object(map)) => map.clone().into_iter().collect(),
+                    _ => std::collections::HashMap::new(),
+                };
 
-            metadata.insert("source".to_string(), serde_json::Value::String(path.to_string_lossy().to_string()));
-            metadata.insert("calculated_chunk_size".to_string(), serde_json::json!(adaptive_chunk_size));
+            metadata.insert(
+                "source".to_string(),
+                serde_json::Value::String(path.to_string_lossy().to_string()),
+            );
+            metadata.insert(
+                "calculated_chunk_size".to_string(),
+                serde_json::json!(adaptive_chunk_size),
+            );
 
             chunks.push(Chunk {
                 id: Uuid::new_v4().to_string(),

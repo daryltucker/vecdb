@@ -104,7 +104,6 @@ pub mod go;
 
 pub mod bash;
 
-#[cfg(feature = "javascript-parser")]
 pub mod javascript;
 
 pub mod text;
@@ -128,7 +127,6 @@ pub use go::GoParser;
 
 pub use bash::BashParser;
 
-#[cfg(feature = "javascript-parser")]
 pub use javascript::JavaScriptParser;
 
 pub use text::TextParser;

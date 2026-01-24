@@ -1,7 +1,7 @@
-use tracing_subscriber::{EnvFilter, fmt};
+use tracing_subscriber::{fmt, EnvFilter};
 
 /// Initializes logging for vecdb binaries.
-/// 
+///
 /// Default behavior:
 /// - If VECDB_DEBUG is set, sets level to `debug` for all components.
 /// - Otherwise, sets `warn` default, with `info` for vecdb crates.

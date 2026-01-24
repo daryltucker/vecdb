@@ -1,8 +1,8 @@
-use anyhow::{Result, Context};
-use std::path::PathBuf;
-use std::fs;
 use crate::types::{Job, JobStatus};
+use anyhow::{Context, Result};
 use chrono::Utc;
+use std::fs;
+use std::path::PathBuf;
 use sysinfo::{Pid, System};
 
 pub struct JobRegistry {
@@ -14,11 +14,11 @@ impl JobRegistry {
         let cache_dir = dirs::cache_dir()
             .context("Failed to find cache directory")?
             .join("vecdb");
-        
+
         if !cache_dir.exists() {
             fs::create_dir_all(&cache_dir)?;
         }
-        
+
         Ok(Self {
             cache_path: cache_dir.join("active_jobs.json"),
         })
@@ -28,24 +28,27 @@ impl JobRegistry {
         if !self.cache_path.exists() {
             return Ok(Vec::new());
         }
-        
+
         let content = fs::read_to_string(&self.cache_path)?;
         let jobs: Vec<Job> = serde_json::from_str(&content)?;
-        
+
         // Filter out stale jobs where PID no longer exists
         let mut sys = System::new_all();
         sys.refresh_all();
-        
-        let active_jobs = jobs.into_iter().filter(|job| {
-            if let JobStatus::Running = job.status {
-                sys.process(Pid::from(job.pid as usize)).is_some()
-            } else {
-                // Keep Queued, Completed, Failed jobs for a short time?
-                // For now, only track active or very recent.
-                true 
-            }
-        }).collect();
-        
+
+        let active_jobs = jobs
+            .into_iter()
+            .filter(|job| {
+                if let JobStatus::Running = job.status {
+                    sys.process(Pid::from(job.pid as usize)).is_some()
+                } else {
+                    // Keep Queued, Completed, Failed jobs for a short time?
+                    // For now, only track active or very recent.
+                    true
+                }
+            })
+            .collect();
+
         Ok(active_jobs)
     }
 
@@ -58,7 +61,7 @@ impl JobRegistry {
     pub fn register(&self, job_type: &str, collection: &str) -> Result<String> {
         let mut jobs = self.load()?;
         let id = uuid::Uuid::new_v4().to_string();
-        
+
         let job = Job {
             id: id.clone(),
             job_type: job_type.to_string(),
@@ -69,7 +72,7 @@ impl JobRegistry {
             started_at: Utc::now(),
             updated_at: Utc::now(),
         };
-        
+
         jobs.push(job);
         self.save(&jobs)?;
         Ok(id)

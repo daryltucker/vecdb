@@ -1,8 +1,8 @@
-use text_splitter::{TextSplitter, ChunkConfig, Characters};
-use tiktoken_rs::cl100k_base;
-use serde::{Deserialize, Serialize};
-use async_trait::async_trait;
 use anyhow::Result;
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use text_splitter::{Characters, ChunkConfig, TextSplitter};
+use tiktoken_rs::cl100k_base;
 
 pub mod simple;
 pub use simple::SimpleChunker;
@@ -10,8 +10,8 @@ pub use simple::SimpleChunker;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkParams {
     pub chunk_size: usize,
-    pub max_chunk_size: Option<usize>,  // Hard limit for chunk size
-    pub chunk_overlap: usize, 
+    pub max_chunk_size: Option<usize>, // Hard limit for chunk size
+    pub chunk_overlap: usize,
     pub tokenizer: String, // "char", "cl100k_base"
     pub file_extension: Option<String>,
 }
@@ -32,9 +32,7 @@ pub trait Chunker: Send + Sync {
 use once_cell::sync::Lazy;
 use tiktoken_rs::CoreBPE;
 
-static TOKENIZER_CACHE: Lazy<Option<CoreBPE>> = Lazy::new(|| {
-    cl100k_base().ok()
-});
+static TOKENIZER_CACHE: Lazy<Option<CoreBPE>> = Lazy::new(|| cl100k_base().ok());
 
 pub struct RecursiveChunker;
 
@@ -42,7 +40,7 @@ pub struct RecursiveChunker;
 impl Chunker for RecursiveChunker {
     async fn chunk(&self, text: &str, params: &ChunkParams) -> Result<Vec<ChunkResult>> {
         let chunk_size = params.chunk_size;
-        
+
         let indices: Vec<(usize, &str)> = if params.tokenizer == "cl100k_base" {
             if let Some(tokenizer) = TOKENIZER_CACHE.as_ref() {
                 let sizer = tokenizer.clone();
@@ -68,23 +66,28 @@ impl Chunker for RecursiveChunker {
 
         let line_counter = vecdb_common::LineCounter::new(text);
 
-        let chunks: Vec<ChunkResult> = indices.into_iter().map(|(offset, s)| {
-             let line_start = line_counter.get_line_number(offset);
-             let line_end = line_counter.get_line_number(offset + s.len().saturating_sub(1)).max(line_start);
-             
-             ChunkResult {
-                 content: s.to_string(),
-                 offset_bytes: offset,
-                 line_start: Some(line_start),
-                 line_end: Some(line_end),
-             }
-        }).collect();
-        
+        let chunks: Vec<ChunkResult> = indices
+            .into_iter()
+            .map(|(offset, s)| {
+                let line_start = line_counter.get_line_number(offset);
+                let line_end = line_counter
+                    .get_line_number(offset + s.len().saturating_sub(1))
+                    .max(line_start);
+
+                ChunkResult {
+                    content: s.to_string(),
+                    offset_bytes: offset,
+                    line_start: Some(line_start),
+                    line_end: Some(line_end),
+                }
+            })
+            .collect();
+
         // ENFORCE MAX SIZE - use SimpleChunker as fallback for oversized chunks
         if let Some(max) = params.max_chunk_size {
             let mut safe_chunks = Vec::new();
             let fallback = SimpleChunker;
-            
+
             for chunk in chunks {
                 if chunk.content.len() <= max {
                     safe_chunks.push(chunk);
@@ -98,7 +101,7 @@ impl Chunker for RecursiveChunker {
                     // but maintain offset approximate.
                     // Ideally SimpleChunker also returns ChunkResult.
                     let sub_chunks = fallback.chunk(&chunk.content, params).await?;
-                     // Adjust offsets for sub-chunks
+                    // Adjust offsets for sub-chunks
                     for mut sub in sub_chunks {
                         sub.offset_bytes += chunk.offset_bytes;
                         // Approximate line numbers? complex.
@@ -126,19 +129,19 @@ impl Chunker for CodeChunker {
         // Structural splitting by double newlines and indent level 0
         let mut chunks = Vec::new();
         let lines: Vec<&str> = text.lines().collect();
-        
+
         let mut current_chunk = String::new();
         let mut current_start_offset = 0;
         let mut current_start_line = 1;
-        
+
         let mut offset = 0;
         for (i, line) in lines.iter().enumerate() {
             let line_len_with_nl = line.len() + 1; // Approximate newline
-            
+
             // Heuristic: Split if line starts with non-whitespace and we have enough content
             let is_top_level = !line.starts_with(|c: char| c.is_whitespace()) && !line.is_empty();
             let should_split = is_top_level && current_chunk.len() >= params.chunk_size;
-            
+
             if should_split && !current_chunk.is_empty() {
                 chunks.push(ChunkResult {
                     content: current_chunk.trim_end().to_string(),
@@ -150,12 +153,12 @@ impl Chunker for CodeChunker {
                 current_start_offset = offset;
                 current_start_line = i + 1;
             }
-            
+
             current_chunk.push_str(line);
             current_chunk.push('\n');
             offset += line_len_with_nl;
         }
-        
+
         if !current_chunk.is_empty() {
             chunks.push(ChunkResult {
                 content: current_chunk.trim_end().to_string(),
@@ -172,8 +175,10 @@ impl Chunker for CodeChunker {
                 let sub_chunks = RecursiveChunker.chunk(&chunk.content, params).await?;
                 for mut sub in sub_chunks {
                     sub.offset_bytes += chunk.offset_bytes;
-                    sub.line_start = Some(chunk.line_start.unwrap_or(1) + sub.line_start.unwrap_or(1) - 1);
-                    sub.line_end = Some(chunk.line_start.unwrap_or(1) + sub.line_end.unwrap_or(1) - 1);
+                    sub.line_start =
+                        Some(chunk.line_start.unwrap_or(1) + sub.line_start.unwrap_or(1) - 1);
+                    sub.line_end =
+                        Some(chunk.line_start.unwrap_or(1) + sub.line_end.unwrap_or(1) - 1);
                     refined_chunks.push(sub);
                 }
             } else {
@@ -192,13 +197,17 @@ impl Factory {
         // ENFORCED RULE: For types with "Simple" capability (e.g. Unknown/Lua),
         // we FORCE SimpleChunker if strategy is recursive/semantic to avoid
         // performance hangs on files that don't benefit from sentence-level splitting.
-        if matches!(file_type.capability(), vecdb_common::ParsingCapability::Simple) && (strategy == "recursive" || strategy == "semantic") {
+        if matches!(
+            file_type.capability(),
+            vecdb_common::ParsingCapability::Simple
+        ) && (strategy == "recursive" || strategy == "semantic")
+        {
             return Box::new(SimpleChunker);
         }
 
         match strategy {
             "code_aware" => Box::new(CodeChunker),
-            "semantic" => Box::new(RecursiveChunker), 
+            "semantic" => Box::new(RecursiveChunker),
             "recursive" => Box::new(RecursiveChunker),
             "simple" => Box::new(SimpleChunker),
             _ => Box::new(RecursiveChunker),
@@ -227,7 +236,7 @@ mod tests {
     fn test_factory_fallback_logic() {
         // Rule: Unknown + semantic/recursive -> SimpleChunker
         let _chunker_unk = Factory::get("semantic", FileType::Unknown);
-        
+
         // Rule: Text (Simple) + semantic -> SimpleChunker
         let _chunker_txt = Factory::get("semantic", FileType::Text);
 
@@ -239,7 +248,13 @@ mod tests {
     #[test]
     fn test_all_strategies_resolved() {
         let types = vec![FileType::Rust, FileType::Unknown, FileType::Text];
-        let strategies = vec!["semantic", "recursive", "simple", "code_aware", "unknown_bogus"];
+        let strategies = vec![
+            "semantic",
+            "recursive",
+            "simple",
+            "code_aware",
+            "unknown_bogus",
+        ];
 
         for t in types {
             for s in strategies.iter() {

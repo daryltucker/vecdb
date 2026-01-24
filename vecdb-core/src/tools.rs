@@ -1,4 +1,3 @@
-
 use clap::{Args, Parser};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -92,7 +91,7 @@ pub struct VecqToolArgs {
     /// Git reference (required if source='git')
     #[arg(long)]
     pub git_ref: Option<String>,
-    
+
     /// Git repository path (required if source='git')
     #[arg(long)]
     pub repo_path: Option<String>,

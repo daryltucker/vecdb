@@ -41,8 +41,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 
 const DEFAULT_PROFILE_NAME: &str = "default";
 const DEFAULT_QDRANT_URL: &str = "http://localhost:6334";
@@ -65,23 +65,23 @@ pub struct Config {
     pub profiles: HashMap<String, Profile>,
     #[serde(default = "default_profile_name")]
     pub default_profile: String,
-    
+
     /// Global: Local embedding model (shared across all profiles with embedder_type="local")
     /// This enforces the single-local-embedder constraint
     #[serde(default = "default_local_embedding_model")]
     pub local_embedding_model: String,
-    
+
     /// Collection Profiles: Detailed configuration per collection
     #[serde(default)]
     pub collections: HashMap<String, CollectionConfig>,
-    
+
     /// Simple aliases: short_name -> collection_profile_name
     #[serde(default)]
     pub collection_aliases: HashMap<String, String>,
-    
+
     #[serde(default)]
     pub ingestion: IngestionConfig,
-    
+
     /// Global: Location for fastembed model cache
     #[serde(default = "default_fastembed_cache_path")]
     pub fastembed_cache_path: PathBuf,
@@ -103,7 +103,7 @@ pub struct CollectionConfig {
     pub name: String,
     /// Description for listing
     pub description: Option<String>,
-    
+
     /// Override: Embedder type
     pub embedder_type: Option<String>,
     /// Override: Model name
@@ -144,12 +144,12 @@ pub struct IngestionConfig {
     // Wildcard -> Config
     #[serde(default)]
     pub overrides: HashMap<String, IngestionOverride>,
-    
+
     /// Path parsing rules for metadata extraction
     /// Path parsing rules for metadata extraction
     #[serde(default)]
     pub path_rules: Vec<PathRule>,
-    
+
     /// Concurrency Limit: Max number of file processing tasks running in parallel
     #[serde(default = "default_concurrency")]
     pub max_concurrent_requests: usize,
@@ -235,11 +235,11 @@ pub struct Profile {
     /// Default: "local" for zero-config experience
     #[serde(default = "default_embedder_type")]
     pub embedder_type: String,
-    
+
     // Credentials
     pub qdrant_api_key: Option<String>,
     pub ollama_api_key: Option<String>,
-    
+
     // Default Quantization for collections created under this profile
     pub quantization: Option<QuantizationType>,
 }
@@ -281,7 +281,8 @@ impl Default for Config {
         profiles.insert(
             DEFAULT_PROFILE_NAME.to_string(),
             Profile {
-                qdrant_url: std::env::var("QDRANT_URL").unwrap_or_else(|_| DEFAULT_QDRANT_URL.to_string()),
+                qdrant_url: std::env::var("QDRANT_URL")
+                    .unwrap_or_else(|_| DEFAULT_QDRANT_URL.to_string()),
                 embedding_model: DEFAULT_EMBEDDING_MODEL.to_string(),
                 default_collection_name: "docs".to_string(),
                 accept_invalid_certs: false,
@@ -319,7 +320,7 @@ impl Config {
     }
 
     /// Resolve the effective profile to use for a given run.
-    /// 
+    ///
     /// Logic:
     /// 1. Start with the base Profile (from -p flag or default)
     /// 2. If a collection is requested (-c):
@@ -329,66 +330,72 @@ impl Config {
     ///    - Overrides: embedder, model, url, chunk_size (we need to pass chunk_size out separately or add to Profile)
     ///    - Sets: default_collection_name = config.name
     /// 4. Return the finalized Profile.
-    pub fn resolve_profile(&self, requested_profile: Option<&str>, requested_collection: Option<&str>) -> Result<Profile> {
+    pub fn resolve_profile(
+        &self,
+        requested_profile: Option<&str>,
+        requested_collection: Option<&str>,
+    ) -> Result<Profile> {
         // 1. Get Base Profile
         let base_profile_name = requested_profile.unwrap_or(&self.default_profile);
-        let mut profile = self.profiles.get(base_profile_name)
+        let mut profile = self
+            .profiles
+            .get(base_profile_name)
             .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found", base_profile_name))?
             .clone();
 
         // 2. Resolve Collection
         if let Some(mut c_name) = requested_collection {
-             // 2a. Resolve Alias -> Real Key
-             if let Some(real_key) = self.collection_aliases.get(c_name) {
-                 c_name = real_key.as_str();
-             }
-             
-             // 2b. Check for Collection Config
-             if let Some(c_config) = self.collections.get(c_name) {
-                 // 3. Merge Overrides
-                 profile.default_collection_name = c_config.name.clone();
-                 
-                 if let Some(ref et) = c_config.embedder_type {
-                     profile.embedder_type = et.clone();
-                 }
-                 if let Some(ref em) = c_config.embedding_model {
-                     profile.embedding_model = em.clone();
-                 }
-                  if let Some(ref url) = c_config.ollama_url {
-                      profile.ollama_url = url.clone();
-                  }
-                  if let Some(ref key) = c_config.qdrant_api_key {
-                      profile.qdrant_api_key = Some(key.clone());
-                  }
-                  if let Some(ref key) = c_config.ollama_api_key {
-                      profile.ollama_api_key = Some(key.clone());
-                  }
-                  if let Some(ref q) = c_config.quantization {
-                      profile.quantization = Some(q.clone());
-                  }
-                 // chunk_size is currently in IngestionConfig, not Profile. 
-                 // We might need to carry it? 
-                 // For now, let's just update the profile fields we have.
-             } else {
-                 // No config found, just use the raw name
-                 profile.default_collection_name = c_name.to_string();
-             }
+            // 2a. Resolve Alias -> Real Key
+            if let Some(real_key) = self.collection_aliases.get(c_name) {
+                c_name = real_key.as_str();
+            }
+
+            // 2b. Check for Collection Config
+            if let Some(c_config) = self.collections.get(c_name) {
+                // 3. Merge Overrides
+                profile.default_collection_name = c_config.name.clone();
+
+                if let Some(ref et) = c_config.embedder_type {
+                    profile.embedder_type = et.clone();
+                }
+                if let Some(ref em) = c_config.embedding_model {
+                    profile.embedding_model = em.clone();
+                }
+                if let Some(ref url) = c_config.ollama_url {
+                    profile.ollama_url = url.clone();
+                }
+                if let Some(ref key) = c_config.qdrant_api_key {
+                    profile.qdrant_api_key = Some(key.clone());
+                }
+                if let Some(ref key) = c_config.ollama_api_key {
+                    profile.ollama_api_key = Some(key.clone());
+                }
+                if let Some(ref q) = c_config.quantization {
+                    profile.quantization = Some(q.clone());
+                }
+                // chunk_size is currently in IngestionConfig, not Profile.
+                // We might need to carry it?
+                // For now, let's just update the profile fields we have.
+            } else {
+                // No config found, just use the raw name
+                profile.default_collection_name = c_name.to_string();
+            }
         }
-        
+
         Ok(profile)
     }
 
     /// Helper to get effective chunk size if a collection overrides it
     pub fn resolve_chunk_size(&self, requested_collection: Option<&str>) -> usize {
         if let Some(mut c_name) = requested_collection {
-             if let Some(real_key) = self.collection_aliases.get(c_name) {
-                 c_name = real_key.as_str();
-             }
-             if let Some(c_config) = self.collections.get(c_name) {
-                 if let Some(size) = c_config.chunk_size {
-                     return size;
-                 }
-             }
+            if let Some(real_key) = self.collection_aliases.get(c_name) {
+                c_name = real_key.as_str();
+            }
+            if let Some(c_config) = self.collections.get(c_name) {
+                if let Some(size) = c_config.chunk_size {
+                    return size;
+                }
+            }
         }
         self.ingestion.chunk_size
     }
@@ -396,14 +403,14 @@ impl Config {
     /// Helper to get effective max_chunk_size if a collection overrides it
     pub fn resolve_max_chunk_size(&self, requested_collection: Option<&str>) -> Option<usize> {
         if let Some(mut c_name) = requested_collection {
-             if let Some(real_key) = self.collection_aliases.get(c_name) {
-                 c_name = real_key.as_str();
-             }
-             if let Some(c_config) = self.collections.get(c_name) {
-                 if let Some(max) = c_config.max_chunk_size {
-                     return Some(max);
-                 }
-             }
+            if let Some(real_key) = self.collection_aliases.get(c_name) {
+                c_name = real_key.as_str();
+            }
+            if let Some(c_config) = self.collections.get(c_name) {
+                if let Some(max) = c_config.max_chunk_size {
+                    return Some(max);
+                }
+            }
         }
         self.ingestion.max_chunk_size
     }
@@ -411,14 +418,14 @@ impl Config {
     /// Helper to get effective chunk_overlap if a collection overrides it
     pub fn resolve_chunk_overlap(&self, requested_collection: Option<&str>) -> usize {
         if let Some(mut c_name) = requested_collection {
-             if let Some(real_key) = self.collection_aliases.get(c_name) {
-                 c_name = real_key.as_str();
-             }
-             if let Some(c_config) = self.collections.get(c_name) {
-                 if let Some(overlap) = c_config.chunk_overlap {
-                     return overlap;
-                 }
-             }
+            if let Some(real_key) = self.collection_aliases.get(c_name) {
+                c_name = real_key.as_str();
+            }
+            if let Some(c_config) = self.collections.get(c_name) {
+                if let Some(overlap) = c_config.chunk_overlap {
+                    return overlap;
+                }
+            }
         }
         self.ingestion.chunk_overlap
     }
@@ -426,14 +433,14 @@ impl Config {
     /// Helper to resolve whether to use GPU for local embeddings
     pub fn resolve_local_use_gpu(&self, requested_collection: Option<&str>) -> bool {
         if let Some(mut c_name) = requested_collection {
-             if let Some(real_key) = self.collection_aliases.get(c_name) {
-                 c_name = real_key.as_str();
-             }
-             if let Some(c_config) = self.collections.get(c_name) {
-                 if let Some(use_gpu) = c_config.use_gpu {
-                     return use_gpu;
-                 }
-             }
+            if let Some(real_key) = self.collection_aliases.get(c_name) {
+                c_name = real_key.as_str();
+            }
+            if let Some(c_config) = self.collections.get(c_name) {
+                if let Some(use_gpu) = c_config.use_gpu {
+                    return use_gpu;
+                }
+            }
         }
         self.local_use_gpu
     }
@@ -447,7 +454,7 @@ impl Config {
     /// Load config from XDG config directory or create default
     pub fn load() -> Result<Self> {
         let config_path = Self::get_path()?;
-        
+
         if !config_path.exists() {
             // Write default config
             let default_config = Config::default();
@@ -460,7 +467,10 @@ impl Config {
             // We continue to load via Figment to ensure consistent behavior
         }
 
-        use figment::{Figment, providers::{Env, Format, Toml, Serialized}};
+        use figment::{
+            providers::{Env, Format, Serialized, Toml},
+            Figment,
+        };
 
         let mut config: Config = Figment::new()
             .merge(Serialized::defaults(Config::default()))
@@ -468,27 +478,34 @@ impl Config {
             .merge(Env::prefixed("VECDB_").split("__"))
             .extract()
             .context("Failed to load configuration via Figment")?;
-        
+
         // LEGACY ENV VAR SUPPORT: VECDB_USE_GPU
         // We support this for backward compatibility, but prefer VECDB_LOCAL_USE_GPU (handled by figment)
         if let Ok(val) = std::env::var("VECDB_USE_GPU") {
             let val = val.trim().to_lowercase();
             if val == "false" || val == "0" {
                 if crate::output::OUTPUT.is_interactive && config.local_use_gpu {
-                    eprintln!("⚠️  Overriding local_use_gpu=false (via legacy VECDB_USE_GPU env var)");
+                    eprintln!(
+                        "⚠️  Overriding local_use_gpu=false (via legacy VECDB_USE_GPU env var)"
+                    );
                 }
                 config.local_use_gpu = false;
             } else if val == "true" || val == "1" {
                 if crate::output::OUTPUT.is_interactive && !config.local_use_gpu {
-                    eprintln!("ℹ️  Overriding local_use_gpu=true (via legacy VECDB_USE_GPU env var)");
+                    eprintln!(
+                        "ℹ️  Overriding local_use_gpu=true (via legacy VECDB_USE_GPU env var)"
+                    );
                 }
                 config.local_use_gpu = true;
             }
         }
-        
+
         // Validate: Warn if local profiles specify embedding_model (should use global local_embedding_model)
         for (profile_name, profile) in &config.profiles {
-            if crate::output::OUTPUT.is_interactive && profile.embedder_type == "local" && profile.embedding_model != default_embedding_model() {
+            if crate::output::OUTPUT.is_interactive
+                && profile.embedder_type == "local"
+                && profile.embedding_model != default_embedding_model()
+            {
                 eprintln!(
                     "⚠️  WARNING: Profile '{}' uses embedder_type=\"local\" but specifies embedding_model=\"{}\".\n\
                      Local profiles should use the global 'local_embedding_model' config field.\n\
@@ -497,7 +514,7 @@ impl Config {
                 );
             }
         }
-        
+
         Ok(config)
     }
 
@@ -525,9 +542,9 @@ impl Config {
     /// Get a specific profile or the default one
     pub fn get_profile(&self, name: Option<&str>) -> Result<&Profile> {
         let profile_name = name.unwrap_or(&self.default_profile);
-        self.profiles.get(profile_name).ok_or_else(|| {
-            anyhow::anyhow!("Profile '{}' not found in configuration", profile_name)
-        })
+        self.profiles
+            .get(profile_name)
+            .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found in configuration", profile_name))
     }
 }
 
@@ -551,7 +568,7 @@ mod tests {
                 qdrant_api_key: None,
                 ollama_api_key: None,
                 quantization: None,
-            }
+            },
         );
 
         // Case 1: No explicit collection provided -> Should use profile's "docs_qwen"
@@ -559,7 +576,9 @@ mod tests {
         assert_eq!(resolved.default_collection_name, "docs_qwen");
 
         // Case 2: Explicit override -> Should use override
-        let resolved_override = config.resolve_profile(Some("edge"), Some("my_custom_col")).unwrap();
+        let resolved_override = config
+            .resolve_profile(Some("edge"), Some("my_custom_col"))
+            .unwrap();
         assert_eq!(resolved_override.default_collection_name, "my_custom_col");
 
         // Case 3: Default profile -> Should use default "docs"

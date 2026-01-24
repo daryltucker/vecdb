@@ -3,13 +3,13 @@ use crate::embedder::Embedder;
 use crate::git::GitSandbox;
 use crate::ingestion::{ingest_path, IngestionOptions};
 use crate::output::OUTPUT;
+use crate::parsers::ParserFactory;
 use anyhow::Result;
 use std::sync::Arc;
 use vecdb_common::FileTypeDetector;
-use crate::parsers::ParserFactory;
 
 /// Ingests a specific historical version of a repository.
-/// 
+///
 /// # Arguments
 /// * `repo_path`: Path to the local repository (or URL).
 /// * `git_ref`: The commit SHA, tag, or branch to ingest.
@@ -27,11 +27,16 @@ pub async fn ingest_history(
     quantization: Option<crate::config::QuantizationType>,
 ) -> Result<()> {
     if OUTPUT.is_interactive {
-        eprintln!("Starting Time Travel Ingestion: {} @ {}", repo_path, git_ref);
+        eprintln!(
+            "Starting Time Travel Ingestion: {} @ {}",
+            repo_path, git_ref
+        );
     }
 
     let job_registry = crate::jobs::JobRegistry::new().ok();
-    let _job_id = job_registry.as_ref().and_then(|r| r.register("history", collection).ok());
+    let _job_id = job_registry
+        .as_ref()
+        .and_then(|r| r.register("history", collection).ok());
 
     // 1. Create Sandbox
     let sandbox = GitSandbox::new(repo_path, git_ref)?;
@@ -71,9 +76,9 @@ pub async fn ingest_history(
     // Let's check `ingest_path` implementation detail.
     // In `ingestion.rs`: `metadata.insert("path", ... path.display())`.
     // We might need to post-process or modify `ingest_path` to accept a "logical root".
-    // For now, let's ship the basic version where path is absolute sandbox path, 
+    // For now, let's ship the basic version where path is absolute sandbox path,
     // OR we modify `ingest_path` to strip the root prefix from the stored path metadata.
-    
+
     // Quick Fix: We'll accept the sandbox path for now to prove the "Time Travel" capability.
     // The "Right Way" is to refactor `ingest_path` to take `logical_root`.
     // Let's proceed with standard ingestion first.

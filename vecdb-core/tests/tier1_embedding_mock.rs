@@ -32,14 +32,16 @@ impl Embedder for MockEmbedder {
 #[tokio::test]
 async fn test_embedder_trait_contract() -> Result<()> {
     let embedder = MockEmbedder;
-    
+
     // 1. Single embed
     let vec = embedder.embed("test").await?;
     assert_eq!(vec.len(), 3);
     assert_eq!(vec[0], 0.1);
 
     // 2. Batch embed
-    let vecs = embedder.embed_batch(&["one".to_string(), "two".to_string()]).await?;
+    let vecs = embedder
+        .embed_batch(&["one".to_string(), "two".to_string()])
+        .await?;
     assert_eq!(vecs.len(), 2);
     assert_eq!(vecs[0].len(), 3);
 

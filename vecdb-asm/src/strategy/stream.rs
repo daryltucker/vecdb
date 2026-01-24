@@ -1,15 +1,15 @@
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use serde_json::Value;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
 /// Processes the input JSON value (array) using the Stream Consolidation strategy.
-/// 
+///
 /// 1. Expects a JSON Array.
 /// 2. Deduplicates records based on content hash (SHA256 of JSON string).
 /// 3. Sorts records by `metadata.modified` timestamp.
 /// Processes the input JSON value (array) using the Stream Consolidation strategy.
-/// 
+///
 /// 1. Expects a JSON Array.
 /// 2. Deduplicates records based on content hash (SHA256 of JSON string).
 /// 3. Sorts records by `metadata.modified` timestamp.
@@ -64,7 +64,7 @@ pub fn process_stream(input: Value, no_dedupe: bool, stitch: bool) -> Result<Val
         let next_text = next["content"].as_str().unwrap_or("");
 
         let merged = vecdb_common::stitch_text(current_text, next_text);
-        
+
         // If merged length is less than sum of parts, we found an overlap
         if merged.len() < current_text.len() + next_text.len() {
             if let Some(obj) = current.as_object_mut() {
@@ -88,7 +88,10 @@ fn calculate_content_hash(val: &Value) -> String {
     let mut hasher = Sha256::new();
     hasher.update(val.to_string());
     let result = hasher.finalize();
-    result.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+    result
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>()
 }
 
 fn get_modified_time(val: &Value) -> Option<chrono::DateTime<chrono::FixedOffset>> {
@@ -109,7 +112,7 @@ mod tests {
         let val = json!({"key": "value"});
         let hash = calculate_content_hash(&val);
         assert!(!hash.is_empty());
-        
+
         let val2 = json!({"key": "value"});
         let hash2 = calculate_content_hash(&val2);
         assert_eq!(hash, hash2);

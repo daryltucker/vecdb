@@ -1,6 +1,5 @@
 use assert_cmd::Command;
 
-
 struct TestCase {
     name: &'static str,
     query: &'static str,
@@ -18,7 +17,7 @@ fn test_jq_standard_library_audit() {
     // A comprehensive list of standard filters we expect to be available.
     // If jaq or vecq drops any of these, this test should fail.
     // We use trivial inputs/arguments just to prove existence (not correctness).
-    
+
     let simple_arr = "[1,2,3]";
     let simple_obj = "{\"a\":1}";
     let simple_str = "\"hello\"";
@@ -35,7 +34,11 @@ fn test_jq_standard_library_audit() {
         TestCase::new("map", "map(.)", simple_arr),
         TestCase::new("map_values", "map_values(.)", simple_obj),
         TestCase::new("to_entries", "to_entries", simple_obj),
-        TestCase::new("from_entries", "from_entries", "[{\"key\":\"a\",\"value\":1}]"),
+        TestCase::new(
+            "from_entries",
+            "from_entries",
+            "[{\"key\":\"a\",\"value\":1}]",
+        ),
         TestCase::new("with_entries", "with_entries(.)", simple_obj),
         TestCase::new("select", "select(true)", simple_arr),
         TestCase::new("empty", "empty", simple_arr),
@@ -50,7 +53,7 @@ fn test_jq_standard_library_audit() {
         // TestCase::new("getpath", "getpath([0])", simple_arr), // Missing in jaq 1.5.0
         TestCase::new("transpose", "transpose", "[[1],[2]]"),
         // TestCase::new("bsearch", "bsearch(2)", simple_arr), // Missing in jaq 1.5.0
-        
+
         // --- Types ---
         TestCase::new("type", "type", simple_arr),
         TestCase::new("isnan", "isnan", simple_num),
@@ -60,7 +63,6 @@ fn test_jq_standard_library_audit() {
         TestCase::new("tostring", "tostring", simple_num),
         TestCase::new("tojson", "tojson", simple_obj),
         TestCase::new("fromjson", "fromjson", "\"{\\\"a\\\":1}\""),
-        
         // --- Math ---
         TestCase::new("add", "add", simple_arr),
         TestCase::new("min", "min", simple_arr),
@@ -84,7 +86,6 @@ fn test_jq_standard_library_audit() {
         TestCase::new("sqrt", "sqrt", "9"),
         TestCase::new("round", "round", "1.5"),
         TestCase::new("ceil", "ceil", "1.5"),
-        
         // --- Strings ---
         TestCase::new("startswith", "startswith(\"h\")", simple_str),
         TestCase::new("endswith", "endswith(\"o\")", simple_str),
@@ -96,7 +97,6 @@ fn test_jq_standard_library_audit() {
         TestCase::new("join", "join(\" \")", "[\"a\",\"b\"]"),
         TestCase::new("ascii_downcase", "ascii_downcase", "\"HELLO\""),
         TestCase::new("ascii_upcase", "ascii_upcase", "\"hello\""),
-        
         // --- Regex ---
         TestCase::new("test", "test(\"l+\")", simple_str),
         TestCase::new("scan", "scan(\"l+\")", simple_str),
@@ -105,7 +105,6 @@ fn test_jq_standard_library_audit() {
         TestCase::new("splits", "splits(\"e\")", simple_str),
         TestCase::new("sub", "sub(\"l\"; \"L\")", simple_str),
         TestCase::new("gsub", "gsub(\"l\"; \"L\")", simple_str),
-        
         // --- Time ---
         TestCase::new("now", "now", "null"),
         TestCase::new("todate", "todate", "1234567890"),
@@ -114,7 +113,7 @@ fn test_jq_standard_library_audit() {
         // TestCase::new("localtime", "localtime", "1234567890"), // Missing in jaq 1.5.0
         // TestCase::new("mktime", "mktime", "[2026,0,1,0,0,0,0,0]"), // Missing in jaq 1.5.0
         // TestCase::new("strftime", "strftime(\"%Y\")", "1234567890"), // Missing in jaq 1.5.0
-        
+
         // --- Iterators ---
         TestCase::new("limit", "limit(1; .[])", simple_arr),
         TestCase::new("first", "first(.[])", simple_arr),
@@ -123,7 +122,6 @@ fn test_jq_standard_library_audit() {
         TestCase::new("isempty", "isempty(.[])", simple_arr),
         TestCase::new("all", "all", "[true, true]"),
         TestCase::new("any", "any", "[true, false]"),
-        
         // --- Combinatorics ---
         // TestCase::new("combinations", "combinations", "[[1],[2]]"), // Missing in jaq 1.5.0
     ];
@@ -144,12 +142,18 @@ fn test_jq_standard_library_audit() {
         // We specifically look for "undefined filter" which means it's missing from the engine.
         // Other errors (like type errors) mean the filter EXISTS but we used it wrong, which is fine for this audit.
         if stderr.contains("undefined filter") {
-            println!("FAIL: Filter '{}' is undefined. Query: {}", case.name, case.query);
+            println!(
+                "FAIL: Filter '{}' is undefined. Query: {}",
+                case.name, case.query
+            );
             failed_filters.push(case.name);
         }
     }
 
     if !failed_filters.is_empty() {
-        panic!("The following standard filters are missing from vecq: {:?}", failed_filters);
+        panic!(
+            "The following standard filters are missing from vecq: {:?}",
+            failed_filters
+        );
     }
 }

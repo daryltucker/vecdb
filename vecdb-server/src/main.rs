@@ -1,4 +1,3 @@
-
 /*
  * PURPOSE:
  *   Main initialization for the MCP Server.
@@ -42,7 +41,6 @@ async fn main() -> anyhow::Result<()> {
     // We MUST use stderr for all logging to protect the JSON-RPC stdout stream.
     vecdb_common::logging::init_logging();
 
-
     // 0. Parse Args
     let args = Args::parse();
     if args.version {
@@ -58,27 +56,32 @@ async fn main() -> anyhow::Result<()> {
             Config::default()
         }
     };
-    
+
     // Check VECDB_PROFILE env var
     let env_profile = std::env::var("VECDB_PROFILE").ok();
-    let target_profile = env_profile.as_deref().unwrap_or(&config.default_profile).to_string();
-    
+    let target_profile = env_profile
+        .as_deref()
+        .unwrap_or(&config.default_profile)
+        .to_string();
+
     if vecdb_common::OUTPUT.is_interactive {
         eprintln!("Initializing with profile: {}", target_profile);
     }
-    
-    let profile = config.get_profile(Some(&target_profile)).unwrap_or_else(|e| {
-        eprintln!("Error loading profile '{}': {}", target_profile, e);
-        std::process::exit(1);
-    });
-    
+
+    let profile = config
+        .get_profile(Some(&target_profile))
+        .unwrap_or_else(|e| {
+            eprintln!("Error loading profile '{}': {}", target_profile, e);
+            std::process::exit(1);
+        });
+
     // Use global local_embedding_model for local embedders, profile.embedding_model for others
     let embedding_model = config.resolve_embedding_model(profile);
 
     // Prepare shared services
     let file_detector = Arc::new(HybridDetector::new());
     let parser_factory = Arc::new(VecqParserFactory);
-    
+
     let core_instance = Core::new(
         &profile.qdrant_url,
         &profile.ollama_url,
@@ -95,22 +98,36 @@ async fn main() -> anyhow::Result<()> {
         config.ingestion.gpu_batch_size,
         file_detector.clone(),
         parser_factory.clone(),
-    ).await.unwrap_or_else(|e| {
+    )
+    .await
+    .unwrap_or_else(|e| {
         eprintln!("Failed to initialize Core: {}", e);
         std::process::exit(1);
     });
-    
+
     let core = Arc::new(core_instance);
     let config = Arc::new(config);
 
     if args.stdio {
         run_stdio_server(core, config, args.allow_local_fs, target_profile).await
     } else {
-        vecdb_server::server::run_http_server(core, config, args.allow_local_fs, target_profile, args.port).await
+        vecdb_server::server::run_http_server(
+            core,
+            config,
+            args.allow_local_fs,
+            target_profile,
+            args.port,
+        )
+        .await
     }
 }
 
-async fn run_stdio_server(core: Arc<Core>, config: Arc<Config>, allow_local_fs: bool, target_profile: String) -> anyhow::Result<()> {
+async fn run_stdio_server(
+    core: Arc<Core>,
+    config: Arc<Config>,
+    allow_local_fs: bool,
+    target_profile: String,
+) -> anyhow::Result<()> {
     if vecdb_common::OUTPUT.is_interactive {
         eprintln!("vecdb-mcp server running on stdio (Manual JSON-RPC)...");
         if allow_local_fs {
@@ -122,15 +139,17 @@ async fn run_stdio_server(core: Arc<Core>, config: Arc<Config>, allow_local_fs: 
 
     // Switch to Async IO to avoid blocking the runtime
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    
+
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
-    
+
     let mut reader = BufReader::new(stdin).lines();
     let mut writer = stdout;
 
     while let Some(line) = reader.next_line().await? {
-        if line.trim().is_empty() { continue; }
+        if line.trim().is_empty() {
+            continue;
+        }
 
         // Parse Request
         let req: JsonRpcRequest = match serde_json::from_str(&line) {
@@ -160,7 +179,7 @@ async fn run_stdio_server(core: Arc<Core>, config: Arc<Config>, allow_local_fs: 
                     error: Some(err),
                 },
             };
-            
+
             // Serialize and write atomically
             let json_out = serde_json::to_string(&response)?;
             writer.write_all(json_out.as_bytes()).await?;

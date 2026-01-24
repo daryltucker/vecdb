@@ -1,14 +1,10 @@
-use axum::{
-    extract::State,
-    routing::post,
-    Json, Router,
-};
-use std::sync::Arc;
-use vecdb_core::Core;
-use vecdb_core::config::Config;
 use crate::handler::{handle_request, JsonRpcRequest, JsonRpcResponse};
+use axum::{extract::State, routing::post, Json, Router};
+use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tracing::info;
+use vecdb_core::config::Config;
+use vecdb_core::Core;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -51,14 +47,16 @@ async fn rpc_handler(
     Json(req): Json<JsonRpcRequest>,
 ) -> Json<JsonRpcResponse> {
     let id = req.id.clone().unwrap_or(serde_json::Value::Null);
-    
+
     match handle_request(
         &state.core,
         &state.config,
         &req,
         state.allow_local_fs,
         &state.target_profile,
-    ).await {
+    )
+    .await
+    {
         Ok(res) => Json(JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             id,

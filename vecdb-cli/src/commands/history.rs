@@ -1,10 +1,10 @@
+use crate::vecq_adapter::VecqParserFactory;
 use clap::{Args, Subcommand};
+use std::sync::Arc;
 use vecdb_core::config::Config;
 use vecdb_core::output::OUTPUT;
-use std::sync::Arc;
-use crate::vecq_adapter::VecqParserFactory;
 use vecq::detection::HybridDetector;
-// removed 
+// removed
 
 #[derive(Args, Debug)]
 pub struct HistoryArgs {
@@ -27,20 +27,24 @@ pub enum HistoryCommands {
         /// Collection
         #[arg(long, short, default_value = "docs")]
         collection: String,
-        
-// field removed
+        // field removed
     },
 }
 
 pub async fn run(args: HistoryArgs, config: &Config, profile_name: &str) -> anyhow::Result<()> {
     match args.command {
-        HistoryCommands::Ingest { git_ref, path, collection, .. } => {
-                let profile = config.resolve_profile(Some(profile_name), Some(&collection))?;
-                
-                let file_detector = Arc::new(HybridDetector::new());
-                let parser_factory = Arc::new(VecqParserFactory);
+        HistoryCommands::Ingest {
+            git_ref,
+            path,
+            collection,
+            ..
+        } => {
+            let profile = config.resolve_profile(Some(profile_name), Some(&collection))?;
 
-                let core = vecdb_core::Core::new(
+            let file_detector = Arc::new(HybridDetector::new());
+            let parser_factory = Arc::new(VecqParserFactory);
+
+            let core = vecdb_core::Core::new(
                 &profile.qdrant_url,
                 &profile.ollama_url,
                 &config.resolve_embedding_model(&profile),
@@ -52,16 +56,27 @@ pub async fn run(args: HistoryArgs, config: &Config, profile_name: &str) -> anyh
                 profile.ollama_api_key.clone(),
                 config.smart_routing_keys.clone(),
                 config.ingestion.path_rules.clone(),
-                config.ingestion.max_concurrent_requests, 
-                config.ingestion.gpu_batch_size, 
+                config.ingestion.max_concurrent_requests,
+                config.ingestion.gpu_batch_size,
                 file_detector.clone(),
                 parser_factory.clone(),
-            ).await?;
+            )
+            .await?;
 
-                if OUTPUT.is_interactive {
-                    println!("Time Traveling to: {} @ {} (Collection: {})", path, git_ref, profile.default_collection_name);
-                }
-                core.ingest_history(&path, &git_ref, &profile.default_collection_name, 512, profile.quantization.clone()).await?;
+            if OUTPUT.is_interactive {
+                println!(
+                    "Time Traveling to: {} @ {} (Collection: {})",
+                    path, git_ref, profile.default_collection_name
+                );
+            }
+            core.ingest_history(
+                &path,
+                &git_ref,
+                &profile.default_collection_name,
+                512,
+                profile.quantization.clone(),
+            )
+            .await?;
         }
     }
     Ok(())

@@ -1,9 +1,9 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use vecdb_common::{FileType, FileTypeDetector};
-use vecdb_core::ingestion::{IngestionOptions, process_single_file};
+use vecdb_core::ingestion::{process_single_file, IngestionOptions};
 use vecdb_core::parsers::{Parser, ParserFactory};
 use vecdb_core::types::Chunk;
 
@@ -19,11 +19,16 @@ impl FileTypeDetector for MockDetector {
 struct FailingParser;
 #[async_trait]
 impl Parser for FailingParser {
-    async fn parse(&self, _content: &str, _path: &Path, _base_metadata: Option<serde_json::Value>) -> Result<Vec<Chunk>> {
+    async fn parse(
+        &self,
+        _content: &str,
+        _path: &Path,
+        _base_metadata: Option<serde_json::Value>,
+    ) -> Result<Vec<Chunk>> {
         // SIMULATE FAILURE
         Err(anyhow!("Simulated Parser Explosion 💥"))
     }
-    
+
     fn supported_extensions(&self) -> Vec<&str> {
         vec!["py"]
     }
@@ -34,7 +39,7 @@ impl ParserFactory for MockFactory {
     fn get_parser(&self, _file_type: FileType) -> Option<Box<dyn Parser>> {
         Some(Box::new(FailingParser))
     }
-    
+
     fn get_streaming_parser(&self, _file_type: FileType) -> Option<Box<dyn Parser>> {
         None
     }
@@ -48,7 +53,7 @@ async fn test_fallback_on_parser_failure() -> Result<()> {
     let detector = Arc::new(MockDetector);
     let parser_factory = Arc::new(MockFactory);
     let rules = vec![];
-    
+
     let options = Arc::new(IngestionOptions {
         path: ".".to_string(),
         collection: "test".to_string(),
@@ -83,21 +88,25 @@ async fn test_fallback_on_parser_failure() -> Result<()> {
         parser_factory,
         rules,
         options,
-        None
-    ).await?;
+        None,
+    )
+    .await?;
 
     // Verification
     assert!(result.is_some(), "Result should be Some(chunks)");
     let chunks = result.unwrap();
-    
-    assert!(!chunks.is_empty(), "Should have produced chunks despite parser failure");
-    
+
+    assert!(
+        !chunks.is_empty(),
+        "Should have produced chunks despite parser failure"
+    );
+
     // Check that we got text chunks (simple metadata)
     let chunk = &chunks[0];
-    
+
     // Verify it's a valid chunk
     assert_eq!(chunk.content, "def foo():\n    print('hello')");
-    
+
     println!("Successfully fell back to text chunking!");
 
     Ok(())

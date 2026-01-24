@@ -1,6 +1,6 @@
-use std::path::Path;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::path::Path;
 
 /// Supported file types for parsing and conversion
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -45,11 +45,12 @@ impl FileType {
     /// Get file type from file path
     pub fn from_path<P: AsRef<Path>>(path: P) -> Self {
         let path = path.as_ref();
-        
+
         // First try standard extension
-        if let Some(ft) = path.extension()
+        if let Some(ft) = path
+            .extension()
             .and_then(|ext| ext.to_str())
-            .and_then(Self::from_extension) 
+            .and_then(Self::from_extension)
         {
             return ft;
         }
@@ -60,9 +61,9 @@ impl FileType {
             let parts: Vec<&str> = path_str.split('.').collect();
             // iterate backwards
             for i in (0..parts.len()).rev() {
-                 if let Some(ft) = Self::from_extension(parts[i]) {
-                     return ft;
-                 }
+                if let Some(ft) = Self::from_extension(parts[i]) {
+                    return ft;
+                }
             }
         }
 
@@ -96,21 +97,24 @@ impl FileType {
     /// Check if content is likely text (not binary soup)
     /// Scans first 1KB for control characters or low printable ratio.
     pub fn is_likely_text(content: &[u8]) -> bool {
-        if content.is_empty() { return true; }
-        
+        if content.is_empty() {
+            return true;
+        }
+
         let sample_len = content.len().min(1024);
         let sample = &content[..sample_len];
-        
+
         // Fast scan for null bytes (indicates binary)
         if sample.contains(&0) {
             return false;
         }
-        
+
         // Check ratio of printable characters (including whitespace and UTF-8)
-        let printable = sample.iter().filter(|&&b| {
-            (32..=126).contains(&b) || b == 9 || b == 10 || b == 13 || b >= 128
-        }).count();
-        
+        let printable = sample
+            .iter()
+            .filter(|&&b| (32..=126).contains(&b) || b == 9 || b == 10 || b == 13 || b >= 128)
+            .count();
+
         (printable as f32 / sample_len as f32) > 0.85
     }
 
@@ -119,9 +123,14 @@ impl FileType {
         match self {
             Self::Markdown | Self::Html => ParsingCapability::Document,
             Self::Json | Self::Toml => ParsingCapability::Data,
-            
-            Self::Rust | Self::Python | Self::C | Self::Cpp | 
-            Self::Cuda | Self::Go | Self::Bash => ParsingCapability::Code,
+
+            Self::Rust
+            | Self::Python
+            | Self::C
+            | Self::Cpp
+            | Self::Cuda
+            | Self::Go
+            | Self::Bash => ParsingCapability::Code,
 
             Self::Text => ParsingCapability::Simple,
             Self::Unknown => ParsingCapability::Simple, // The Lua fallback

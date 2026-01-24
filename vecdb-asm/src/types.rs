@@ -54,16 +54,16 @@ pub struct EvolutionEvent {
     pub event_type: String, // "creation", "evolution"
     pub artifact: String,
     pub timeline_id: String,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<usize>, // For creation
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version_from: Option<usize>, // For evolution
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version_to: Option<usize>, // For evolution
-    
+
     pub diff_summary: String,
     pub full_content: String,
     pub timestamp: Option<Value>,

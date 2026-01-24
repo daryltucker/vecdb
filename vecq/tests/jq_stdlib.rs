@@ -7,16 +7,10 @@ fn test_jq_stdlib_keys() {
     let input = json!({"a": 1, "b": 2}).to_string();
     let mut temp = tempfile::Builder::new().suffix(".json").tempfile().unwrap();
     std::io::Write::write_all(&mut temp, input.as_bytes()).unwrap();
-    
-    let assert = cmd
-        .arg("-q")
-        .arg("keys | sort")
-        .arg(temp.path())
-        .assert();
 
-    assert
-        .success()
-        .stdout("[\"a\",\"b\"]\n");
+    let assert = cmd.arg("-q").arg("keys | sort").arg(temp.path()).assert();
+
+    assert.success().stdout("[\"a\",\"b\"]\n");
 }
 
 #[test]
@@ -25,16 +19,10 @@ fn test_jq_stdlib_length() {
     let input = json!([1, 2, 3]).to_string();
     let mut temp = tempfile::Builder::new().suffix(".json").tempfile().unwrap();
     std::io::Write::write_all(&mut temp, input.as_bytes()).unwrap();
-    
-    let assert = cmd
-        .arg("-q")
-        .arg("length")
-        .arg(temp.path())
-        .assert();
 
-    assert
-        .success()
-        .stdout("3\n");
+    let assert = cmd.arg("-q").arg("length").arg(temp.path()).assert();
+
+    assert.success().stdout("3\n");
 }
 
 #[test]
@@ -43,14 +31,12 @@ fn test_jq_stdlib_to_entries() {
     let input = json!({"a": 1}).to_string();
     let mut temp = tempfile::Builder::new().suffix(".json").tempfile().unwrap();
     std::io::Write::write_all(&mut temp, input.as_bytes()).unwrap();
-    
+
     let assert = cmd
         .arg("-q")
         .arg("to_entries | .[0].key")
         .arg(temp.path())
         .assert();
 
-    assert
-        .success()
-        .stdout("\"a\"\n");
+    assert.success().stdout("\"a\"\n");
 }
