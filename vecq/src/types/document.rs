@@ -1,9 +1,9 @@
+use super::attributes::ElementAttributes;
+use super::element_type::ElementType;
+use super::metadata::DocumentMetadata;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use vecdb_common::FileType;
-use super::element_type::ElementType;
-use super::attributes::ElementAttributes;
-use super::metadata::DocumentMetadata;
 // removed
 
 /// A structural element within a document
@@ -52,7 +52,7 @@ impl DocumentElement {
         }
         self
     }
-    
+
     /// Set strict attributes
     pub fn set_attributes(mut self, attributes: ElementAttributes) -> Self {
         self.attributes = attributes;
@@ -88,7 +88,11 @@ impl DocumentElement {
         results
     }
 
-    fn find_children_recursive<'a>(&'a self, element_type: ElementType, results: &mut Vec<&'a DocumentElement>) {
+    fn find_children_recursive<'a>(
+        &'a self,
+        element_type: ElementType,
+        results: &mut Vec<&'a DocumentElement>,
+    ) {
         for child in &self.children {
             if child.element_type == element_type {
                 results.push(child);
@@ -234,13 +238,8 @@ mod tests {
 
     #[test]
     fn test_document_element_line_operations() {
-        let element = DocumentElement::new(
-            ElementType::Function,
-            None,
-            "content".to_string(),
-            5,
-            10,
-        );
+        let element =
+            DocumentElement::new(ElementType::Function, None, "content".to_string(), 5, 10);
 
         assert_eq!(element.line_span(), 5..=10);
         assert!(element.contains_line(7));

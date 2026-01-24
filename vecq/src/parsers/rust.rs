@@ -440,6 +440,34 @@ impl RustParser {
                     _current_scope = old_scope;
                     elements.push(element);
                 }
+                "struct_item" => {
+                    let name = child
+                        .child_by_field_name("name")
+                        .and_then(|n| n.utf8_text(source).ok().map(|s| s.to_string()));
+
+                    let mut element = DocumentElement::new(
+                        ElementType::Struct,
+                        name.clone(),
+                        child.utf8_text(source).unwrap_or("").to_string(),
+                        child.start_position().row + 1,
+                        child.end_position().row + 1,
+                    );
+
+                    let rust_attr = RustAttributes {
+                        visibility: self.extract_visibility(&child, source),
+                        other: HashMap::new(),
+                    };
+
+                    if !pending_comments.is_empty() {
+                        element.attributes.insert_generic(
+                            "docstring".to_string(),
+                            serde_json::Value::String(pending_comments.join("\n")),
+                        );
+                        pending_comments.clear();
+                    }
+                    element.attributes = ElementAttributes::Rust(rust_attr);
+                    elements.push(element);
+                }
                 "mod_item" => {
                     let name = child
                         .child_by_field_name("name")
