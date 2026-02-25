@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import subprocess
 import sys
+import shlex
 
 def run_command(cmd, cwd=None):
     """Runs a shell command."""
     print(f"Running: {cmd}")
-    result = subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True, text=True)
+    args = shlex.split(cmd)
+    result = subprocess.run(args, shell=False, cwd=cwd, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"FAILED: {cmd}")
         print("STDOUT:", result.stdout)

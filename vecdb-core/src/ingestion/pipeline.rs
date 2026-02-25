@@ -16,6 +16,8 @@ pub async fn flush_chunks(
     collection: &str,
     chunks: &mut Vec<Chunk>,
     gpu_batch_size: usize,
+    target_dim: Option<usize>,
+    max_chunk_size: Option<usize>,
 ) -> Result<()> {
     if chunks.is_empty() {
         return Ok(());
@@ -34,23 +36,24 @@ pub async fn flush_chunks(
     if !new_chunks.is_empty() {
         debug!("Embedding {} new chunks...", new_chunks.len());
 
-        const MAX_CHUNK_CHARS: usize = 6000;
+        let active_max_chunk_size = max_chunk_size.unwrap_or(6000);
 
         let mut final_chunks: Vec<Chunk> = Vec::with_capacity(new_chunks.len());
         let fallback_chunker = crate::chunking::SimpleChunker;
         let fallback_params = crate::chunking::ChunkParams {
-            chunk_size: MAX_CHUNK_CHARS,
-            max_chunk_size: Some(MAX_CHUNK_CHARS),
+            chunk_size: active_max_chunk_size,
+            max_chunk_size: Some(active_max_chunk_size),
             chunk_overlap: 0,
             tokenizer: "char".to_string(),
             file_extension: None,
         };
 
         for chunk in new_chunks {
-            if chunk.content.len() > MAX_CHUNK_CHARS {
+            if chunk.content.len() > active_max_chunk_size {
                 debug!(
-                    "Warning: Oversized chunk detected ({} chars). Splitting...",
-                    chunk.content.len()
+                    "Warning: Oversized chunk detected ({} chars > max {}). Splitting...",
+                    chunk.content.len(),
+                    active_max_chunk_size
                 );
                 let sub_chunks: Vec<crate::chunking::ChunkResult> = fallback_chunker
                     .chunk(&chunk.content, &fallback_params)
@@ -94,7 +97,7 @@ pub async fn flush_chunks(
         for chunk_start in (0..total_chunks).step_by(gpu_batch_size) {
             let chunk_end = std::cmp::min(chunk_start + gpu_batch_size, total_chunks);
             let batch_texts = &texts[chunk_start..chunk_end];
-            let batch_vectors = embedder.embed_batch(batch_texts).await?;
+            let batch_vectors = embedder.embed_batch(batch_texts, target_dim).await?;
             all_vectors.extend(batch_vectors);
         }
 

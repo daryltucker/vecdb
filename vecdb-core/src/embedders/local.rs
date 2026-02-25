@@ -49,15 +49,15 @@ struct LocalEmbedderInitParams {
 
 #[cfg(feature = "local-embed")]
 impl LocalEmbedder {
-    /// Create a new LocalEmbedder with the default model (AllMiniLML6V2).
-    /// The model is downloaded automatically on first use (~30MB).
-    pub fn new(cache_path: Option<std::path::PathBuf>, use_gpu: bool) -> Result<Self> {
+    /// Create a new LocalEmbedder with the specified model name.
+    /// The model is downloaded automatically on first use.
+    pub fn new(model_name: &str, cache_path: Option<std::path::PathBuf>, use_gpu: bool) -> Result<Self> {
         // Starvation Protection: Limit ONNX Runtime threads
         // Unless explicitly overridden by user, cap intra-op threads to a safe number (e.g., 4)
         // or 50% of logical cores, to prevent "System Lockup" during ingestion.
         if std::env::var("ORT_INTRA_OP_NUM_THREADS").is_err() {
             let num_cpus = num_cpus::get();
-            let safe_threads = (num_cpus / 2).clamp(1, 4).to_string(); // Cap at 4 for stability
+            let safe_threads = (num_cpus / 2).clamp(1, 2).to_string(); // Cap at 2 for background process stability
                                                                        // ORT (ONNX Runtime)
             unsafe {
                 std::env::set_var("ORT_INTRA_OP_NUM_THREADS", &safe_threads);
@@ -79,15 +79,44 @@ impl LocalEmbedder {
             }
         }
 
+        // Map model name to fastembed enum.
+        // IMPORTANT: Every alias MUST map to the correct underlying model.
+        // DO NOT add aliases for models that fastembed-rs does not support.
+        // If a model is not supported, it MUST produce an error, not a silent fallback.
+        let model_type = match model_name.to_lowercase().as_str() {
+            // all-MiniLM-L6-v2: 22M params, 384-dim, 256 tok context
+            "all-minilm-l6-v2" | "minilm" | "default" | "" => EmbeddingModel::AllMiniLML6V2,
+            // BGE Small EN v1.5: 33M params, 384-dim, 512 tok context
+            "bge-small-en-v1.5" | "bge-small-en" => EmbeddingModel::BGESmallENV15,
+            // BGE Base EN v1.5: 109M params, 768-dim, 512 tok context
+            "bge-base-en-v1.5" | "bge-base-en" => EmbeddingModel::BGEBaseENV15,
+            // BGE Large EN v1.5: 335M params, 1024-dim, 512 tok context
+            "bge-large-en-v1.5" | "bge-large-en" => EmbeddingModel::BGELargeENV15,
+            // Nomic Embed Text v1: 137M params, 768-dim, 8192 tok context
+            "nomic-embed-text-v1" | "nomic-embed-text" | "nomic-v1" => EmbeddingModel::NomicEmbedTextV1,
+            // Nomic Embed Text v1.5: 137M params, 768-dim, 8192 tok context, Matryoshka-trained
+            "nomic-embed-text-v1.5" | "nomic-v1.5" => EmbeddingModel::NomicEmbedTextV15,
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Unknown local embedding model: '{}'. \
+                     Supported models: all-minilm-l6-v2, bge-small-en-v1.5, bge-base-en-v1.5, \
+                     bge-large-en-v1.5, nomic-embed-text-v1, nomic-embed-text-v1.5. \
+                     Check your config.toml 'local_embedding_model' setting.",
+                    model_name
+                ));
+            }
+        };
+
         // Create the struct with lazy intent
-        let instance = Self::with_model(EmbeddingModel::AllMiniLML6V2, cache_path, use_gpu)?;
+        let instance = Self::with_model(model_type, cache_path, use_gpu)?;
 
         // CRITICAL: If GPU is requested, we MUST initialize EAGERLY.
         // This ensures that if CUDA fails and we fall back to CPU, the
         // warning messages are printed to stderr *HERE*, before any CLI
         // progress bars (like in `ingest`) are started.
         // If we wait for lazy init, the progress bar will swallow/overwrite the warnings.
-        if use_gpu {
+        // However, we only do this in INTERACTIVE mode to prevent locking headless/MCP instances.
+        if use_gpu && crate::output::OUTPUT.is_interactive {
             tracing::debug!("Eagerly initializing LocalEmbedder for CUDA check...");
             if let Err(e) = instance.ensure_initialized() {
                 // If init fails entirely (even fallback), we want to know now.
@@ -128,8 +157,8 @@ impl LocalEmbedder {
             use_gpu,
         };
 
-        // Eager init if GPU requested (consistency with ::new)
-        if use_gpu {
+        // Eager init if GPU requested (consistency with ::new) and interactive
+        if use_gpu && crate::output::OUTPUT.is_interactive {
             tracing::debug!("Eagerly initializing LocalEmbedder (custom model) for CUDA check...");
             match instance.ensure_initialized() {
                 Ok(_) => {}
@@ -206,7 +235,9 @@ impl LocalEmbedder {
                         eprintln!("     1. drivers: nvidia-smi (should be v550+)");
                         eprintln!("     2. libs: ensure libcudnn and libcublas are in LD_LIBRARY_PATH or system paths");
                         eprintln!("   Continuing with CPU-only mode...\n");
-                        std::thread::sleep(std::time::Duration::from_secs(3));
+                        if !cfg!(test) {
+                            std::thread::sleep(std::time::Duration::from_secs(3));
+                        }
                         TextEmbedding::try_new(make_options())
                             .context("Failed to initialize local embedding model (CPU Fallback)")?
                     }
@@ -222,7 +253,9 @@ impl LocalEmbedder {
                     tracing::warn!("GPU acceleration requested but 'cuda' feature not enabled. Falling back to CPU.");
                     eprintln!("\n⚠️  [CUDA WARNING] 'local_use_gpu = true' but binary was compiled without 'cuda' feature.");
                     eprintln!("   falling back to CPU.\n");
-                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    if !cfg!(test) {
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+                    }
                 }
                 TextEmbedding::try_new(make_options())
                     .context("Failed to initialize local embedding model")?
@@ -235,25 +268,45 @@ impl LocalEmbedder {
     }
 }
 
+/// Check if an error is a CUDA/GPU memory failure and wrap with human-readable message.
+#[cfg(feature = "local-embed")]
+fn wrap_cuda_error(err: anyhow::Error) -> anyhow::Error {
+    let msg = err.to_string();
+    let is_cuda_oom = msg.contains("CUBLAS_STATUS_ALLOC_FAILED")
+        || msg.contains("CUDA_ERROR_OUT_OF_MEMORY")
+        || msg.contains("out of memory")
+        || msg.contains("CUBLAS failure")
+        || msg.contains("Failed to allocate memory for requested buffer");
+
+    if is_cuda_oom {
+        anyhow::anyhow!(
+            "GPU out of memory (VRAM exhausted).\n\
+             \n\
+             The GPU does not have enough free VRAM to run the embedding model.\n\
+             Common causes:\n\
+               • Another process is using the GPU (Ollama, a training job, etc.)\n\
+               • The model is too large for your GPU's VRAM\n\
+             \n\
+             To fix:\n\
+               1. Free GPU memory: stop other GPU processes (e.g. 'docker stop ollama-...')\n\
+               2. Check usage: run 'nvidia-smi' to see what's consuming VRAM\n\
+               3. Fall back to CPU: set 'local_use_gpu = false' in config.toml\n\
+             \n\
+             Technical detail: {}",
+            msg
+        )
+    } else {
+        err.context("Embedding failed")
+    }
+}
+
 #[cfg(feature = "local-embed")]
 #[async_trait]
 impl Embedder for LocalEmbedder {
-    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        // We need to re-create the lightweight struct to call ensure_initialized on the CLONE
-        // or just implement a standalone initialization helper.
-        // Easiest is to move the logic into a spawn_blocking closure but we need to init first.
-
-        // Strategy: Init in the current thread (lightweight check), then spawn blocking for embed
-        // But initializing might block, so we should spawn blocking for init too if needed.
-
-        // Better: Pass the whole struct into spawn_blocking, assuming it's Sync.
-        // But we can't move 'self'.
-
+    async fn embed(&self, text: &str, target_dim: Option<usize>) -> Result<Vec<f32>> {
         let myself = self.clone();
-
         let text_owned = text.to_string();
 
-        // fastembed is sync and requires &mut self, so wrap in spawn_blocking with Mutex
         let result = tokio::task::spawn_blocking(move || {
             // Lazy Init
             myself.ensure_initialized()?;
@@ -266,22 +319,31 @@ impl Embedder for LocalEmbedder {
                 .as_mut()
                 .ok_or_else(|| anyhow::anyhow!("Model not initialized"))?;
             model.embed(vec![text_owned], None)
+                .map_err(|e| wrap_cuda_error(e.into()))
         })
         .await
-        .context("Embedding task panicked")??; // Flatten Result<Result<...>>
+        .context("Embedding task panicked")??;
 
-        result
+        let mut vec = result
             .into_iter()
             .next()
-            .ok_or_else(|| anyhow::anyhow!("No embedding returned"))
+            .ok_or_else(|| anyhow::anyhow!("No embedding returned"))?;
+
+        if let Some(dim) = target_dim {
+            if dim < vec.len() {
+                vec.truncate(dim);
+                crate::embedder::l2_normalize(&mut vec);
+            }
+        }
+
+        Ok(vec)
     }
 
-    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+    async fn embed_batch(&self, texts: &[String], target_dim: Option<usize>) -> Result<Vec<Vec<f32>>> {
         let myself = self.clone();
         let texts_owned: Vec<String> = texts.to_vec();
 
-        // fastembed handles batching efficiently
-        let result = tokio::task::spawn_blocking(move || {
+        let mut results = tokio::task::spawn_blocking(move || {
             // Lazy Init
             myself.ensure_initialized()?;
 
@@ -293,11 +355,21 @@ impl Embedder for LocalEmbedder {
                 .as_mut()
                 .ok_or_else(|| anyhow::anyhow!("Model not initialized"))?;
             model.embed(texts_owned, None)
+                .map_err(|e| wrap_cuda_error(e.into()))
         })
         .await
         .context("Embedding batch task panicked")??;
 
-        Ok(result)
+        if let Some(dim) = target_dim {
+            for vec in results.iter_mut() {
+                if dim < vec.len() {
+                    vec.truncate(dim);
+                    crate::embedder::l2_normalize(vec);
+                }
+            }
+        }
+
+        Ok(results)
     }
 
     async fn dimension(&self) -> Result<usize> {
@@ -348,5 +420,63 @@ impl Embedder for LocalEmbedder {
     }
     fn model_name(&self) -> String {
         "disabled".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_model_selection_nomic_v15() {
+        // nomic-embed-text-v1.5: 137M params, 768-dim, Matryoshka-trained
+        let nomic = LocalEmbedder::new("nomic-embed-text-v1.5", None, false).unwrap();
+        assert_eq!(nomic.dimension().await.unwrap(), 768);
+        assert!(nomic.model_name().contains("nomic-embed-text-v1.5"));
+
+        // Also works with short alias
+        let nomic_short = LocalEmbedder::new("nomic-v1.5", None, false).unwrap();
+        assert_eq!(nomic_short.dimension().await.unwrap(), 768);
+    }
+
+    #[tokio::test]
+    async fn test_model_selection_bge() {
+        // BGE Small EN v1.5: 384-dim
+        let bge = LocalEmbedder::new("bge-small-en-v1.5", None, false).unwrap();
+        assert_eq!(bge.dimension().await.unwrap(), 384);
+        assert!(bge.model_name().contains("bge-small-en-v1.5"));
+    }
+
+    #[tokio::test]
+    async fn test_model_selection_default() {
+        // Default (empty string) maps to AllMiniLML6V2: 384-dim
+        let default = LocalEmbedder::new("", None, false).unwrap();
+        assert_eq!(default.dimension().await.unwrap(), 384);
+        assert!(default.model_name().contains("all-MiniLM-L6-v2"));
+    }
+
+    #[tokio::test]
+    async fn test_unknown_model_returns_error() {
+        // Unknown model names MUST return an error, not silently fall back.
+        // This prevents misconfiguration from producing garbage search results.
+        let result = LocalEmbedder::new("nomic-v2-moe", None, false);
+        assert!(result.is_err(), "nomic-v2-moe is not a valid fastembed model and must error");
+        let err_msg = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("Expected error for nomic-v2-moe"),
+        };
+        assert!(err_msg.contains("Unknown local embedding model"), "Error must be descriptive");
+        assert!(err_msg.contains("nomic-v2-moe"), "Error must include the bad model name");
+
+        // Also test a completely random name
+        let result2 = LocalEmbedder::new("totally-fake-model", None, false);
+        assert!(result2.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_removed_aliases_error() {
+        // bge-micro-v2 was a misleading alias (mapped to bge-small-en-v1.5)
+        let result = LocalEmbedder::new("bge-micro-v2", None, false);
+        assert!(result.is_err(), "bge-micro-v2 was a misleading alias and must be removed");
     }
 }

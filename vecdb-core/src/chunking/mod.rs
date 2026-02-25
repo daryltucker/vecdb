@@ -56,6 +56,41 @@ impl Chunker for RecursiveChunker {
                 let splitter = TextSplitter::new(config);
                 splitter.chunk_indices(text).collect()
             }
+        } else if params.tokenizer == "char" {
+            // Optimized char-based chunking without text_splitter for performance
+            let mut indices = Vec::new();
+            let mut start = 0;
+            let step = chunk_size.saturating_sub(params.chunk_overlap);
+            if step == 0 {
+                // Avoid infinite loop if overlap >= chunk_size
+                indices.push((0, text));
+            } else {
+                while start < text.len() {
+                    let mut end = (start + chunk_size).min(text.len());
+                    // Ensure we split at a valid char boundary
+                    while end > start && !text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    // If end == start, advance to next char
+                    if end == start && end < text.len() {
+                        if let Some(next_boundary) = text[end..].char_indices().next().map(|(i, _)| end + i) {
+                            end = next_boundary;
+                        } else {
+                            end = text.len();
+                        }
+                    }
+                    indices.push((start, &text[start..end]));
+                    if end == text.len() {
+                        break;
+                    }
+                    start += step;
+                    // Ensure start is at char boundary
+                    while start < text.len() && !text.is_char_boundary(start) {
+                        start += 1;
+                    }
+                }
+            }
+            indices
         } else {
             let config = ChunkConfig::new(chunk_size)
                 .with_sizer(Characters)

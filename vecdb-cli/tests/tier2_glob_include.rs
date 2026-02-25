@@ -32,6 +32,8 @@ fn test_ingest_extensions_include() {
         .arg(root.to_str().unwrap())
         .arg("--extensions")
         .arg("rs") // Only ingest .rs files
+        .arg("--collection")
+        .arg("test_glob_include")
         // Use a dry-run if available, or force a failure on connection but check output?
         // Currently no dry-run, so we expect it to try to connect.
         // However, we can check the OUTPUT for "Ingesting content from: ...".

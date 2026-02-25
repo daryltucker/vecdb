@@ -14,7 +14,7 @@ pub struct OptimizeArgs {
 
 pub async fn run(args: OptimizeArgs, config: &Config, profile_name: &str) -> anyhow::Result<()> {
     let profile = config.resolve_profile(Some(profile_name), Some(&args.collection))?;
-    let q_type = profile.quantization.unwrap_or(QuantizationType::Scalar);
+    let q_type = profile.quantization.clone().unwrap_or(QuantizationType::Scalar);
 
     if OUTPUT.is_interactive {
         println!(
@@ -29,7 +29,7 @@ pub async fn run(args: OptimizeArgs, config: &Config, profile_name: &str) -> any
     let core = vecdb_core::Core::new(
         &profile.qdrant_url,
         &profile.ollama_url,
-        &profile.embedding_model,
+        &config.resolve_embedding_model(&profile),
         profile.accept_invalid_certs,
         &profile.embedder_type,
         Some(config.fastembed_cache_path.clone()),
@@ -39,7 +39,8 @@ pub async fn run(args: OptimizeArgs, config: &Config, profile_name: &str) -> any
         config.smart_routing_keys.clone(),
         config.ingestion.path_rules.clone(),
         config.ingestion.max_concurrent_requests,
-        config.ingestion.gpu_batch_size,
+        config.resolve_gpu_batch_size(&profile, Some(args.collection.as_str())),
+        profile.num_ctx,
         file_detector.clone(),
         parser_factory.clone(),
     )

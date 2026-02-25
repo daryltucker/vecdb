@@ -2,7 +2,7 @@
 
 use crate::error::{VecqError, VecqResult};
 use crate::parser::{Parser, ParserCapabilities, ParserConfig};
-use crate::types::{DocumentMetadata, ElementType, FileType, ParsedDocument};
+use crate::types::{DocumentMetadata, FileType, ParsedDocument};
 use async_trait::async_trait;
 use rustpython_parser::{ast, Parse};
 use std::path::PathBuf;
@@ -114,6 +114,7 @@ impl Parser for PythonParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ElementType;
 
     #[tokio::test]
     async fn test_parse_function() {

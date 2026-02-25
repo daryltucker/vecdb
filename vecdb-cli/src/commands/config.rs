@@ -39,6 +39,9 @@ pub fn run(args: ConfigArgs, config: &mut Config) -> anyhow::Result<()> {
                     use_gpu: None,
                     qdrant_api_key: None,
                     ollama_api_key: None,
+                    profile: None,
+                    num_ctx: None,
+                    gpu_batch_size: None,
                     quantization: None,
                 },
             );

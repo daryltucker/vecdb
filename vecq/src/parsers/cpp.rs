@@ -201,6 +201,7 @@ impl CppParser {
              }
         }
         
+        #[allow(clippy::manual_map)]
         if let Some(n) = name {
             Some(DocumentElement::new(
                 ElementType::Variable,

@@ -91,11 +91,17 @@ impl vecdb_core::backend::Backend for MockBackend {
 struct MockEmbedder;
 #[async_trait::async_trait]
 impl vecdb_core::embedder::Embedder for MockEmbedder {
-    async fn embed(&self, _: &str) -> anyhow::Result<Vec<f32>> {
-        Ok(vec![0.0; 384])
+    async fn embed(&self, _text: &str, target_dim: Option<usize>) -> anyhow::Result<Vec<f32>> {
+        let dim = target_dim.unwrap_or(384);
+        Ok(vec![0.1; dim])
     }
-    async fn embed_batch(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
-        Ok(vec![vec![0.0; 384]; texts.len()])
+    async fn embed_batch(
+        &self,
+        texts: &[String],
+        target_dim: Option<usize>,
+    ) -> anyhow::Result<Vec<Vec<f32>>> {
+        let dim = target_dim.unwrap_or(384);
+        Ok(vec![vec![0.1; dim]; texts.len()])
     }
     async fn dimension(&self) -> anyhow::Result<usize> {
         Ok(384)
@@ -156,6 +162,10 @@ async fn test_large_file_bifurcation_ast() {
     let file_path = tmp.path().join("giant.rs");
 
     // Generate valid-ish Rust code so it doesn't crash a real parser if one were used
+    // THIS TEST IS A CHECK OF THE VALIDITY OF YOUR CODE
+    // THIS TEST IS NOT TO BE ADJUSTED TO MAKE IT EASIER TO PASS
+    // DO NOT CHANGE THE FILESIZE.  DO NOT CHANGE THE TIMING
+    // IF THIS TEST FAILS, YOUR CODE HAS FAILED; FIX YOUR CODE!
     let pattern = "fn function_name() { println!(\"hello\"); }\n";
     generate_large_file(&file_path, 60, pattern);
 
@@ -187,7 +197,7 @@ async fn test_large_file_bifurcation_ast() {
     println!("Ingesting 60MB Rust file (AST/Code Path)...");
     let start = Instant::now();
     let result =
-        vecdb_core::ingestion::ingest_path(&backend, &embedder, &detector, &factory, options).await;
+        vecdb_core::ingestion::ingest_path(&backend, &embedder, &detector, &factory, options, None).await;
     let duration = start.elapsed();
 
     assert!(result.is_ok(), "Ingestion failed: {:?}", result.err());
@@ -249,7 +259,7 @@ async fn test_large_file_streaming_json() {
     println!("Ingesting 60MB JSON file (Streaming Path)...");
     let start = Instant::now();
     let result =
-        vecdb_core::ingestion::ingest_path(&backend, &embedder, &detector, &factory, options).await;
+        vecdb_core::ingestion::ingest_path(&backend, &embedder, &detector, &factory, options, None).await;
     let duration = start.elapsed();
 
     assert!(result.is_ok(), "Ingestion failed: {:?}", result.err());

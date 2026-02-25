@@ -1,7 +1,6 @@
 // Main command execution logic for vecq CLI
 // Handles the core query processing and input/output flow
 
-use std::io::Write;
 use std::path::PathBuf;
 use tokio::fs;
 use std::io::BufRead;

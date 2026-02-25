@@ -2,7 +2,7 @@
 name = "vecdb-server"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 authors.workspace = true
 description = "MCP Server implementation for vecdb (server name: vecdb-mcp)"
 
@@ -25,6 +25,7 @@ axum = "0.8"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 hyper = { version = "1.1", features = ["full"] }
 tower = "0.5"
+tokio-stream = "0.1.18"
 
 
 

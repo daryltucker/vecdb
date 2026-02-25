@@ -1,5 +1,4 @@
 use anyhow::Result;
-use std::path::PathBuf;
 use vecdb_core::parsers::streaming_json::StreamingJsonParser;
 use vecdb_core::parsers::Parser;
 use vecdb_core::types::Chunk;

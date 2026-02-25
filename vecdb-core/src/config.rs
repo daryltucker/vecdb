@@ -104,10 +104,17 @@ pub struct CollectionConfig {
     /// Description for listing
     pub description: Option<String>,
 
+    /// The base profile to inherit from (e.g., "medium")
+    pub profile: Option<String>,
+
     /// Override: Embedder type
     pub embedder_type: Option<String>,
     /// Override: Model name
     pub embedding_model: Option<String>,
+    /// Override: Ollama Context Window (num_ctx)
+    pub num_ctx: Option<usize>,
+    /// Override: Batch Size for embeddings
+    pub gpu_batch_size: Option<usize>,
     /// Override: Ollama URL
     pub ollama_url: Option<String>,
     /// Override: target chunk size
@@ -154,9 +161,9 @@ pub struct IngestionConfig {
     #[serde(default = "default_concurrency")]
     pub max_concurrent_requests: usize,
 
-    /// GPU Concurrency: Batch size for GPU embedding (prevents OOM)
-    #[serde(default = "default_gpu_batch_size")]
-    pub gpu_batch_size: usize,
+    /// GPU Concurrency: Batch size for GPU embedding (None = auto calculate optimal size)
+    #[serde(default)]
+    pub gpu_batch_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,13 +184,9 @@ impl Default for IngestionConfig {
             overrides: HashMap::new(),
             path_rules: Vec::new(),
             max_concurrent_requests: default_concurrency(),
-            gpu_batch_size: default_gpu_batch_size(),
+            gpu_batch_size: None, // Default into auto-sizing mode
         }
     }
-}
-
-fn default_gpu_batch_size() -> usize {
-    2
 }
 
 fn default_concurrency() -> usize {
@@ -240,6 +243,10 @@ pub struct Profile {
     pub qdrant_api_key: Option<String>,
     pub ollama_api_key: Option<String>,
 
+    // Tuning Parameters
+    pub num_ctx: Option<usize>,
+    pub gpu_batch_size: Option<usize>,
+
     // Default Quantization for collections created under this profile
     pub quantization: Option<QuantizationType>,
 }
@@ -291,13 +298,15 @@ impl Default for Config {
 
                 qdrant_api_key: None,
                 ollama_api_key: None,
-                quantization: Some(QuantizationType::None), // Default to None for safety/compat, or Scalar? Plan says default scalar if not set, but explicit config might be safer as None.
+                num_ctx: None,
+                gpu_batch_size: None,
+                quantization: Some(QuantizationType::None), // Default to None for safety/compat
             },
         );
         Self {
             profiles,
             default_profile: DEFAULT_PROFILE_NAME.to_string(),
-            local_embedding_model: "bge-micro-v2".to_string(),
+            local_embedding_model: "all-minilm-l6-v2".to_string(),
             collections: HashMap::new(),
             collection_aliases: HashMap::new(),
             ingestion: IngestionConfig::default(),
@@ -313,7 +322,13 @@ impl Config {
     /// This unifies the logic: "if local, use global local model, else use profile model"
     pub fn resolve_embedding_model(&self, profile: &Profile) -> String {
         if profile.embedder_type == "local" {
-            self.local_embedding_model.clone()
+            // If the profile/collection explicitly specifies a non-default model, use it.
+            // Otherwise, use the global local_embedding_model.
+            if profile.embedding_model != DEFAULT_EMBEDDING_MODEL {
+                profile.embedding_model.clone()
+            } else {
+                self.local_embedding_model.clone()
+            }
         } else {
             profile.embedding_model.clone()
         }
@@ -335,49 +350,60 @@ impl Config {
         requested_profile: Option<&str>,
         requested_collection: Option<&str>,
     ) -> Result<Profile> {
-        // 1. Get Base Profile
-        let base_profile_name = requested_profile.unwrap_or(&self.default_profile);
+        // 1. Resolve Collection Config
+        let mut final_c_name = requested_collection;
+        let c_config = if let Some(mut c_name) = requested_collection {
+            if let Some(real_key) = self.collection_aliases.get(c_name) {
+                c_name = real_key.as_str();
+                final_c_name = Some(c_name);
+            }
+            self.collections.get(c_name)
+        } else {
+            None
+        };
+
+        // 2. Determine Base Profile Name
+        // Precedence: CLI Flag > Collection Profile > Default Profile
+        let base_profile_name = requested_profile
+            .or_else(|| c_config.and_then(|c| c.profile.as_deref()))
+            .unwrap_or(&self.default_profile);
+
         let mut profile = self
             .profiles
             .get(base_profile_name)
             .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found", base_profile_name))?
             .clone();
 
-        // 2. Resolve Collection
-        if let Some(mut c_name) = requested_collection {
-            // 2a. Resolve Alias -> Real Key
-            if let Some(real_key) = self.collection_aliases.get(c_name) {
-                c_name = real_key.as_str();
-            }
+        // 3. Merge Collection Overrides
+        if let Some(c_name) = final_c_name {
+            if let Some(config) = c_config {
+                profile.default_collection_name = config.name.clone();
 
-            // 2b. Check for Collection Config
-            if let Some(c_config) = self.collections.get(c_name) {
-                // 3. Merge Overrides
-                profile.default_collection_name = c_config.name.clone();
-
-                if let Some(ref et) = c_config.embedder_type {
+                if let Some(ref et) = config.embedder_type {
                     profile.embedder_type = et.clone();
                 }
-                if let Some(ref em) = c_config.embedding_model {
+                if let Some(ref em) = config.embedding_model {
                     profile.embedding_model = em.clone();
                 }
-                if let Some(ref url) = c_config.ollama_url {
+                if let Some(ref num) = config.num_ctx {
+                    profile.num_ctx = Some(*num);
+                }
+                if let Some(ref sz) = config.gpu_batch_size {
+                    profile.gpu_batch_size = Some(*sz);
+                }
+                if let Some(ref url) = config.ollama_url {
                     profile.ollama_url = url.clone();
                 }
-                if let Some(ref key) = c_config.qdrant_api_key {
+                if let Some(ref key) = config.qdrant_api_key {
                     profile.qdrant_api_key = Some(key.clone());
                 }
-                if let Some(ref key) = c_config.ollama_api_key {
+                if let Some(ref key) = config.ollama_api_key {
                     profile.ollama_api_key = Some(key.clone());
                 }
-                if let Some(ref q) = c_config.quantization {
+                if let Some(ref q) = config.quantization {
                     profile.quantization = Some(q.clone());
                 }
-                // chunk_size is currently in IngestionConfig, not Profile.
-                // We might need to carry it?
-                // For now, let's just update the profile fields we have.
             } else {
-                // No config found, just use the raw name
                 profile.default_collection_name = c_name.to_string();
             }
         }
@@ -412,7 +438,12 @@ impl Config {
                 }
             }
         }
-        self.ingestion.max_chunk_size
+        
+        self.ingestion.max_chunk_size.or_else(|| {
+            // Safe fallback (4 chars per token roughly) to prevent 
+            // chunk inflation crashes against models with limited context.
+            Some(self.resolve_chunk_size(requested_collection) * 4) 
+        })
     }
 
     /// Helper to get effective chunk_overlap if a collection overrides it
@@ -430,6 +461,41 @@ impl Config {
         self.ingestion.chunk_overlap
     }
 
+    /// Resolve num_ctx context window
+    pub fn resolve_num_ctx(&self, profile: &Profile) -> usize {
+        profile.num_ctx.unwrap_or(4096)
+    }
+
+    /// Helper to dynamically compute optimal gpu_batch_size 
+    /// Ensures we stay within 75% of context limits without hanging
+    pub fn resolve_gpu_batch_size(&self, profile: &Profile, requested_collection: Option<&str>) -> usize {
+        // 1. Explicit profile definition overrides all (from collection merge or profile direct)
+        if let Some(size) = profile.gpu_batch_size {
+            return size;
+        }
+
+        // 2. Global explicit setting
+        if let Some(size) = self.ingestion.gpu_batch_size {
+            return size;
+        }
+
+        // 3. Dynamic Auto-calculation
+        if profile.embedder_type == "ollama" {
+            let chunk_size = self.resolve_chunk_size(requested_collection);
+            let num_ctx = self.resolve_num_ctx(profile);
+
+            // Right-size to 75% of capacity: limit exactly to what fits safely in num_ctx.
+            // e.g. chunk_size = 500. num_ctx = 4096. 4096 * 0.75 = 3072. 3072 / 500 = 6 max elements.
+            let safe_capacity = (num_ctx as f64 * 0.75) as usize;
+            let auto_batch = (safe_capacity / chunk_size.max(1)).max(1);
+
+            return auto_batch.min(48); // Cap dynamically to 48 concurrent
+        }
+
+        // Generic fallback for local fastembed
+        2
+    }
+
     /// Helper to resolve whether to use GPU for local embeddings
     pub fn resolve_local_use_gpu(&self, requested_collection: Option<&str>) -> bool {
         if let Some(mut c_name) = requested_collection {
@@ -445,11 +511,7 @@ impl Config {
         self.local_use_gpu
     }
 
-    /// Helper to get effective gpu_batch_size
-    pub fn resolve_gpu_batch_size(&self, _requested_collection: Option<&str>) -> usize {
-        // For now, it's just the global ingestion setting
-        self.ingestion.gpu_batch_size
-    }
+
 
     /// Load config from XDG config directory or create default
     pub fn load() -> Result<Self> {
@@ -472,9 +534,19 @@ impl Config {
             Figment,
         };
 
-        let mut config: Config = Figment::new()
+        let mut figment = Figment::new()
             .merge(Serialized::defaults(Config::default()))
-            .merge(Toml::file(&config_path))
+            .merge(Toml::file(&config_path));
+            
+        // Check for project-local .vecdb/config.toml and merge it on top if it exists
+        if let Ok(cwd) = std::env::current_dir() {
+            let local_config_path = cwd.join(".vecdb").join("config.toml");
+            if local_config_path.exists() {
+                figment = figment.merge(Toml::file(&local_config_path));
+            }
+        }
+
+        let mut config: Config = figment
             .merge(Env::prefixed("VECDB_").split("__"))
             .extract()
             .context("Failed to load configuration via Figment")?;
@@ -567,6 +639,8 @@ mod tests {
                 embedder_type: "ollama".to_string(),
                 qdrant_api_key: None,
                 ollama_api_key: None,
+                num_ctx: None,
+                gpu_batch_size: None,
                 quantization: None,
             },
         );
@@ -584,5 +658,12 @@ mod tests {
         // Case 3: Default profile -> Should use default "docs"
         let resolved_default = config.resolve_profile(None, None).unwrap();
         assert_eq!(resolved_default.default_collection_name, "docs");
+    }
+
+    #[test]
+    fn test_resolve_max_chunk_size_fallback() {
+        let config = Config::default();
+        // By default chunk size is 512, so max should be 512 * 4 = 2048
+        assert_eq!(config.resolve_max_chunk_size(None), Some(2048));
     }
 }

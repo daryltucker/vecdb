@@ -57,7 +57,8 @@ pub async fn run(args: HistoryArgs, config: &Config, profile_name: &str) -> anyh
                 config.smart_routing_keys.clone(),
                 config.ingestion.path_rules.clone(),
                 config.ingestion.max_concurrent_requests,
-                config.ingestion.gpu_batch_size,
+                config.resolve_gpu_batch_size(&profile, Some(collection.as_str())),
+                profile.num_ctx,
                 file_detector.clone(),
                 parser_factory.clone(),
             )
@@ -75,6 +76,7 @@ pub async fn run(args: HistoryArgs, config: &Config, profile_name: &str) -> anyh
                 &profile.default_collection_name,
                 512,
                 profile.quantization.clone(),
+                None,
             )
             .await?;
         }

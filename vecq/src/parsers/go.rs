@@ -35,6 +35,15 @@ impl GoParser {
             _config: ParserConfig::default(),
         }
     }
+}
+
+impl Default for GoParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GoParser {
 
     /// Enable or disable usage/reference detection
     pub fn with_usages(mut self, enable: bool) -> Self {
@@ -118,11 +127,7 @@ impl GoParser {
             attributes.insert("receiver".to_string(), json!(rt));
         }
 
-        let element_type = if receiver_type.is_some() {
-            ElementType::Function // Methods are still functions with receiver info
-        } else {
-            ElementType::Function
-        };
+        let element_type = ElementType::Function;
 
         let element = DocumentElement::new(
             element_type,
@@ -681,7 +686,7 @@ impl GoParser {
             // Unaliased import like: "fmt" - extract the package name from the path
             let path = path_node.utf8_text(content.as_bytes()).unwrap_or("");
             // Remove quotes and take the last component
-            path.trim_matches('"').split('/').last().unwrap_or("").to_string()
+            path.trim_matches('"').rsplit('/').next().unwrap_or("").to_string()
         } else {
             String::new()
         }

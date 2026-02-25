@@ -34,9 +34,23 @@ pub struct EmbedArgs {
 }
 
 /// Tool: Ingest a local file or directory
+///
+/// Ingest local file/directory into a collection. Chunks, embeds, and stores content.
+///
+/// Security: Requires server started with --allow-local-fs flag.
+///
+/// CRITICAL: You MUST use absolute paths. If you use relative paths (e.g. "./") from the
+/// MCP server's working directory, you may inadvertently scan the entire home directory.
+///
+/// ADVISEMENT: If you are creating a temporary collection for research, please delete it
+/// using `delete_collection` when you are finished to save disk space.
+///
+/// Example: ingest_path(path='/absolute/path/to/docs', collection='my-docs')
+///
+/// Workflow: Ingest -> list_collections (verify) -> search_vectors (query).
 #[derive(Debug, Args, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct IngestPathArgs {
-    /// The local path (file or directory) to ingest
+    /// The local path (file or directory) to ingest. MUST be an absolute path.
     #[arg(long, short)]
     pub path: String,
 

@@ -308,6 +308,7 @@ async fn handle_ingest_path(
         args.concurrency,
         args.gpu_concurrency,
         profile.quantization.clone(),
+        None,
     )
     .await
     .map_err(|e| JsonRpcError {
@@ -375,6 +376,7 @@ async fn handle_ingest_history(
         collection,
         512,
         profile.quantization.clone(),
+        None,
     )
     .await
     .map_err(|e| JsonRpcError {

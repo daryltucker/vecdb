@@ -32,8 +32,7 @@ cargo install --git https://github.com/daryltucker/vecdb vecdb-cli vecdb-server 
 **Option B: Build from Source**
 
 ```bash
-(.venv)  [ v0.0.9 ✭ | ● 174 ✚ 16 ]
-✔ 23:09 daryl@Sleipnir ~/Projects/NRG/vecdb $ ./install.sh
+$ ./install.sh
 === Installing vecdb binaries ===
 Target: ~/.cargo/bin
 
@@ -194,9 +193,22 @@ To use with an MCP client (like Claude Desktop or an IDE):
 *   `embed`: Generate embeddings.
 *   `ingest_path`: Ingest local files/folders.
 *   `ingest_history`: Time-travel ingestion (Git).
-*   `code_query`: Analyze code structure with `vecq`.
 
-See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for API details.
+### Centralized HTTP Server (Recommended for Multiple Agents)
+
+If you use multiple MCP agents (e.g., Claude Desktop, Cursor, and Terminal tools), they normally would each spawn their own `vecdb-server` over stdio. This causes multiple processes to waste RAM and compete for VRAM.
+
+Instead, you can run a single `vecdb-server` in HTTP mode and have all your agents talk to it:
+
+1. **Start the Central Server:**
+   ```bash
+   vecdb-server --port 3000 --allow-local-fs
+   ```
+2. **Configure your Agents to connect via HTTP / SSE:**
+   If your agent supports HTTP transport, point it to `http://localhost:3000`.
+   If it only supports `stdio` (like Claude Desktop), use an [MCP Proxy](https://github.com/daryltucker/mcp-proxy) to bridge stdio to the HTTP instance without spawning another resource-heavy `vecdb-server`.
+
+See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for more details.
 
 ---
 

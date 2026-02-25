@@ -448,7 +448,7 @@ impl Backend for QdrantBackend {
             let count = result.points_count;
             let (size, quant) = result
                 .config
-                .and_then(|c| {
+                .map(|c| {
                     let s = c.params.and_then(|p| {
                         p.vectors_config.and_then(|vc| match vc.config {
                             Some(qdrant_client::qdrant::vectors_config::Config::Params(vp)) => {
@@ -472,7 +472,7 @@ impl Backend for QdrantBackend {
                         })
                     });
 
-                    Some((s, q))
+                    (s, q)
                 })
                 .unwrap_or((None, None));
 

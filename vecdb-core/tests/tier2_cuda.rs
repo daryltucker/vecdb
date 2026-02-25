@@ -18,7 +18,7 @@ async fn test_cuda_initialization() -> Result<()> {
     println!("LD_LIBRARY_PATH forced unset for this test.");
 
     println!("Attempting to initialize LocalEmbedder with use_gpu=true...");
-    let embedder = LocalEmbedder::new(None, true)?;
+    let embedder = LocalEmbedder::new("default", None, true)?;
 
     let model_name = embedder.model_name();
     println!("Initialized successfully via: {}", model_name);
@@ -33,7 +33,7 @@ async fn test_cuda_initialization() -> Result<()> {
 
     // Try a simple embedding
     println!("Running test embedding...");
-    let vec = embedder.embed("Hello CUDA").await?;
+    let vec = embedder.embed("Hello CUDA", None).await?;
     println!("Embedding generated, length: {}", vec.len());
     assert!(vec.len() > 0);
 

@@ -27,7 +27,7 @@ pub async fn run(
     let core = vecdb_core::Core::new(
         &profile.qdrant_url,
         &profile.ollama_url,
-        &profile.embedding_model,
+        &config.resolve_embedding_model(&profile),
         profile.accept_invalid_certs,
         &profile.embedder_type,
         Some(config.fastembed_cache_path.clone()),
@@ -37,7 +37,8 @@ pub async fn run(
         config.smart_routing_keys.clone(),
         config.ingestion.path_rules.clone(),
         config.ingestion.max_concurrent_requests,
-        config.ingestion.gpu_batch_size,
+        config.resolve_gpu_batch_size(&profile, args.collection.as_deref()),
+        profile.num_ctx,
         file_detector.clone(),
         parser_factory.clone(),
     )
@@ -72,7 +73,21 @@ pub async fn run(
                 println!("No results found.");
             } else {
                 for (i, result) in results.iter().enumerate() {
-                    println!("\n--- Result {} (Score: {:.4}) ---", i + 1, result.score);
+                    let path = result
+                        .metadata
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let line_start = result.metadata.get("line_start").and_then(|v| v.as_u64());
+                    let line_end = result.metadata.get("line_end").and_then(|v| v.as_u64());
+
+                    let location = if let (Some(s), Some(e)) = (line_start, line_end) {
+                        format!("{} [L{}-{}]", path, s, e)
+                    } else {
+                        path.to_string()
+                    };
+
+                    println!("\n--- Result {} (Score: {:.4}) | {} ---", i + 1, result.score, location);
                     println!("{}", result.content.trim());
                 }
             }

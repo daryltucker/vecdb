@@ -87,6 +87,7 @@ impl Core {
         path_rules: Vec<crate::config::PathRule>,
         max_concurrent_requests: usize,
         gpu_batch_size: usize,
+        num_ctx: Option<usize>,
         // Dependency Injection
         file_detector: Arc<dyn FileTypeDetector>,
         parser_factory: Arc<dyn ParserFactory>,
@@ -97,9 +98,10 @@ impl Core {
             #[cfg(feature = "local-embed")]
             "local" | "fastembed" => {
                 if output::OUTPUT.is_interactive {
-                    eprintln!("Using local embedder (fastembed) [GPU: {}]", use_gpu);
+                    eprintln!("Using local embedder (fastembed: {}) [GPU: {}]", model, use_gpu);
                 }
                 Arc::new(embedders::LocalEmbedder::new(
+                    model,
                     fastembed_cache_path,
                     use_gpu,
                 )?)
@@ -116,6 +118,7 @@ impl Core {
                     model.to_string(),
                     accept_invalid_certs,
                     ollama_api_key,
+                    num_ctx,
                 ))
             }
             #[cfg(not(feature = "local-embed"))]
@@ -140,9 +143,20 @@ impl Core {
                     model.to_string(),
                     accept_invalid_certs,
                     ollama_api_key,
+                    num_ctx,
                 ))
             }
         };
+
+        // Upfront Connection Validation: If the user explicitly asks for Ollama or Local,
+        // we strictly prove it's alive AND that the specific model can be loaded into memory.
+        // This prevents the application from deadlocking or silently failing later.
+        embedder.dimension().await.map_err(|e| anyhow::anyhow!(
+            "CRITICAL: Failed to initialize embedder: {}\n\
+            The configured service is unreachable, or the model failed to load into memory.\n\
+             >> If using Ollama, verify that the 'ollama' service is running on the configured port.\n\
+             >> Verify that the requested model name is exact and the weights are downloaded.", e
+        ))?;
 
         Ok(Self {
             backend: Arc::new(backend),
@@ -156,6 +170,7 @@ impl Core {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     /// Create a new Core instance from existing backends
     pub fn with_backends(
         backend: Arc<dyn Backend + Send + Sync>,
@@ -187,8 +202,14 @@ impl Core {
         limit: u64,
         filter: Option<serde_json::Value>,
     ) -> Result<Vec<SearchResult>> {
-        // Embed the query
-        let vector = self.embedder.embed(query).await?;
+        // Automatically resolve collection dimension for self-healing (Matryoshka support)
+        let target_dim = match self.backend.get_collection_info(collection).await {
+            Ok(info) => info.vector_size.map(|s| s as usize),
+            Err(_) => None,
+        };
+
+        // Embed the query with the target dimension
+        let vector = self.embedder.embed(query, target_dim).await?;
 
         // Search
         self.backend
@@ -202,7 +223,7 @@ impl Core {
         &self,
         path: &str,
         collection: &str,
-        respect_gitignore: bool,
+        recursive: bool,
         chunk_size: Option<usize>,
         max_chunk_size: Option<usize>,
         chunk_overlap: Option<usize>,
@@ -210,17 +231,40 @@ impl Core {
         excludes: Option<Vec<String>>,
         dry_run: bool,
         metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
-        max_concurrent_requests: Option<usize>,
-        gpu_batch_size: Option<usize>,
+        concurrency: Option<usize>,
+        gpu_concurrency: Option<usize>,
         quantization: Option<config::QuantizationType>,
+        target_dim: Option<usize>,
     ) -> Result<()> {
+        // DIMENSION SAFETY GUARD: Before ingesting, verify the embedder dimension
+        // is compatible with any existing collection. This prevents silently mixing
+        // vectors of different dimensions, which produces garbage search results.
+        if let Ok(info) = self.backend.get_collection_info(collection).await {
+            if let Some(stored_dim) = info.vector_size {
+                let embedder_dim = self.embedder.dimension().await? as u64;
+                let effective_dim = target_dim.map(|d| d as u64).unwrap_or(embedder_dim);
+
+                if effective_dim != stored_dim && info.vector_count.unwrap_or(0) > 0 {
+                    return Err(anyhow::anyhow!(
+                        "Dimension mismatch: embedder produces {}-dim vectors (effective: {}-dim) \
+                         but collection '{}' already contains {} vectors at {}-dim. \
+                         To fix: either (1) delete the collection and re-ingest, \
+                         or (2) change your local_embedding_model in config.toml to match.",
+                        embedder_dim, effective_dim, collection,
+                        info.vector_count.unwrap_or(0), stored_dim
+                    ));
+                }
+            }
+        }
+        // Guard passed (or collection doesn't exist yet — it will be created at correct dim)
+
         let options = IngestionOptions {
             path: path.to_string(),
             collection: collection.to_string(),
             chunk_size: chunk_size.unwrap_or(config::DEFAULT_CHUNK_SIZE),
             max_chunk_size,
             chunk_overlap: chunk_overlap.unwrap_or(50),
-            respect_gitignore,
+            respect_gitignore: recursive,
             strategy: "recursive".to_string(),
             tokenizer: "cl100k_base".to_string(),
             git_ref: None,
@@ -229,9 +273,9 @@ impl Core {
             dry_run,
             metadata,
             path_rules: self.path_rules.clone(),
-            max_concurrent_requests: max_concurrent_requests
+            max_concurrent_requests: concurrency
                 .unwrap_or(self.max_concurrent_requests),
-            gpu_batch_size: gpu_batch_size.unwrap_or(self.gpu_batch_size),
+            gpu_batch_size: gpu_concurrency.unwrap_or(self.gpu_batch_size),
             quantization,
         };
 
@@ -241,6 +285,7 @@ impl Core {
             &self.file_detector,
             &self.parser_factory,
             options,
+            target_dim,
         )
         .await
     }
@@ -276,6 +321,7 @@ impl Core {
         self.search(collection, &clean_query, limit, filter).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     /// Ingest raw content directly (Push Interface)
     pub async fn ingest_content(
         &self,
@@ -286,6 +332,7 @@ impl Core {
         max_chunk_size: Option<usize>,
         chunk_overlap: Option<usize>,
         quantization: Option<config::QuantizationType>,
+        target_dim: Option<usize>,
     ) -> Result<()> {
         // We need to update ingestion::ingest_memory signature too or IngestionOptions just needs it set?
         // ingestion::ingest_memory creates its own IngestionOptions. I need to update it to accept quantization arg effectively or pass it.
@@ -308,13 +355,14 @@ impl Core {
             max_chunk_size,
             chunk_overlap,
             quantization,
+            target_dim,
         )
         .await
     }
 
     /// Generate embeddings for a list of texts (Tool Access)
     pub async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        self.embedder.embed_batch(&texts).await
+        self.embedder.embed_batch(&texts, None).await
     }
 
     /// Ingest a historic version of a repository (Time Travel)
@@ -325,6 +373,7 @@ impl Core {
         collection: &str,
         chunk_size: usize,
         quantization: Option<config::QuantizationType>,
+        target_dim: Option<usize>,
     ) -> Result<()> {
         // history::ingest_history also needs update
         crate::history::ingest_history(
@@ -337,6 +386,7 @@ impl Core {
             collection,
             chunk_size,
             quantization,
+            target_dim,
         )
         .await
     }

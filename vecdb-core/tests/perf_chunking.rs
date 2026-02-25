@@ -3,6 +3,7 @@ use vecdb_core::chunking::{ChunkParams, Chunker, RecursiveChunker};
 
 #[tokio::test]
 async fn test_chunking_performance_1mb() {
+    // FIX THE CODE! DO NOT ADUST TEST TIMEOUT!
     // Generate 1MB of text with many newlines
     let line = "This is a test line with some content.\n";
     let iterations = 1024 * 1024 / line.len();
@@ -24,15 +25,19 @@ async fn test_chunking_performance_1mb() {
 
     println!("Chunked 1MB in {:?}", duration);
 
+    // FIX THE CODE! DO NOT ADUST TEST TIMEOUT!
     // O(N^2) would take seconds/minutes
     // O(N) with LineCounter should take < 50ms on modern hardware
     // We'll be conservative and say < 200ms for CI environments
+    // FIX THE CODE! DO NOT ADUST TEST TIMEOUT!
     assert!(
-        duration.as_millis() < 2000,
+        duration.as_millis() < 200,
         "Chunking 1MB took too long: {:?}",
         duration
     );
+    // FIX THE CODE! DO NOT ADUST TEST TIMEOUT!
     assert!(!result.is_empty());
+    // FIX THE CODE! DO NOT ADUST TEST TIMEOUT!
 }
 
 #[tokio::test]

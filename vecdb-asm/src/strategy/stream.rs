@@ -8,11 +8,6 @@ use std::collections::HashSet;
 /// 1. Expects a JSON Array.
 /// 2. Deduplicates records based on content hash (SHA256 of JSON string).
 /// 3. Sorts records by `metadata.modified` timestamp.
-/// Processes the input JSON value (array) using the Stream Consolidation strategy.
-///
-/// 1. Expects a JSON Array.
-/// 2. Deduplicates records based on content hash (SHA256 of JSON string).
-/// 3. Sorts records by `metadata.modified` timestamp.
 /// 4. If `stitch` is true, merges overlapping text fragments between sequential records.
 pub fn process_stream(input: Value, no_dedupe: bool, stitch: bool) -> Result<Value> {
     // 1. Validate Input

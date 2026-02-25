@@ -1,5 +1,4 @@
 use assert_cmd::Command;
-use predicates::prelude::*;
 use std::fs;
 use tempfile::TempDir;
 
@@ -12,7 +11,7 @@ fn test_collection_cleanup_logic() {
     fs::write(data_dir.join("file1.txt"), "Hello World").unwrap();
 
     // 2. First Ingest (Collection A)
-    let mut cmd = Command::cargo_bin("vecdb").unwrap();
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("vecdb"));
     cmd.arg("ingest")
         .arg(&data_dir)
         .arg("--collection")
@@ -28,7 +27,7 @@ fn test_collection_cleanup_logic() {
     assert!(state_content.contains("id = \""));
 
     // 3. Delete Collection (Remote Only)
-    let mut cmd = Command::cargo_bin("vecdb").unwrap();
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("vecdb"));
     cmd.arg("delete")
         .arg("test_cleanup_A")
         .arg("--yes")
@@ -37,7 +36,7 @@ fn test_collection_cleanup_logic() {
 
     // 4. Second Ingest (Same Name, New Remote)
     // This should trigger the cleanup logic because local ID won't match the new remote ID (or lack thereof)
-    let mut cmd = Command::cargo_bin("vecdb").unwrap();
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("vecdb"));
     cmd.arg("ingest")
         .arg(&data_dir)
         .arg("--collection")

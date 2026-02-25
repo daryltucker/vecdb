@@ -32,6 +32,8 @@ async fn test_qdrant_backend_integration() {
         accept_invalid_certs: true,
         qdrant_api_key: None,
         ollama_api_key: None,
+        num_ctx: None,
+        gpu_batch_size: None,
         quantization: None,
     };
 

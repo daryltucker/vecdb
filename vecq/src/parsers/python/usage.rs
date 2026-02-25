@@ -273,15 +273,13 @@ impl super::PythonParser {
                 }
             }
             ast::Expr::Dict(dict) => {
-                for key in &dict.keys {
-                    if let Some(k) = key {
-                        usages.extend(self.detect_usages_in_expr(
-                            content,
-                            k,
-                            current_function,
-                            current_scope,
-                        ));
-                    }
+                for k in dict.keys.iter().flatten() {
+                    usages.extend(self.detect_usages_in_expr(
+                        content,
+                        k,
+                        current_function,
+                        current_scope,
+                    ));
                 }
                 for value in &dict.values {
                     usages.extend(self.detect_usages_in_expr(

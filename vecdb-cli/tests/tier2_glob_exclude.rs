@@ -32,6 +32,8 @@ fn test_ingest_excludes() {
         .arg(root.to_str().unwrap())
         .arg("--excludes")
         .arg("ignore_me.rs") // Explicit exclude via flag
+        .arg("-c")
+        .arg("test_glob_exclude")
         .arg("--dry-run"); // Use dry-run to verify
 
     let assert = cmd.assert();

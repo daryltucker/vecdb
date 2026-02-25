@@ -36,7 +36,6 @@ impl CudaParser {
         &self,
         node: tree_sitter::Node,
         content: &str,
-        source: &[u8],
     ) -> Vec<DocumentElement> {
         let mut elements = Vec::new();
         let mut cursor = node.walk();
@@ -49,7 +48,7 @@ impl CudaParser {
                    if let Some(ns) = self.parse_namespace(content, child) {
                        let mut children = Vec::new();
                        if let Some(body) = child.child_by_field_name("body") {
-                           children = self.process_nodes(body, content, source);
+                           children = self.process_nodes(body, content);
                        }
                        elements.push(ns.with_children(children));
                    }
@@ -76,7 +75,7 @@ impl CudaParser {
                     let mut element = self.parse_complex_type(content, child, effective_type);
                     
                     if let Some(body) = child.child_by_field_name("body") {
-                        let children = self.process_nodes(body, content, source);
+                        let children = self.process_nodes(body, content);
                         element = element.with_children(children);
                     }
                     elements.push(element);
@@ -114,12 +113,12 @@ impl CudaParser {
                       // So if I pass `child` (template_decl), `process_nodes` iterates its children.
                       // One child is `function_definition`. It will match "function_definition" case.
                       // So elements.extend(self.process_nodes(child, ...)) works.
-                      elements.extend(self.process_nodes(child, content, source));
+                      elements.extend(self.process_nodes(child, content));
                 }
                 _ => {
                     if kind == "linkage_specification" {
                         if let Some(body) = child.child_by_field_name("body") {
-                             elements.extend(self.process_nodes(body, content, source));
+                             elements.extend(self.process_nodes(body, content));
                         }
                     }
                 }
@@ -159,10 +158,8 @@ impl CudaParser {
             if child.kind() == "function_declarator" {
                 let mut decl_cursor = child.walk();
                 for decl_child in child.children(&mut decl_cursor) {
-                    if decl_child.kind() == "identifier" || decl_child.kind() == "field_identifier" {
+                    if decl_child.kind() == "identifier" || decl_child.kind() == "field_identifier" || decl_child.kind() == "qualified_identifier" {
                         name = decl_child.utf8_text(content.as_bytes()).unwrap_or("").to_string();
-                    } else if decl_child.kind() == "qualified_identifier" {
-                         name = decl_child.utf8_text(content.as_bytes()).unwrap_or("").to_string();
                     }
                 }
             }
@@ -278,19 +275,18 @@ impl CudaParser {
              }
         }
         
-        if let Some(n) = name {
-            Some(DocumentElement::new(
+        name.map(|n| {
+            DocumentElement::new(
                 ElementType::Variable,
                 Some(n),
                 node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
                 node.start_position().row + 1,
                 node.end_position().row + 1,
-            ).set_attributes(ElementAttributes::CFamily(CFamilyAttributes {
+            )
+            .set_attributes(ElementAttributes::CFamily(CFamilyAttributes {
                 other: HashMap::new(),
-            })))
-        } else {
-            None
-        }
+            }))
+        })
     }
 }
 
@@ -340,7 +336,7 @@ impl Parser for CudaParser {
                 source: None,
             })?;
 
-        let elements = self.process_nodes(tree.root_node(), content, content.as_bytes());
+        let elements = self.process_nodes(tree.root_node(), content);
 
         let mut doc = ParsedDocument::new(
             DocumentMetadata::new(PathBuf::from("file.cu"), content.len() as u64)

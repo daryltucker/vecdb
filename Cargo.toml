@@ -14,7 +14,7 @@ resolver = "2"
 version = "0.0.9"
 edition = "2021"
 authors = ["Sextant <daryl@daryltucker.com>"]
-license = "MIT"
+license-file = "LICENSE"
 repository = "https://github.com/daryltucker/vecdb"
 
 [workspace.dependencies]

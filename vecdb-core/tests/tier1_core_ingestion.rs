@@ -101,11 +101,18 @@ impl Backend for MockBackend {
 struct MockEmbedder;
 #[async_trait]
 impl Embedder for MockEmbedder {
-    async fn embed(&self, _t: &str) -> Result<Vec<f32>> {
-        Ok(vec![1.0, 2.0])
+    async fn embed(&self, _text: &str, target_dim: Option<usize>) -> Result<Vec<f32>> {
+        let dim = target_dim.unwrap_or(2);
+        Ok(vec![0.1; dim])
     }
-    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        Ok(vec![vec![1.0, 2.0]; texts.len()])
+
+    async fn embed_batch(
+        &self,
+        texts: &[String],
+        target_dim: Option<usize>,
+    ) -> Result<Vec<Vec<f32>>> {
+        let dim = target_dim.unwrap_or(2);
+        Ok(vec![vec![0.1; dim]; texts.len()])
     }
     async fn dimension(&self) -> Result<usize> {
         Ok(2)
@@ -157,6 +164,7 @@ async fn test_core_ingestion_and_search() -> Result<()> {
         "Hello world this is a test content for embedding.",
         metadata,
         "test_collection",
+        None,
         None,
         None,
         None,

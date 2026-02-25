@@ -75,7 +75,7 @@ pub async fn run(args: IngestArgs, config: &Config, profile_name: &str) -> anyho
     let core = vecdb_core::Core::new(
         &profile.qdrant_url,
         &profile.ollama_url,
-        &profile.embedding_model,
+        &config.resolve_embedding_model(&profile),
         profile.accept_invalid_certs,
         &profile.embedder_type,
         Some(config.fastembed_cache_path.clone()),
@@ -84,8 +84,9 @@ pub async fn run(args: IngestArgs, config: &Config, profile_name: &str) -> anyho
         profile.ollama_api_key.clone(),
         config.smart_routing_keys.clone(),
         config.ingestion.path_rules.clone(),
-        config.ingestion.max_concurrent_requests, // Pass default concurrency
-        config.ingestion.gpu_batch_size,          // Pass default GPU batch size
+        config.ingestion.max_concurrent_requests, 
+        config.resolve_gpu_batch_size(&profile, args.collection.as_deref()), // Smart dynamic sizing
+        profile.num_ctx, // Propagate LLM Context limit
         file_detector.clone(),
         parser_factory.clone(),
     )
@@ -133,6 +134,7 @@ pub async fn run(args: IngestArgs, config: &Config, profile_name: &str) -> anyho
             args.concurrency, // Pass concurrency override
             args.gpu_concurrency, // Pass GPU concurrency override
             profile.quantization.clone(),
+            None,
         ) => {
             res?;
             if OUTPUT.is_interactive && !args.dry_run {
@@ -176,7 +178,7 @@ async fn run_stdin(
     let core = vecdb_core::Core::new(
         &profile.qdrant_url,
         &profile.ollama_url,
-        &profile.embedding_model,
+        &config.resolve_embedding_model(profile),
         profile.accept_invalid_certs,
         &profile.embedder_type,
         Some(config.fastembed_cache_path.clone()),
@@ -186,7 +188,8 @@ async fn run_stdin(
         config.smart_routing_keys.clone(),
         config.ingestion.path_rules.clone(),
         config.ingestion.max_concurrent_requests,
-        config.ingestion.gpu_batch_size,
+        config.resolve_gpu_batch_size(profile, args.collection.as_deref()),
+        profile.num_ctx,
         file_detector.clone(),
         parser_factory.clone(),
     )
@@ -213,7 +216,7 @@ async fn run_stdin(
     let final_overlap = args.overlap.or(Some(resolved_overlap));
 
     tokio::select! {
-        res = core.ingest_content(&buffer, metadata, &profile.default_collection_name, final_chunk_size, resolved_max_chunk_size, final_overlap, profile.quantization.clone()) => {
+        res = core.ingest_content(&buffer, metadata, &profile.default_collection_name, final_chunk_size, resolved_max_chunk_size, final_overlap, profile.quantization.clone(), None) => {
             res?;
             println!("Ingestion complete.");
         }

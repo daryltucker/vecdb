@@ -29,6 +29,7 @@ pub async fn ingest_path(
     detector: &Arc<dyn FileTypeDetector>,
     parser_factory: &Arc<dyn ParserFactory>,
     options: IngestionOptions,
+    target_dim: Option<usize>,
 ) -> Result<()> {
     let job_registry = crate::jobs::JobRegistry::new().ok();
     let job_id = job_registry
@@ -38,6 +39,7 @@ pub async fn ingest_path(
         eprintln!("Ingesting path: {}", options.path);
     }
 
+    let mut resolved_dim = target_dim;
     if !backend.collection_exists(&options.collection).await? {
         if OUTPUT.is_interactive {
             eprintln!(
@@ -46,6 +48,7 @@ pub async fn ingest_path(
             );
         }
         let dim = embedder.dimension().await?;
+        resolved_dim = Some(dim);
         backend
             .create_collection(
                 &options.collection,
@@ -53,6 +56,10 @@ pub async fn ingest_path(
                 options.quantization.clone(),
             )
             .await?;
+    } else if resolved_dim.is_none() {
+        if let Ok(info) = backend.get_collection_info(&options.collection).await {
+            resolved_dim = info.vector_size.map(|s| s as usize);
+        }
     }
 
     let commit_sha = crate::git::get_head_sha(Path::new(&options.path)).unwrap_or(None);
@@ -260,6 +267,8 @@ pub async fn ingest_path(
                             &collection_name,
                             &mut chunks_buffer,
                             options_arc.gpu_batch_size,
+                            resolved_dim,
+                            options_arc.max_chunk_size,
                         )
                         .await?;
                     }
@@ -311,6 +320,8 @@ pub async fn ingest_path(
                         &collection_name,
                         &mut chunks_buffer,
                         options_arc.gpu_batch_size,
+                        target_dim,
+                        options_arc.max_chunk_size,
                     )
                     .await?;
                 }
@@ -351,6 +362,8 @@ pub async fn ingest_path(
             &collection_name,
             &mut chunks_buffer,
             options_arc.gpu_batch_size,
+            target_dim,
+            options_arc.max_chunk_size,
         )
         .await?;
     }
@@ -385,6 +398,7 @@ pub async fn ingest_path(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Ingest raw content from memory
 pub async fn ingest_memory(
     backend: &Arc<dyn Backend + Send + Sync>,
@@ -396,6 +410,7 @@ pub async fn ingest_memory(
     max_chunk_size: Option<usize>,
     chunk_overlap: Option<usize>,
     quantization: Option<crate::config::QuantizationType>,
+    target_dim: Option<usize>,
 ) -> Result<()> {
     let options = IngestionOptions {
         path: "memory".to_string(),
@@ -426,12 +441,18 @@ pub async fn ingest_memory(
     )
     .await?;
 
+    let mut resolved_dim = target_dim;
     if !backend.collection_exists(collection).await? {
         eprintln!("Collection {} does not exist. Creating...", collection);
         let dim = embedder.dimension().await?;
+        resolved_dim = Some(dim);
         backend
             .create_collection(collection, dim as u64, options.quantization.clone())
             .await?;
+    } else if resolved_dim.is_none() {
+        if let Ok(info) = backend.get_collection_info(collection).await {
+            resolved_dim = info.vector_size.map(|s| s as usize);
+        }
     }
 
     flush_chunks(
@@ -440,6 +461,8 @@ pub async fn ingest_memory(
         collection,
         &mut chunks,
         options.gpu_batch_size,
+        resolved_dim,
+        max_chunk_size,
     )
     .await?;
 

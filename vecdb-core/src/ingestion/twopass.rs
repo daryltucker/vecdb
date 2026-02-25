@@ -46,8 +46,7 @@ impl TwoPassIngestor {
                 p.parse(&content, path, metadata.clone()).await?
             } else {
                 // Fallback to basic processing
-                let mut c = Vec::new();
-                c.push(Chunk {
+                let c = vec![Chunk {
                     id: uuid::Uuid::new_v4().to_string(),
                     document_id: doc_id.clone(),
                     content: content.clone(),
@@ -65,7 +64,7 @@ impl TwoPassIngestor {
                     char_end: (offset as usize) + content.len(),
                     start_line: None,
                     end_line: None,
-                });
+                }];
                 c
             };
 

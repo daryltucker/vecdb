@@ -20,7 +20,15 @@ impl StreamingJsonParser {
     pub fn new() -> Self {
         Self
     }
+}
 
+impl Default for StreamingJsonParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StreamingJsonParser {
     fn stream_file(&self, path: &Path, base_metadata: &Option<Value>) -> Result<Vec<Chunk>> {
         let file = File::open(path).context("Failed to open file for streaming")?;
         let reader = BufReader::new(file);
@@ -46,8 +54,13 @@ impl StreamingJsonParser {
                 let mut chunks = Vec::new();
                 let mut item_count = 0;
 
+                let base_map: std::collections::HashMap<String, Value> = match &self.base_metadata {
+                    Some(Value::Object(map)) => map.clone().into_iter().collect(),
+                    _ => std::collections::HashMap::new(),
+                };
+
                 while let Some(value) = seq.next_element::<Value>()? {
-                    let text = match serde_json::to_string_pretty(&value) {
+                    let text = match serde_json::to_string(&value) {
                         Ok(s) => s,
                         Err(_) => continue,
                     };
@@ -56,12 +69,7 @@ impl StreamingJsonParser {
                         continue;
                     }
 
-                    let mut metadata: std::collections::HashMap<String, Value> =
-                        match &self.base_metadata {
-                            Some(Value::Object(map)) => map.clone().into_iter().collect(),
-                            _ => std::collections::HashMap::new(),
-                        };
-
+                    let mut metadata = base_map.clone();
                     metadata.insert("source".to_string(), Value::String(self.path.clone()));
                     metadata.insert("stream_index".to_string(), serde_json::json!(item_count));
 

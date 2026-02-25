@@ -33,18 +33,13 @@ use std::sync::LazyLock;
 /// Global output configuration, detected once at startup.
 pub static OUTPUT: LazyLock<OutputContext> = LazyLock::new(OutputContext::detect);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum OutputFormat {
+    #[default]
     Json,
     Text,
     Markdown,
     Grep,
-}
-
-impl Default for OutputFormat {
-    fn default() -> Self {
-        Self::Json
-    }
 }
 
 /// Runtime output context for TTY-aware formatting.
@@ -95,9 +90,7 @@ impl OutputContext {
             is_interactive: stderr_tty,
             // Color detection is trickier. If we are printing to stdout, we follow stdout.
             // But usually, we want to know if colors are supported AT ALL in the current session.
-            color_override: if no_color {
-                Some(false)
-            } else if !stdout_tty {
+            color_override: if no_color || !stdout_tty {
                 Some(false)
             } else {
                 None

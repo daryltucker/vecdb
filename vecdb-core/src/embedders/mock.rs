@@ -16,16 +16,20 @@ impl MockEmbedder {
 
 #[async_trait]
 impl Embedder for MockEmbedder {
-    async fn embed(&self, _text: &str) -> Result<Vec<f32>> {
-        // Return a deterministic vector based on dimension (e.g., all 0.1s)
-        // Or hash the text to make it slightly deterministic but distinct
-        Ok(vec![0.1; self.dimension])
+    async fn embed(&self, _text: &str, target_dim: Option<usize>) -> Result<Vec<f32>> {
+        let dim = target_dim.unwrap_or(self.dimension);
+        Ok(vec![0.1; dim])
     }
 
-    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+    async fn embed_batch(
+        &self,
+        texts: &[String],
+        target_dim: Option<usize>,
+    ) -> Result<Vec<Vec<f32>>> {
+        let dim = target_dim.unwrap_or(self.dimension);
         let mut vecs = Vec::with_capacity(texts.len());
         for _ in texts {
-            vecs.push(vec![0.1; self.dimension]);
+            vecs.push(vec![0.1; dim]);
         }
         Ok(vecs)
     }

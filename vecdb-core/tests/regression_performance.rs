@@ -93,11 +93,18 @@ impl vecdb_core::backend::Backend for MockBackend {
 struct MockEmbedder;
 #[async_trait::async_trait]
 impl vecdb_core::embedder::Embedder for MockEmbedder {
-    async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
-        Ok(vec![])
+    async fn embed(&self, _text: &str, target_dim: Option<usize>) -> anyhow::Result<Vec<f32>> {
+        let dim = target_dim.unwrap_or(384);
+        Ok(vec![0.1; dim])
     }
-    async fn embed_batch(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
-        Ok(vec![vec![]; texts.len()])
+
+    async fn embed_batch(
+        &self,
+        texts: &[String],
+        target_dim: Option<usize>,
+    ) -> anyhow::Result<Vec<Vec<f32>>> {
+        let dim = target_dim.unwrap_or(384);
+        Ok(vec![vec![0.1; dim]; texts.len()])
     }
     async fn dimension(&self) -> anyhow::Result<usize> {
         Ok(384)
@@ -182,7 +189,7 @@ async fn regression_lua_speed_and_structure() {
     };
 
     let start = Instant::now();
-    let _ = vecdb_core::ingestion::ingest_path(&backend, &embedder, &detector, &factory, options)
+    let _ = vecdb_core::ingestion::ingest_path(&backend, &embedder, &detector, &factory, options, None)
         .await
         .unwrap();
     let duration = start.elapsed();
@@ -288,7 +295,7 @@ async fn regression_text_performance() {
 
     println!("Starting Text Regression (Recursive/Smart)...");
     let start = Instant::now();
-    let _ = vecdb_core::ingestion::ingest_path(&backend, &embedder, &detector, &factory, options)
+    let _ = vecdb_core::ingestion::ingest_path(&backend, &embedder, &detector, &factory, options, None)
         .await
         .unwrap();
     let duration = start.elapsed();
@@ -342,7 +349,7 @@ async fn regression_pride_and_prejudice_file() {
 
     println!("Starting Real P&P Regression...");
     let start = Instant::now();
-    let _ = vecdb_core::ingestion::ingest_path(&backend, &embedder, &detector, &factory, options)
+    let _ = vecdb_core::ingestion::ingest_path(&backend, &embedder, &detector, &factory, options, None)
         .await
         .unwrap();
     let duration = start.elapsed();

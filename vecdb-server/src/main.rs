@@ -95,7 +95,8 @@ async fn main() -> anyhow::Result<()> {
         config.smart_routing_keys.clone(),
         config.ingestion.path_rules.clone(),
         config.ingestion.max_concurrent_requests,
-        config.ingestion.gpu_batch_size,
+        config.resolve_gpu_batch_size(&profile, None), // Server daemon resolves per request later
+        profile.num_ctx,
         file_detector.clone(),
         parser_factory.clone(),
     )

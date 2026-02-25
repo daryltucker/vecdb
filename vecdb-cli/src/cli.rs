@@ -118,7 +118,8 @@ pub async fn run() -> anyhow::Result<()> {
                 config.smart_routing_keys.clone(),
                 config.ingestion.path_rules.clone(),
                 config.ingestion.max_concurrent_requests,
-                config.ingestion.gpu_batch_size,
+                config.resolve_gpu_batch_size(&profile, args.collection.as_deref()),
+                profile.num_ctx,
                 file_detector.clone(),
                 parser_factory.clone(),
             )

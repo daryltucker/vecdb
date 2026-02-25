@@ -57,7 +57,7 @@ fn detect_split(prev: &Snapshot, curr: &Snapshot) -> Option<BranchReason> {
     if del_ratio > MASSIVE_DELETION_THRESHOLD && overlap_ratio < OVERLAP_THRESHOLD {
         return Some(BranchReason::MassiveRewrite {
             deletion_ratio: del_ratio,
-            overlap_ratio: overlap_ratio,
+            overlap_ratio,
         });
     }
 

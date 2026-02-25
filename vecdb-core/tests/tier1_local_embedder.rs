@@ -23,7 +23,7 @@ mod local_embedder_tests {
 
     fn get_embedder() -> &'static LocalEmbedder {
         EMBEDDER.get_or_init(|| {
-            LocalEmbedder::new(None, false).expect("Failed to create LocalEmbedder")
+            LocalEmbedder::new("default", None, false).expect("Failed to create LocalEmbedder")
         })
     }
 
@@ -49,7 +49,7 @@ mod local_embedder_tests {
         let embedder = get_embedder();
 
         let text = "Hello, this is a test sentence for embedding.";
-        let embedding = embedder.embed(text).await;
+        let embedding = embedder.embed(text, None).await;
 
         assert!(embedding.is_ok(), "Embedding failed: {:?}", embedding.err());
 
@@ -76,7 +76,7 @@ mod local_embedder_tests {
             "Third sentence about search.".to_string(),
         ];
 
-        let embeddings = embedder.embed_batch(&texts).await;
+        let embeddings = embedder.embed_batch(&texts, None).await;
 
         assert!(
             embeddings.is_ok(),
@@ -103,9 +103,9 @@ mod local_embedder_tests {
         // Semantically different sentence
         let different = "Quantum mechanics describes subatomic particles.";
 
-        let emb1 = embedder.embed(similar1).await.unwrap();
-        let emb2 = embedder.embed(similar2).await.unwrap();
-        let emb3 = embedder.embed(different).await.unwrap();
+        let emb1 = embedder.embed(similar1, None).await.unwrap();
+        let emb2 = embedder.embed(similar2, None).await.unwrap();
+        let emb3 = embedder.embed(different, None).await.unwrap();
 
         // Cosine similarity helper
         fn cosine(a: &[f32], b: &[f32]) -> f32 {
@@ -132,7 +132,7 @@ mod local_embedder_tests {
         let embedder = get_embedder();
 
         // Empty text should still produce an embedding (model handles it)
-        let embedding = embedder.embed("").await;
+        let embedding = embedder.embed("", None).await;
         assert!(embedding.is_ok(), "Empty text embedding should succeed");
     }
 

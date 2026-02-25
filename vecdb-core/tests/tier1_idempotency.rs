@@ -100,13 +100,20 @@ struct CountingEmbedder {
 }
 #[async_trait]
 impl Embedder for CountingEmbedder {
-    async fn embed(&self, _t: &str) -> Result<Vec<f32>> {
+    async fn embed(&self, _text: &str, target_dim: Option<usize>) -> Result<Vec<f32>> {
         self.count.fetch_add(1, Ordering::SeqCst);
-        Ok(vec![1.0, 2.0])
+        let dim = target_dim.unwrap_or(2);
+        Ok(vec![0.1; dim])
     }
-    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+
+    async fn embed_batch(
+        &self,
+        texts: &[String],
+        target_dim: Option<usize>,
+    ) -> Result<Vec<Vec<f32>>> {
         self.count.fetch_add(texts.len(), Ordering::SeqCst);
-        Ok(vec![vec![1.0, 2.0]; texts.len()])
+        let dim = target_dim.unwrap_or(2);
+        Ok(vec![vec![0.1; dim]; texts.len()])
     }
     async fn dimension(&self) -> Result<usize> {
         Ok(2)
@@ -164,13 +171,13 @@ async fn test_ingestion_idempotency() -> Result<()> {
     let metadata = std::collections::HashMap::new();
 
     // 1. First ingestion
-    core.ingest_content(content, metadata.clone(), "test", None, None, None, None)
+    core.ingest_content(content, metadata.clone(), "test", None, None, None, None, None)
         .await?;
     let first_count = count.load(Ordering::SeqCst);
     assert!(first_count > 0, "Should have embedded content once");
 
     // 2. Second ingestion (identical content)
-    core.ingest_content(content, metadata, "test", None, None, None, None)
+    core.ingest_content(content, metadata, "test", None, None, None, None, None)
         .await?;
     let second_count = count.load(Ordering::SeqCst);
 

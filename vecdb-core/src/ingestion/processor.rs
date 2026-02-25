@@ -35,10 +35,8 @@ pub async fn process_single_file(
 
     let file_type = detector.detect(&path, content_preview);
 
-    if !file_type.is_supported() {
-        if is_binary(content_preview) {
-            return Ok(None);
-        } // Skipped
+    if !file_type.is_supported() && is_binary(content_preview) {
+        return Ok(None);
     }
 
     if let Some(ref exts) = options.extensions {

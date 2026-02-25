@@ -119,11 +119,18 @@ impl Backend for DummyBackend {
 struct DummyEmbedder;
 #[async_trait::async_trait]
 impl Embedder for DummyEmbedder {
-    async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
-        Ok(vec![0.0; 384])
+    async fn embed(&self, _text: &str, target_dim: Option<usize>) -> anyhow::Result<Vec<f32>> {
+        let dim = target_dim.unwrap_or(384);
+        Ok(vec![0.1; dim])
     }
-    async fn embed_batch(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
-        Ok(vec![vec![0.0; 384]; texts.len()])
+
+    async fn embed_batch(
+        &self,
+        texts: &[String],
+        target_dim: Option<usize>,
+    ) -> anyhow::Result<Vec<Vec<f32>>> {
+        let dim = target_dim.unwrap_or(384);
+        Ok(vec![vec![0.1; dim]; texts.len()])
     }
     async fn dimension(&self) -> anyhow::Result<usize> {
         Ok(384)
@@ -180,7 +187,7 @@ async fn test_fixture_ingestion_performance() {
 
             print!("Testing {:<30} ... ", path.display());
             let start = Instant::now();
-            ingest_path(&backend, &embedder, &detector, &factory, options)
+            ingest_path(&backend, &embedder, &detector, &factory, options, None)
                 .await
                 .unwrap();
             let duration = start.elapsed();
@@ -242,7 +249,7 @@ async fn test_large_generic_text_performance() {
 
     println!("Testing 15MB generic text ingestion...");
     let start = Instant::now();
-    ingest_path(&backend, &embedder, &detector, &factory, options)
+    ingest_path(&backend, &embedder, &detector, &factory, options, None)
         .await
         .unwrap();
     let duration = start.elapsed();

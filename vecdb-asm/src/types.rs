@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[allow(dead_code)]
 /// Represents a single versioned snapshot of an artifact
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -10,12 +11,14 @@ pub struct Snapshot {
     pub metadata: Value,
 }
 
+#[allow(dead_code)]
 impl Snapshot {
     pub fn new(content: String, metadata: Value) -> Self {
         Self { content, metadata }
     }
 }
 
+#[allow(dead_code)]
 /// Reason for a timeline branch
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", content = "details")]
@@ -33,6 +36,7 @@ pub enum BranchReason {
     Manual,
 }
 
+#[allow(dead_code)]
 /// Represents a distinct narrative timeline
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Timeline {
@@ -48,6 +52,7 @@ pub struct Timeline {
     pub reason: BranchReason,
 }
 
+#[allow(dead_code)]
 /// An event in the evolution of an artifact
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvolutionEvent {
@@ -69,6 +74,7 @@ pub struct EvolutionEvent {
     pub timestamp: Option<Value>,
 }
 
+#[allow(dead_code)]
 /// Container for the full timeline analysis output
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineAnalysis {

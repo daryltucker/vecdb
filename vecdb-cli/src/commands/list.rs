@@ -26,7 +26,8 @@ pub async fn run(config: &Config, profile_name: &str, format: OutputFormat) -> a
         config.smart_routing_keys.clone(),
         config.ingestion.path_rules.clone(),
         config.ingestion.max_concurrent_requests,
-        config.ingestion.gpu_batch_size,
+        config.resolve_gpu_batch_size(&profile, None), // No collection context known
+        profile.num_ctx,
         file_detector.clone(),
         parser_factory.clone(),
     )

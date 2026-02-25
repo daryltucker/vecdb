@@ -19,7 +19,7 @@ pub struct StatusArgs {
 }
 
 pub async fn run(
-    _args: StatusArgs,
+    args: StatusArgs,
     config: &Config,
     profile_name: &str,
     format: vecdb_common::output::OutputFormat,
@@ -32,7 +32,7 @@ pub async fn run(
     let core_result = vecdb_core::Core::new(
         &profile.qdrant_url,
         &profile.ollama_url,
-        &config.resolve_embedding_model(&profile),
+        &config.resolve_embedding_model(profile),
         profile.accept_invalid_certs,
         &profile.embedder_type,
         Some(config.fastembed_cache_path.clone()),
@@ -42,7 +42,8 @@ pub async fn run(
         config.smart_routing_keys.clone(),
         config.ingestion.path_rules.clone(),
         config.ingestion.max_concurrent_requests,
-        config.ingestion.gpu_batch_size,
+        config.resolve_gpu_batch_size(&profile, None),
+        profile.num_ctx,
         file_detector.clone(),
         parser_factory.clone(),
     )
@@ -61,7 +62,7 @@ pub async fn run(
             "qdrant_url": profile.qdrant_url,
             "embedder": {
                 "type": profile.embedder_type,
-                "model": profile.embedding_model
+                "model": config.resolve_embedding_model(profile)
             },
             "ollama_url": if profile.embedder_type == "ollama" { Some(&profile.ollama_url) } else { None },
             "connectivity": {
@@ -105,7 +106,7 @@ pub async fn run(
             }
         }
 
-        if let Some(target_id) = &_args.id {
+        if let Some(target_id) = &args.id {
             if let Some(job) = local_jobs.iter().find(|j| &j.id == target_id) {
                 println!("{}", serde_json::to_string_pretty(&job)?);
             } else {
@@ -118,7 +119,7 @@ pub async fn run(
     }
 
     // Detail View
-    if let Some(target_id) = &_args.id {
+    if let Some(target_id) = &args.id {
         let skin = make_custom_skin();
         if let Some(job) = local_jobs.iter().find(|j| &j.id == target_id) {
             skin.print_text(&format!(" # Job Details: `{}`", target_id));
@@ -147,7 +148,8 @@ pub async fn run(
     skin.print_text(&format!("* **Qdrant URL**: `{}`", profile.qdrant_url));
     skin.print_text(&format!(
         "* **Embedder**: `{}` ({})",
-        profile.embedder_type, profile.embedding_model
+        profile.embedder_type,
+        config.resolve_embedding_model(profile)
     ));
     if profile.embedder_type == "ollama" {
         skin.print_text(&format!("* **Ollama URL**: `{}`", profile.ollama_url));

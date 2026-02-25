@@ -25,6 +25,7 @@ pub async fn ingest_history(
     collection: &str,
     chunk_size: usize,
     quantization: Option<crate::config::QuantizationType>,
+    target_dim: Option<usize>,
 ) -> Result<()> {
     if OUTPUT.is_interactive {
         eprintln!(
@@ -82,7 +83,7 @@ pub async fn ingest_history(
     // Quick Fix: We'll accept the sandbox path for now to prove the "Time Travel" capability.
     // The "Right Way" is to refactor `ingest_path` to take `logical_root`.
     // Let's proceed with standard ingestion first.
-    ingest_path(backend, embedder, detector, parser_factory, options).await?;
+    ingest_path(backend, embedder, detector, parser_factory, options, target_dim).await?;
 
     if OUTPUT.is_interactive {
         eprintln!("Time Travel Ingestion Complete. Sandbox will be dropped.");

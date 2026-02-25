@@ -1,7 +1,6 @@
 // Output formatting and processing for vecq CLI
 // Handles JSON processing, file path injection, and result formatting
 
-use std::io::Write;
 use std::path::Path;
 use tokio::fs;
 use vecq::{detect_file_type, parse_file_with_options, FileType, FormatOptions, JqQueryEngine, JsonConverter, QueryEngine, UnifiedJsonConverter, VecqError, VecqResult};

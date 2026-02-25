@@ -158,14 +158,14 @@ pub async fn run(args: EnableUsagesArgs) -> Result<()> {
             .filter(|e| matches!(e.element_type, ElementType::Assignment))
             .count();
 
-        println!("");
+        println!();
         println!("--- Usage Analysis Summary ---");
         println!("File: {}", path.display());
         println!("Total usages: {}", total_usages);
         println!("Function calls: {}", calls);
         println!("Variable references: {}", references);
         println!("Assignments: {}", assignments);
-        println!("");
+        println!();
     }
 
     Ok(())
