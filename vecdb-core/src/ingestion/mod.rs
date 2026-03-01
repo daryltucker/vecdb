@@ -1,26 +1,26 @@
-pub mod options;
 pub mod discovery;
-pub mod processor;
+pub mod options;
 pub mod pipeline;
+pub mod processor;
 pub mod twopass;
 
-pub use options::IngestionOptions;
 pub use discovery::{build_walker, count_files};
-pub use processor::process_single_file;
+pub use options::IngestionOptions;
 pub use pipeline::{flush_chunks, process_content};
+pub use processor::process_single_file;
 
 use crate::backend::Backend;
 use crate::embedder::Embedder;
-use crate::state::IngestionState;
 use crate::output::OUTPUT;
+use crate::parsers::ParserFactory;
+use crate::state::IngestionState;
 use anyhow::Result;
+use indicatif::{ProgressBar, ProgressStyle};
+use regex::Regex;
 use std::path::Path;
 use std::sync::Arc;
-use vecdb_common::{FileType, FileTypeDetector};
-use crate::parsers::ParserFactory;
-use regex::Regex;
-use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
+use vecdb_common::{FileType, FileTypeDetector};
 
 /// Orchestrate ingestion of a path
 pub async fn ingest_path(
@@ -29,26 +29,42 @@ pub async fn ingest_path(
     detector: &Arc<dyn FileTypeDetector>,
     parser_factory: &Arc<dyn ParserFactory>,
     options: IngestionOptions,
+    target_dim: Option<usize>,
 ) -> Result<()> {
     let job_registry = crate::jobs::JobRegistry::new().ok();
-    let job_id = job_registry.as_ref().and_then(|r| r.register("ingest", &options.collection).ok());
+    let job_id = job_registry
+        .as_ref()
+        .and_then(|r| r.register("ingest", &options.collection).ok());
     if OUTPUT.is_interactive {
         eprintln!("Ingesting path: {}", options.path);
     }
 
+    let mut resolved_dim = target_dim;
     if !backend.collection_exists(&options.collection).await? {
         if OUTPUT.is_interactive {
-            eprintln!("Collection {} does not exist. Creating...", options.collection);
+            eprintln!(
+                "Collection {} does not exist. Creating...",
+                options.collection
+            );
         }
         let dim = embedder.dimension().await?;
-        backend.create_collection(&options.collection, dim as u64, options.quantization.clone()).await?;
+        resolved_dim = Some(dim);
+        backend
+            .create_collection(
+                &options.collection,
+                dim as u64,
+                options.quantization.clone(),
+            )
+            .await?;
+    } else if resolved_dim.is_none() {
+        if let Ok(info) = backend.get_collection_info(&options.collection).await {
+            resolved_dim = info.vector_size.map(|s| s as usize);
+        }
     }
 
     let commit_sha = crate::git::get_head_sha(Path::new(&options.path)).unwrap_or(None);
     if let Some(ref sha) = commit_sha {
-        if OUTPUT.is_interactive {
-            eprintln!("Detected Git Repo. Injecting commit_sha: {}", sha);
-        }
+        eprintln!("Detected Git Repo. Injecting commit_sha: {}", sha);
     }
 
     let root_path_buf = Path::new(&options.path).to_path_buf();
@@ -57,7 +73,10 @@ pub async fn ingest_path(
         Ok(s) => s,
         Err(e) => {
             if OUTPUT.is_interactive {
-                eprintln!("Warning: Failed to load ingestion state: {}. Starting fresh.", e);
+                eprintln!(
+                    "Warning: Failed to load ingestion state: {}. Starting fresh.",
+                    e
+                );
             }
             IngestionState::default()
         }
@@ -65,7 +84,7 @@ pub async fn ingest_path(
 
     // --- Collection ID Resolution Logic ---
     let collection_name = options.collection.clone();
-    
+
     // 1. Get or Create Remote ID
     // We already ensured collection exists above.
     let remote_id = match backend.get_collection_id(&collection_name).await? {
@@ -80,28 +99,33 @@ pub async fn ingest_path(
 
     // 2. Check Local State
     let local_id = state.get_collection_id(&collection_name);
-    
+
     // 3. Reconcile
     if local_id.as_ref() != Some(&remote_id) {
         if OUTPUT.is_interactive {
             if local_id.is_some() {
                 eprintln!("Collection ID mismatch (Remote: {}, Local: {:?}). Assuming collection was recreated.", remote_id, local_id);
-                eprintln!("Cleaning up stale tracking data for '{}'...", collection_name);
+                eprintln!(
+                    "Cleaning up stale tracking data for '{}'...",
+                    collection_name
+                );
             } else {
-                eprintln!("Initializing tracking for collection '{}' (ID: {})...", collection_name, remote_id);
+                eprintln!(
+                    "Initializing tracking for collection '{}' (ID: {})...",
+                    collection_name, remote_id
+                );
             }
         }
-        
+
         // This clears the files map for THIS collection and sets the new ID
         state.clear_collection(&collection_name, remote_id.clone());
         // Force save immediately to lock in the new ID
-        state.save(root_path)?; 
+        state.save(root_path)?;
     }
 
     let mut state_changed = false;
 
     let builder = build_walker(&options);
-
     let pb = if OUTPUT.is_interactive {
         eprintln!("Scanning files...");
         let total_files = count_files(&builder);
@@ -132,50 +156,90 @@ pub async fn ingest_path(
         }
     }
 
-    let mut chunks_buffer = Vec::new();
+    let mut chunks_buffer: Vec<crate::types::Chunk> = Vec::new();
     let batch_size = 20;
-    
+
     let mut files_scanned = 0;
     let mut files_skipped = 0;
     let mut files_processed = 0;
 
-    let collection_name = options.collection.clone();
-    let options_arc = Arc::new(options); 
-    
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(options_arc.max_concurrent_requests));
+    let collection_name_batch = options.collection.clone();
+    let options_arc = Arc::new(options);
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(
+        options_arc.max_concurrent_requests,
+    ));
     let mut tasks = tokio::task::JoinSet::new();
 
-    for result in walker {
+    // Pipeline Channel: Decouples parsing from embedding
+    // Provides 10 batches of "breathing room" before blocking the parser
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<crate::types::Chunk>>(10);
+
+    // Dedicated Embedding Worker
+    let backend_embed = backend.clone();
+    let embedder_embed = embedder.clone();
+    let gpu_batch_size = options_arc.gpu_batch_size;
+    let max_chunk_size = options_arc.max_chunk_size;
+
+    let embedding_handle = tokio::spawn(async move {
+        while let Some(mut batch) = rx.recv().await {
+            flush_chunks(
+                &backend_embed,
+                &embedder_embed,
+                &collection_name_batch,
+                &mut batch,
+                gpu_batch_size,
+                resolved_dim,
+                max_chunk_size,
+            )
+            .await?;
+        }
+        Ok::<(), anyhow::Error>(())
+    });
+
+    'discovery_loop: for result in walker {
         match result {
             Ok(entry) => {
                 if entry.file_type().is_some_and(|ft| ft.is_file()) {
                     files_scanned += 1;
                     let path = entry.path().to_path_buf();
-                    
+
                     if path.components().any(|c| c.as_os_str() == ".vecdb") {
                         continue;
                     }
-                    
-                            let rel_path = path.strip_prefix(root_path).unwrap_or(&path).to_path_buf();
-                    
-                    if let Some(ref pb) = pb {
-                        let short_path = rel_path.to_string_lossy();
-                        let msg = if short_path.len() > 40 {
-                            format!("...{}", &short_path[short_path.len().saturating_sub(37)..])
-                        } else {
-                            short_path.to_string()
-                        };
-                        pb.set_message(msg);
-                        pb.inc(1);
-                    }
+
+                    let rel_path = path.strip_prefix(root_path).unwrap_or(&path).to_path_buf();
 
                     if let Ok(meta_hash) = crate::state::compute_file_metadata_hash(&path) {
-                        if !state.update_file(&collection_name, rel_path.clone(), meta_hash.clone()) {
+                        if !state.update_file(&collection_name, rel_path.clone(), meta_hash.clone())
+                        {
+                            // Skipped
+                            if let Some(ref pb) = pb {
+                                pb.set_message("⏭️  Skipping...");
+                                pb.inc(1);
+                            }
                             files_skipped += 1;
                             continue;
                         }
                         state_changed = true;
-                    } else { state_changed = true; }
+                    } else {
+                        state_changed = true;
+                    }
+
+                    // Not skipped - Ingesting
+                    if let Some(ref pb) = pb {
+                        let short_path = rel_path.to_string_lossy();
+                        let msg = if short_path.len() > 40 {
+                            format!(
+                                "📥 ...{}",
+                                &short_path[short_path.len().saturating_sub(37)..]
+                            )
+                        } else {
+                            format!("📥 {}", short_path)
+                        };
+                        pb.set_message(msg);
+                        pb.inc(1);
+                    }
 
                     let permit = semaphore.clone().acquire_owned().await?;
 
@@ -184,104 +248,118 @@ pub async fn ingest_path(
                     let rules = compiled_rules.clone();
                     let options_ref = options_arc.clone();
                     let commit_sha = commit_sha.clone();
-                    
+
                     tasks.spawn(async move {
                         let _permit = permit;
                         process_single_file(
-                            path, 
+                            path,
                             rel_path,
-                            detector, 
-                            parser_factory, 
-                            rules, 
+                            detector,
+                            parser_factory,
+                            rules,
                             options_ref,
-                            commit_sha
-                        ).await
+                            commit_sha,
+                        )
+                        .await
                     });
                 }
             }
             Err(err) => {
-               if let Some(ref pb) = pb {
-                   pb.suspend(|| eprintln!("Error walking directory: {}", err));
-               } else if OUTPUT.is_interactive { 
-                   eprintln!("Error walking directory: {}", err); 
-               }
+                if let Some(ref pb) = pb {
+                    pb.suspend(|| eprintln!("Error walking directory: {}", err));
+                } else if OUTPUT.is_interactive {
+                    eprintln!("Error walking directory: {}", err);
+                }
             }
         }
-        
-        let mut files_finished = 0;
-        let total_detect = files_scanned.max(1); // Avoid div by zero
 
+        // Drain finished parsing tasks while discovery continues
         while let Some(res) = tasks.try_join_next() {
-             match res {
-                 Ok(Ok(Some(mut file_chunks))) => {
-                     files_processed += 1;
-                     files_finished += 1;
-                     chunks_buffer.append(&mut file_chunks);
-                     
-                     if chunks_buffer.len() >= batch_size {
-                         flush_chunks(backend, embedder, &collection_name, &mut chunks_buffer, options_arc.gpu_batch_size).await?;
-                     }
+            match res {
+                Ok(Ok(Some(mut file_chunks))) => {
+                    files_processed += 1;
+                    chunks_buffer.append(&mut file_chunks);
 
-                     if let Some(ref j_id) = job_id {
-                         if let Some(ref r) = job_registry {
-                             let _ = r.update_progress(j_id, files_finished as f32 / total_detect as f32);
-                         }
-                     }
-                 },
-                 Ok(Ok(None)) => {
-                     files_skipped += 1;
-                     files_finished += 1;
-                     if let Some(ref j_id) = job_id {
-                         if let Some(ref r) = job_registry {
-                             let _ = r.update_progress(j_id, files_finished as f32 / total_detect as f32);
-                         }
-                     }
-                 },
-                 Ok(Err(e)) => {
-                     if OUTPUT.is_interactive { eprintln!("File processing error: {}", e); }
-                 },
-                 Err(e) => {
-                     if OUTPUT.is_interactive { eprintln!("Task join error: {}", e); }
-                 }
-             }
+                    if chunks_buffer.len() >= batch_size {
+                        let batch = std::mem::take(&mut chunks_buffer);
+                        if let Err(_) = tx.send(batch).await {
+                             // Background worker failed. Break to catch the real error below.
+                             break 'discovery_loop;
+                        }
+                    }
+
+                    if let Some(ref j_id) = job_id {
+                        if let Some(ref r) = job_registry {
+                            let total_files = files_scanned.max(1);
+                            let finished = files_processed + files_skipped;
+                            let _ = r.update_progress(j_id, finished as f32 / total_files as f32);
+                        }
+                    }
+                }
+                Ok(Ok(None)) => {
+                    files_skipped += 1;
+                }
+                Ok(Err(e)) => {
+                    if OUTPUT.is_interactive {
+                        eprintln!("File processing error: {}", e);
+                    }
+                }
+                Err(e) => {
+                    if OUTPUT.is_interactive {
+                        eprintln!("Task join error: {}", e);
+                    }
+                }
+            }
         }
     }
-    
-    let mut files_finished = files_processed + files_skipped;
-    let total_detect = files_scanned.max(1);
 
-    while let Some(res) = tasks.join_next().await {
-         match res {
-             Ok(Ok(Some(mut file_chunks))) => {
-                 files_processed += 1;
-                 files_finished += 1;
-                 chunks_buffer.append(&mut file_chunks);
-                 if chunks_buffer.len() >= batch_size {
-                      flush_chunks(backend, embedder, &collection_name, &mut chunks_buffer, options_arc.gpu_batch_size).await?;
-                  }
-                 if let Some(ref j_id) = job_id {
-                     if let Some(ref r) = job_registry {
-                         let _ = r.update_progress(j_id, files_finished as f32 / total_detect as f32);
-                     }
-                 }
-             },
-             Ok(Ok(None)) => {
-                 files_skipped += 1;
-                 files_finished += 1;
-                 if let Some(ref j_id) = job_id {
-                     if let Some(ref r) = job_registry {
-                         let _ = r.update_progress(j_id, files_finished as f32 / total_detect as f32);
-                     }
-                 }
-             },
-             Ok(Err(e)) => { if OUTPUT.is_interactive { eprintln!("File processing error: {}", e); } },
-             Err(e) => { if OUTPUT.is_interactive { eprintln!("Task join error: {}", e); } }
-         }
+    // Pass 2: Finish all pending parsing tasks
+    'parsing_finish: while let Some(res) = tasks.join_next().await {
+        match res {
+            Ok(Ok(Some(mut file_chunks))) => {
+                files_processed += 1;
+                chunks_buffer.append(&mut file_chunks);
+                if chunks_buffer.len() >= batch_size {
+                    let batch = std::mem::take(&mut chunks_buffer);
+                    if let Err(_) = tx.send(batch).await {
+                        break 'parsing_finish;
+                    }
+                }
+            }
+            Ok(Ok(None)) => {
+                files_skipped += 1;
+            }
+            Ok(Err(e)) => {
+                if OUTPUT.is_interactive {
+                    eprintln!("File processing error: {}", e);
+                }
+            }
+            Err(e) => {
+                if OUTPUT.is_interactive {
+                    eprintln!("Task join error: {}", e);
+                }
+            }
+        }
+
+        if let Some(ref j_id) = job_id {
+            if let Some(ref r) = job_registry {
+                let total_files = files_scanned.max(1);
+                let finished = files_processed + files_skipped;
+                let _ = r.update_progress(j_id, finished as f32 / total_files as f32);
+            }
+        }
     }
 
+    // Flush last batch
     if !chunks_buffer.is_empty() {
-        flush_chunks(backend, embedder, &collection_name, &mut chunks_buffer, options_arc.gpu_batch_size).await?;
+        let _ = tx.send(chunks_buffer).await;
     }
+
+    // Signal completion to embedding worker
+    drop(tx);
+    embedding_handle.await
+        .map_err(|e| anyhow::anyhow!("Embedding background task panicked: {}", e))??;
+
 
     if let Some(ref j_id) = job_id {
         if let Some(ref r) = job_registry {
@@ -300,16 +378,20 @@ pub async fn ingest_path(
             }
         }
     }
-    
+
     if let Some(ref pb) = pb {
         pb.finish_with_message("Done");
     }
 
-    eprintln!("Ingestion Summary: Scanned {}, Processed {}, Skipped {}", files_scanned, files_processed, files_skipped);
-    
+    eprintln!(
+        "Ingestion Summary: Scanned {}, Processed {}, Skipped {}",
+        files_scanned, files_processed, files_skipped
+    );
+
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Ingest raw content from memory
 pub async fn ingest_memory(
     backend: &Arc<dyn Backend + Send + Sync>,
@@ -321,6 +403,7 @@ pub async fn ingest_memory(
     max_chunk_size: Option<usize>,
     chunk_overlap: Option<usize>,
     quantization: Option<crate::config::QuantizationType>,
+    target_dim: Option<usize>,
 ) -> Result<()> {
     let options = IngestionOptions {
         path: "memory".to_string(),
@@ -342,15 +425,39 @@ pub async fn ingest_memory(
         quantization,
     };
 
-    let mut chunks = process_content(content, &options, Path::new("memory"), &metadata, FileType::Text).await?;
-    
+    let mut chunks = process_content(
+        content,
+        &options,
+        Path::new("memory"),
+        &metadata,
+        FileType::Text,
+    )
+    .await?;
+
+    let mut resolved_dim = target_dim;
     if !backend.collection_exists(collection).await? {
         eprintln!("Collection {} does not exist. Creating...", collection);
         let dim = embedder.dimension().await?;
-        backend.create_collection(collection, dim as u64, options.quantization.clone()).await?;
+        resolved_dim = Some(dim);
+        backend
+            .create_collection(collection, dim as u64, options.quantization.clone())
+            .await?;
+    } else if resolved_dim.is_none() {
+        if let Ok(info) = backend.get_collection_info(collection).await {
+            resolved_dim = info.vector_size.map(|s| s as usize);
+        }
     }
 
-    flush_chunks(backend, embedder, collection, &mut chunks, options.gpu_batch_size).await?;
-    
+    flush_chunks(
+        backend,
+        embedder,
+        collection,
+        &mut chunks,
+        options.gpu_batch_size,
+        resolved_dim,
+        max_chunk_size,
+    )
+    .await?;
+
     Ok(())
 }

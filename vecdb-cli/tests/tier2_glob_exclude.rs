@@ -10,32 +10,34 @@ use tempfile::TempDir;
 fn test_ingest_excludes() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
-    
+
     // Create files:
     // - keep.rs
     // - ignore_me.rs
     // - target/file.rs
     // - .vectorignore
-    
+
     fs::write(root.join("keep.rs"), "fn main() {}").unwrap();
     fs::write(root.join("ignore_me.rs"), "ignore me").unwrap();
-    
+
     let target = root.join("target");
     fs::create_dir(&target).unwrap();
     fs::write(target.join("file.rs"), "fn target() {}").unwrap();
-    
+
     // Create .vectorignore to exclude "target"
     fs::write(root.join(".vectorignore"), "target/").unwrap();
-    
+
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_vecdb"));
     cmd.arg("ingest")
-       .arg(root.to_str().unwrap())
-       .arg("--excludes")
-       .arg("ignore_me.rs") // Explicit exclude via flag
-       .arg("--dry-run");   // Use dry-run to verify
+        .arg(root.to_str().unwrap())
+        .arg("--excludes")
+        .arg("ignore_me.rs") // Explicit exclude via flag
+        .arg("-c")
+        .arg("test_glob_exclude")
+        .arg("--dry-run"); // Use dry-run to verify
 
     let assert = cmd.assert();
-    
+
     assert
         .success()
         // Should keep keep.rs

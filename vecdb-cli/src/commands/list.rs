@@ -1,15 +1,18 @@
-use vecdb_core::config::Config;
-use std::sync::Arc;
 use crate::vecq_adapter::VecqParserFactory;
-use vecq::detection::HybridDetector;
 use std::io::Write;
+use std::sync::Arc;
 use vecdb_common::output::OutputFormat;
+use vecdb_core::config::Config;
 use vecdb_core::config::QuantizationType;
+use vecq::detection::HybridDetector;
 
-pub async fn run(config: &Config, profile_name: &str, format: OutputFormat) -> anyhow::Result<()> {
+pub async fn run(config: &Config, profile_name: Option<&str>, format: OutputFormat) -> anyhow::Result<()> {
     // Resolve profile (generic collection)
-    let profile = config.resolve_profile(Some(profile_name), None)?;
+    let profile = config.resolve_profile(profile_name, None)?;
     
+    // Performance: Avoid connecting to Ollama/loading local model just to list collections
+    std::env::set_var("VECDB_SKIP_PROBE", "true");
+
     let file_detector = Arc::new(HybridDetector::new());
     let parser_factory = Arc::new(VecqParserFactory);
 
@@ -25,27 +28,33 @@ pub async fn run(config: &Config, profile_name: &str, format: OutputFormat) -> a
         profile.ollama_api_key.clone(),
         config.smart_routing_keys.clone(),
         config.ingestion.path_rules.clone(),
-        config.ingestion.max_concurrent_requests, 
-        config.ingestion.gpu_batch_size,          
+        config.ingestion.max_concurrent_requests,
+        config.resolve_gpu_batch_size(&profile, None), // No collection context known
+        profile.num_ctx,
         file_detector.clone(),
         parser_factory.clone(),
-    ).await?;
-    
+    )
+    .await?;
+
     let collections = core.list_collections().await?;
-    
+
     let stdout = std::io::stdout();
     let mut out = std::io::BufWriter::new(stdout.lock());
 
     match format {
         OutputFormat::Json => {
             serde_json::to_writer(&mut out, &collections)?;
-            writeln!(out)?; 
+            writeln!(out)?;
         }
         _ => {
             if collections.is_empty() {
                 writeln!(out, "No collections found.")?;
             } else {
-                writeln!(out, "{:<20} | {:<15} | {:<10} | {:<10}", "Name", "Vectors", "Dim", "Quant")?;
+                writeln!(
+                    out,
+                    "{:<20} | {:<15} | {:<10} | {:<10}",
+                    "Name", "Vectors", "Dim", "Quant"
+                )?;
                 writeln!(out, "{:-<20}-+-{:-<15}-+-{:-<10}-+-{:-<10}", "", "", "", "")?;
                 for c in collections {
                     let count_val = c.vector_count.unwrap_or(0);
@@ -56,24 +65,42 @@ pub async fn run(config: &Config, profile_name: &str, format: OutputFormat) -> a
                         _ => (4.0, 1.2),
                     };
 
-                    let total_bytes = (count_val as f64 * dim_val as f64 * bytes_per_dim) * overhead_mult;
+                    let total_bytes =
+                        (count_val as f64 * dim_val as f64 * bytes_per_dim) * overhead_mult;
                     let size_gb = total_bytes / (1024.0 * 1024.0 * 1024.0);
-                    
-                    let count = c.vector_count.map(|v| v.to_string()).unwrap_or_else(|| "?".to_string());
-                    let dim = c.vector_size.map(|v| v.to_string()).unwrap_or_else(|| "?".to_string());
+
+                    let count = c
+                        .vector_count
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "?".to_string());
+                    let dim = c
+                        .vector_size
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "?".to_string());
                     let quant = match c.quantization {
                         Some(QuantizationType::Scalar) => "Scalar",
                         Some(QuantizationType::Binary) => "Binary",
-                        _ => "None", 
+                        _ => "None",
                     };
-                    
-                    writeln!(out, "{:<20} | {:<15} | {:<10} | {:<10}", c.name, count, dim, quant)?;
+
+                    writeln!(
+                        out,
+                        "{:<20} | {:<15} | {:<10} | {:<10}",
+                        c.name, count, dim, quant
+                    )?;
                     if size_gb > 4.0 {
-                            if matches!(c.quantization, Some(QuantizationType::Scalar) | Some(QuantizationType::Binary)) {
-                                writeln!(out, "  ^-- NOTE: Approx {:.2} GB RAM (Optimized).", size_gb)?;
-                            } else {
-                                writeln!(out, "  ^-- WARNING: Approx {:.2} GB RAM. Consider 'vecdb optimize {}'", size_gb, c.name)?;
-                            }
+                        if matches!(
+                            c.quantization,
+                            Some(QuantizationType::Scalar) | Some(QuantizationType::Binary)
+                        ) {
+                            writeln!(out, "  ^-- NOTE: Approx {:.2} GB RAM (Optimized).", size_gb)?;
+                        } else {
+                            writeln!(
+                                out,
+                                "  ^-- WARNING: Approx {:.2} GB RAM. Consider 'vecdb optimize {}'",
+                                size_gb, c.name
+                            )?;
+                        }
                     }
                 }
             }

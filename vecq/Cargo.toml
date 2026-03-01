@@ -3,8 +3,8 @@ name = "vecq"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
-repository.workspace = true
+license-file.workspace = true
+repository = "https://github.com/daryltucker/vecdb"
 description = "jq for source code - convert any structured document to queryable JSON"
 keywords = ["parser", "json", "jq", "source-code", "query"]
 categories = ["command-line-utilities", "parsing", "development-tools"]
@@ -91,5 +91,12 @@ pretty_assertions = "1.4.1"
 assert_cmd = "2.1.2"
 predicates = "3.1.3"
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/vecdb-{ target }.tar.gz"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/vecdb-{ target }.zip"
+pkg-fmt = "zip"
 
 

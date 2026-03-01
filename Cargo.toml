@@ -5,22 +5,23 @@ members = [
     "vecdb-server", 
     "vecdb-cli",
     "vecq",
-    "vecdb-asm"
+    "vecdb-asm",
+    "xtask"
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.0.9"
+version = "1.0.0"
 edition = "2021"
 authors = ["Sextant <daryl@daryltucker.com>"]
-license = "MIT"
+license-file = "LICENSE"
 repository = "https://github.com/daryltucker/vecdb"
 
 [workspace.dependencies]
 # Core
-vecdb-common = { path = "vecdb-common", version = "0.0.9" }
-vecdb-core = { path = "vecdb-core", version = "0.0.9" }
-vecq = { path = "vecq", version = "0.0.9" }
+vecdb-common = { path = "vecdb-common", version = "1.0.0" }
+vecdb-core = { path = "vecdb-core", version = "1.0.0" }
+vecq = { path = "vecq", version = "1.0.0" }
 tokio = { version = "1.49.0", features = ["full"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
@@ -40,8 +41,19 @@ dotenvy = "0.15.7"
 clap = { version = "4.5.54", features = ["derive", "env"] }
 clap_complete = "4.5.65"
 
+# TLS
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
+
 # Vector DB
 qdrant-client = "1.16.0"
 
 # ML / Embeddings
 infer = "0.19.0"
+
+[workspace.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/vecdb-{ target }.tar.gz"
+pkg-fmt = "tgz"
+
+[workspace.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/vecdb-{ target }.zip"
+pkg-fmt = "zip"

@@ -1,9 +1,9 @@
+use crate::vecq_adapter::VecqParserFactory;
 use clap::Args;
 use std::path::PathBuf;
+use std::sync::Arc;
 use vecdb_core::config::Config;
 use vecdb_core::output::OUTPUT;
-use std::sync::Arc;
-use crate::vecq_adapter::VecqParserFactory;
 use vecq::detection::HybridDetector;
 
 #[derive(Args, Debug)]
@@ -53,17 +53,27 @@ pub struct IngestArgs {
     pub gpu_concurrency: Option<usize>,
 }
 
-pub async fn run(args: IngestArgs, config: &Config, profile_name: &str) -> anyhow::Result<()> {
+pub async fn run(args: IngestArgs, config: &Config, profile_name: Option<&str>) -> anyhow::Result<()> {
     // Resolve profile with collection context
-    let profile = config.resolve_profile(Some(profile_name), args.collection.as_deref())?;
-    
+    let profile = config.resolve_profile(profile_name, args.collection.as_deref())?;
+    let display_profile = &profile.resolved_profile_name;
+
+    let collection = profile.default_collection_name.as_deref()
+        .ok_or_else(|| anyhow::anyhow!(
+            "No collection specified. Use -c <name>, or point a collection to profile \"{}\" via `profile = \"{}\"` in config.",
+            display_profile, display_profile
+        ))?;
+
     if OUTPUT.is_interactive && !args.dry_run {
-        println!("Using Profile: {} (Collection: {})", profile_name, profile.default_collection_name);
+        println!(
+            "Using Profile: {} (Collection: {})",
+            display_profile, collection
+        );
     }
-    
+
     // Check for stdin pipe
     if args.path.to_str() == Some("-") {
-        return run_stdin(args, config, profile_name, &profile).await;
+        return run_stdin(args, config, display_profile, &profile, collection).await;
     }
 
     let file_detector = Arc::new(HybridDetector::new());
@@ -72,7 +82,7 @@ pub async fn run(args: IngestArgs, config: &Config, profile_name: &str) -> anyho
     let core = vecdb_core::Core::new(
         &profile.qdrant_url,
         &profile.ollama_url,
-        &profile.embedding_model,
+        &config.resolve_embedding_model(&profile),
         profile.accept_invalid_certs,
         &profile.embedder_type,
         Some(config.fastembed_cache_path.clone()),
@@ -81,72 +91,90 @@ pub async fn run(args: IngestArgs, config: &Config, profile_name: &str) -> anyho
         profile.ollama_api_key.clone(),
         config.smart_routing_keys.clone(),
         config.ingestion.path_rules.clone(),
-        config.ingestion.max_concurrent_requests, // Pass default concurrency
-        config.ingestion.gpu_batch_size,          // Pass default GPU batch size
+        config.ingestion.max_concurrent_requests, 
+        config.resolve_gpu_batch_size(&profile, args.collection.as_deref()), // Smart dynamic sizing
+        profile.num_ctx, // Propagate LLM Context limit
         file_detector.clone(),
         parser_factory.clone(),
-    ).await?;
+    )
+    .await?;
 
     // Parse metadata
     let mut metadata = std::collections::HashMap::new();
     for item in &args.metadata {
         if let Some((key, value)) = item.split_once('=') {
-            metadata.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+            metadata.insert(
+                key.to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
         }
     }
 
     if OUTPUT.is_interactive && !args.dry_run {
-        println!("Ingesting content from: {:?} into collection: {}", args.path, profile.default_collection_name);
+        println!(
+            "Ingesting content from: {:?} into collection: {}",
+            args.path, collection
+        );
     }
-    
+
     let resolved_chunk_size = config.resolve_chunk_size(args.collection.as_deref());
-    let resolved_max_chunk_size = config.resolve_max_chunk_size(args.collection.as_deref());
-    let resolved_overlap = config.resolve_chunk_overlap(args.collection.as_deref());
-    
+    let resolved_max_chunk_size = config.resolve_max_chunk_size(&profile, args.collection.as_deref());
+    let resolved_overlap = config.resolve_chunk_overlap(&profile, args.collection.as_deref());
+
     let final_chunk_size = args.chunk_size.or(Some(resolved_chunk_size));
     let final_overlap = args.overlap.or(Some(resolved_overlap));
     let final_respect_gitignore = args.respect_gitignore || config.ingestion.respect_gitignore;
-    
-    tokio::select! {
-             res = core.ingest(
-                args.path.to_str().unwrap_or(""), 
-                &profile.default_collection_name, 
-                final_respect_gitignore, 
-                final_chunk_size, 
-                resolved_max_chunk_size, 
-                final_overlap,
-                args.extensions,
-                args.excludes,
-                args.dry_run,
-                if metadata.is_empty() { None } else { Some(metadata) },
 
-                args.concurrency, // Pass concurrency override
-                args.gpu_concurrency, // Pass GPU concurrency override
-                profile.quantization.clone(),
-            ) => {
-                res?;
-                if OUTPUT.is_interactive && !args.dry_run {
-                    println!("Ingestion complete.");
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                // Flush stdout/stderr
-                println!("\nCancelled by user.");
-                return Ok(());
+    tokio::select! {
+         res = core.ingest(
+            args.path.to_str().unwrap_or(""),
+            collection,
+            final_respect_gitignore,
+            final_chunk_size,
+            resolved_max_chunk_size,
+            final_overlap,
+            args.extensions,
+            args.excludes,
+            args.dry_run,
+            if metadata.is_empty() { None } else { Some(metadata) },
+
+            args.concurrency, // Pass concurrency override
+            args.gpu_concurrency, // Pass GPU concurrency override
+            profile.quantization.clone(),
+            None,
+        ) => {
+            res?;
+            if OUTPUT.is_interactive && !args.dry_run {
+                println!("Ingestion complete.");
             }
         }
-    
+        _ = tokio::signal::ctrl_c() => {
+            // Flush stdout/stderr
+            println!("\nCancelled by user.");
+            std::process::exit(0);
+        }
+    }
+
     Ok(())
 }
 
-async fn run_stdin(args: IngestArgs, config: &Config, _profile_name: &str, profile: &vecdb_core::config::Profile) -> anyhow::Result<()> {
+async fn run_stdin(
+    args: IngestArgs,
+    config: &Config,
+    _profile_name: &str,
+    profile: &vecdb_core::config::Profile,
+    collection: &str,
+) -> anyhow::Result<()> {
     if OUTPUT.is_interactive {
-        println!("Ingesting from stdin into collection: {}...", profile.default_collection_name);
+        println!(
+            "Ingesting from stdin into collection: {}...",
+            collection
+        );
     }
-    
+
     let mut buffer = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut buffer)?;
-    
+
     if buffer.trim().is_empty() {
         eprintln!("Warning: Empty input from stdin.");
         return Ok(());
@@ -158,7 +186,7 @@ async fn run_stdin(args: IngestArgs, config: &Config, _profile_name: &str, profi
     let core = vecdb_core::Core::new(
         &profile.qdrant_url,
         &profile.ollama_url,
-        &profile.embedding_model,
+        &config.resolve_embedding_model(profile),
         profile.accept_invalid_certs,
         &profile.embedder_type,
         Some(config.fastembed_cache_path.clone()),
@@ -167,29 +195,36 @@ async fn run_stdin(args: IngestArgs, config: &Config, _profile_name: &str, profi
         profile.ollama_api_key.clone(),
         config.smart_routing_keys.clone(),
         config.ingestion.path_rules.clone(),
-        config.ingestion.max_concurrent_requests, 
-        config.ingestion.gpu_batch_size,          
+        config.ingestion.max_concurrent_requests,
+        config.resolve_gpu_batch_size(profile, args.collection.as_deref()),
+        profile.num_ctx,
         file_detector.clone(),
         parser_factory.clone(),
-    ).await?;
+    )
+    .await?;
 
     let mut metadata = std::collections::HashMap::new();
     for item in &args.metadata {
         if let Some((key, value)) = item.split_once('=') {
-            metadata.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+            metadata.insert(
+                key.to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
         }
     }
-    metadata.entry("source".to_string()).or_insert(serde_json::Value::String("stdin".to_string()));
-    
+    metadata
+        .entry("source".to_string())
+        .or_insert(serde_json::Value::String("stdin".to_string()));
+
     let resolved_chunk_size = config.resolve_chunk_size(args.collection.as_deref());
-    let resolved_max_chunk_size = config.resolve_max_chunk_size(args.collection.as_deref());
-    let resolved_overlap = config.resolve_chunk_overlap(args.collection.as_deref());
-    
+    let resolved_max_chunk_size = config.resolve_max_chunk_size(profile, args.collection.as_deref());
+    let resolved_overlap = config.resolve_chunk_overlap(profile, args.collection.as_deref());
+
     let final_chunk_size = args.chunk_size.or(Some(resolved_chunk_size));
     let final_overlap = args.overlap.or(Some(resolved_overlap));
-    
+
     tokio::select! {
-        res = core.ingest_content(&buffer, metadata, &profile.default_collection_name, final_chunk_size, resolved_max_chunk_size, final_overlap, profile.quantization.clone()) => {
+        res = core.ingest_content(&buffer, metadata, collection, final_chunk_size, resolved_max_chunk_size, final_overlap, profile.quantization.clone(), None) => {
             res?;
             println!("Ingestion complete.");
         }

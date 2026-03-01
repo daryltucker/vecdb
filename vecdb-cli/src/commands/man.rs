@@ -38,11 +38,14 @@ const MAN_AGENT: &str = include_str!("../docs/man_agent.md");
 
 pub fn run(args: ManArgs) -> anyhow::Result<()> {
     let content = if args.agent { MAN_AGENT } else { MAN_HUMAN };
-    
+
     // If a specific command is requested, try to extract its section
     let output_text = if let Some(cmd) = args.command {
         extract_section(content, &cmd).unwrap_or_else(|| {
-            format!("No manual entry found for '{}'. Showing full manual.\n\n{}", cmd, content)
+            format!(
+                "No manual entry found for '{}'. Showing full manual.\n\n{}",
+                cmd, content
+            )
         })
     } else {
         content.to_string()
@@ -65,7 +68,8 @@ fn make_sexy_skin() -> MadSkin {
     skin.headers[1].set_fg(termimad::crossterm::style::Color::Magenta); // H2
     skin.headers[2].set_fg(termimad::crossterm::style::Color::Yellow); // H3
     skin.bold.set_fg(termimad::crossterm::style::Color::Green);
-    skin.italic.set_fg(termimad::crossterm::style::Color::DarkGrey);
+    skin.italic
+        .set_fg(termimad::crossterm::style::Color::DarkGrey);
     skin
 }
 
@@ -81,12 +85,12 @@ fn extract_section(full_text: &str, command: &str) -> Option<String> {
         if line.starts_with('#') {
             let current_level = line.chars().take_while(|c| *c == '#').count();
             let lower_line = line.to_lowercase();
-            
+
             // Check if this header matches our command
             // We look for "ingest" in "### Essential", "### ingest", "* **ingest**" (list item?)
             // Implementation detail: The docs structure needs to match.
             // For now, let's look for "### ... command ..." or just sloppy match on header
-            
+
             if matching {
                 // If we hit a header of same or higher importance, stop
                 if current_level <= level {
@@ -100,14 +104,14 @@ fn extract_section(full_text: &str, command: &str) -> Option<String> {
                 }
             }
         }
-        
+
         // Also check for bold list items which `man_human.md` uses: "* **ingest**"
         if !matching && line.trim().starts_with('*') && line.to_lowercase().contains(&query) {
-             matching = true;
-             level = 99; // Treat list items as leaf nodes
+            matching = true;
+            level = 99; // Treat list items as leaf nodes
         } else if matching && level == 99 && line.trim().is_empty() {
-             // For list items, maybe stop at double newline? Or next list item?
-             // Let's rely on standard markdown headers for now for "Sections"
+            // For list items, maybe stop at double newline? Or next list item?
+            // Let's rely on standard markdown headers for now for "Sections"
         }
 
         if matching {

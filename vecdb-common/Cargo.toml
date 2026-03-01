@@ -2,8 +2,9 @@
 name = "vecdb-common"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 authors.workspace = true
+repository = "https://github.com/daryltucker/vecdb"
 description = "Shared utilities for vecdb ecosystem: output handling, common patterns"
 
 [dependencies]

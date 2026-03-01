@@ -1,10 +1,9 @@
-
-use vecdb_core::Core;
-use vecdb_core::config::Config;
-use std::sync::{Arc, Mutex};
 use serde_json::json;
-use vecdb_server::handler::{handle_request, JsonRpcRequest};
+use std::sync::{Arc, Mutex};
+use vecdb_core::config::Config;
 use vecdb_core::parsers::ParserFactory;
+use vecdb_core::Core;
+use vecdb_server::rpc::{handle_request, types::JsonRpcRequest};
 use vecq::detection::HybridDetector;
 
 mod common;
@@ -12,7 +11,10 @@ use common::{MockBackend, MockEmbedder};
 
 struct MockParserFactory;
 impl ParserFactory for MockParserFactory {
-    fn get_parser(&self, _file_type: vecdb_common::FileType) -> Option<Box<dyn vecdb_core::parsers::Parser>> {
+    fn get_parser(
+        &self,
+        _file_type: vecdb_common::FileType,
+    ) -> Option<Box<dyn vecdb_core::parsers::Parser>> {
         None
     }
 }
@@ -21,7 +23,7 @@ impl ParserFactory for MockParserFactory {
 async fn test_mcp_full_lifecycle() {
     // 1. Setup Mock Core
     let storage = Arc::new(Mutex::new(Vec::new()));
-    
+
     // Pre-populate storage for search test
     {
         let mut store = storage.lock().unwrap();
@@ -39,13 +41,27 @@ async fn test_mcp_full_lifecycle() {
         });
     }
 
-    let backend = Arc::new(MockBackend { storage: storage.clone() });
+    let backend = Arc::new(MockBackend {
+        storage: storage.clone(),
+    });
     let embedder = Arc::new(MockEmbedder);
     let detector = Arc::new(HybridDetector::new());
     let parser_factory = Arc::new(MockParserFactory);
-    
-    let core = Arc::new(Core::with_backends(backend, embedder, detector, parser_factory, Vec::new(), Vec::new(), 1, 10));
-    let config = Config::default();
+
+    let core = Arc::new(Core::with_backends(
+        backend,
+        embedder,
+        detector,
+        parser_factory,
+        Vec::new(),
+        Vec::new(),
+        1,
+        10,
+    ));
+    let mut config = Config::default();
+    if let Some(profile) = config.profiles.get_mut("default") {
+        profile.default_collection_name = Some("docs".to_string());
+    }
 
     // 2. Initialize
     let req = JsonRpcRequest {
@@ -54,7 +70,9 @@ async fn test_mcp_full_lifecycle() {
         params: None,
         id: Some(json!(1)),
     };
-    let res = handle_request(&core, &config, &req, false, "default").await.unwrap();
+    let res = handle_request(&core, &config, &req, false, "default")
+        .await
+        .unwrap();
     assert_eq!(res["serverInfo"]["name"], "vecdb-mcp");
 
     // 3. List Collections (Mock verification)
@@ -67,9 +85,11 @@ async fn test_mcp_full_lifecycle() {
         })),
         id: Some(json!(2)),
     };
-    let res = handle_request(&core, &config, &req, false, "default").await.unwrap();
+    let res = handle_request(&core, &config, &req, false, "default")
+        .await
+        .unwrap();
     let content = res["content"][0]["text"].as_str().unwrap();
-    
+
     // Validate Dimension Probe fields
     // MockBackend returns "test_collection" with vector_size 384
     // MockEmbedder returns dimension 384
@@ -83,7 +103,7 @@ async fn test_mcp_full_lifecycle() {
     // MockBackend does not really touch FS for "ingest", but Core's ingest logic MIGHT if we use ingest_path.
     // However, Core::ingest does file walking.
     // Instead of testing `ingest_path` (which hits FS), let's test `embed` which hits MockEmbedder.
-    
+
     let req = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: "tools/call".to_string(),
@@ -95,7 +115,9 @@ async fn test_mcp_full_lifecycle() {
         })),
         id: Some(json!(3)),
     };
-    let res = handle_request(&core, &config, &req, false, "default").await.unwrap();
+    let res = handle_request(&core, &config, &req, false, "default")
+        .await
+        .unwrap();
     let content = res["content"][0]["text"].as_str().unwrap();
     assert!(content.contains("0.1")); // Mock returns [0.1, 0.2, 0.3]
 
@@ -115,7 +137,9 @@ async fn test_mcp_full_lifecycle() {
         })),
         id: Some(json!(4)),
     };
-    let res = handle_request(&core, &config, &req, false, "default").await.unwrap();
+    let res = handle_request(&core, &config, &req, false, "default")
+        .await
+        .unwrap();
     let content = res["content"][0]["text"].as_str().unwrap();
     assert!(content.contains("0.99")); // Mock score
 }

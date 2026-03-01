@@ -3,8 +3,8 @@ name = "vecdb-asm"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
-repository.workspace = true
+license-file.workspace = true
+repository = "https://github.com/daryltucker/vecdb"
 description = "Stateful Assembler for vecdb - merges and deduplicates temporal knowledge streams"
 
 [dependencies]

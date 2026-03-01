@@ -109,7 +109,7 @@ def main():
     # Define checks
     checks = [
         ("Config", "Top-Level Options", {"profiles", "collections", "collection_aliases", "ingestion"}), # Exclude structural maps
-        ("Profile", "Profile Options", set()),
+        ("Profile", "Profile Options", {"resolved_profile_name"}),
         ("CollectionConfig", "Collection Profile Options", set()),
         ("IngestConfig", "Ingestion Options", {"overrides", "path_rules"}) # IngestionConfig is mapped to IngestionOptions. Check struct name (IngestionConfig)
     ]

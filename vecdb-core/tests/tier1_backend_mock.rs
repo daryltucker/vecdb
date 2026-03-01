@@ -54,11 +54,20 @@ impl Backend for MockBackend {
         Ok(())
     }
 
-    async fn create_collection(&self, _name: &str, _vector_size: u64, _quantization: Option<vecdb_core::config::QuantizationType>) -> Result<()> {
+    async fn create_collection(
+        &self,
+        _name: &str,
+        _vector_size: u64,
+        _quantization: Option<vecdb_core::config::QuantizationType>,
+    ) -> Result<()> {
         Ok(())
     }
 
-    async fn update_collection_quantization(&self, _name: &str, _quantization: vecdb_core::config::QuantizationType) -> Result<()> {
+    async fn update_collection_quantization(
+        &self,
+        _name: &str,
+        _quantization: vecdb_core::config::QuantizationType,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -102,7 +111,8 @@ impl Backend for MockBackend {
 
     async fn points_exists(&self, _collection: &str, ids: Vec<String>) -> Result<Vec<String>> {
         let store = self.storage.lock().unwrap();
-        let existing: Vec<String> = store.iter()
+        let existing: Vec<String> = store
+            .iter()
             .filter(|c| ids.contains(&c.id))
             .map(|c| c.id.clone())
             .collect();
@@ -156,7 +166,7 @@ async fn test_backend_trait_contract() -> Result<()> {
 
     // 5. Search
     let results = backend.search("test", &[0.0; 768], 5, None).await?;
-    
+
     // 6. Verify Interaction
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].content, "This is a test.");

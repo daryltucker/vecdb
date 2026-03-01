@@ -231,9 +231,68 @@ pub async fn parse_file(content: &str, file_type: FileType) -> VecqResult<Parsed
         .ok_or_else(|| VecqError::UnsupportedFileType {
             file_type: file_type.to_string(),
         })?;
-    
+
     let doc = parser.parse(content).await?;
     Ok(doc.with_source(content))
+}
+
+/// Parse a file with specified type and options (for usage detection, etc.)
+pub async fn parse_file_with_options(
+    content: &str,
+    file_type: FileType,
+    enable_usages: bool,
+) -> VecqResult<ParsedDocument> {
+    let parser = create_parser_with_options(file_type, enable_usages)?;
+    let doc = parser.parse(content).await?;
+    Ok(doc.with_source(content))
+}
+
+/// Create a parser with configuration options
+pub fn create_parser_with_options(
+    file_type: FileType,
+    enable_usages: bool,
+) -> VecqResult<Box<dyn Parser>> {
+    use crate::parsers::*;
+
+    match file_type {
+        FileType::Markdown => Ok(Box::new(MarkdownParser::new())),
+        FileType::Rust => {
+            let parser = RustParser::new();
+            if enable_usages {
+                Ok(Box::new(parser.with_usages(true)))
+            } else {
+                Ok(Box::new(parser))
+            }
+        },
+        FileType::Python => {
+            let parser = PythonParser::new();
+            if enable_usages {
+                Ok(Box::new(parser.with_usages(true)))
+            } else {
+                Ok(Box::new(parser))
+            }
+        },
+        FileType::C => Ok(Box::new(CParser::new())),
+        FileType::Cpp => Ok(Box::new(CppParser::new())),
+        FileType::Cuda => Ok(Box::new(CudaParser::new())),
+        FileType::Go => {
+            let parser = GoParser::new();
+            if enable_usages {
+                Ok(Box::new(parser.with_usages(true)))
+            } else {
+                Ok(Box::new(parser))
+            }
+        },
+        FileType::Bash => Ok(Box::new(BashParser::new())),
+        FileType::Text => Ok(Box::new(TextParser::new())),
+        FileType::Html => Ok(Box::new(HtmlParser::new())),
+        FileType::Toml => Ok(Box::new(TomlParser::new())),
+        FileType::Json => Ok(Box::new(JsonParser::new())),
+
+        _ => Err(VecqError::UnsupportedFileType {
+            file_type: file_type.to_string(),
+        }),
+    }
 }
 
 /// Enrich a document with post-parse content detection (D026)

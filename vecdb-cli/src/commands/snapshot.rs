@@ -20,20 +20,31 @@ pub struct SnapshotArgs {
     pub collection: Option<String>, // Optional override
 }
 
-pub async fn run(args: SnapshotArgs, config: &Config, profile_name: &str) -> anyhow::Result<()> {
-    let profile = config.resolve_profile(Some(profile_name), args.collection.as_deref())?;
-    let collection_name = args.collection.as_deref().unwrap_or(&profile.default_collection_name);
-    
+pub async fn run(args: SnapshotArgs, config: &Config, profile_name: Option<&str>) -> anyhow::Result<()> {
+    let profile = config.resolve_profile(profile_name, args.collection.as_deref())?;
+    let display_profile = &profile.resolved_profile_name;
+
+    let collection_name = args
+        .collection
+        .as_deref()
+        .or(profile.default_collection_name.as_deref())
+        .ok_or_else(|| anyhow::anyhow!(
+            "No collection specified. Use -c <name>, or point a collection to profile \"{}\" in config.",
+            display_profile
+        ))?;
+
     let manager = vecdb_core::snapshot::SnapshotManager::new(&profile.qdrant_url)?;
 
     if args.create {
-        if OUTPUT.is_interactive { println!("Creating snapshot for collection '{}'...", collection_name); }
+        if OUTPUT.is_interactive {
+            println!("Creating snapshot for collection '{}'...", collection_name);
+        }
         let name = manager.create(collection_name).await?;
         println!("Snapshot created: {}", name);
     } else if args.list {
         let snapshots = manager.list(collection_name).await?;
         if snapshots.is_empty() {
-                println!("No snapshots found for collection '{}'.", collection_name);
+            println!("No snapshots found for collection '{}'.", collection_name);
         } else {
             println!("Snapshots for '{}':", collection_name);
             for s in snapshots {
@@ -42,16 +53,29 @@ pub async fn run(args: SnapshotArgs, config: &Config, profile_name: &str) -> any
         }
     } else if let Some(snap_name) = args.download {
         let output_path = std::path::Path::new(&snap_name);
-        if OUTPUT.is_interactive { println!("Downloading snapshot '{}'...", snap_name); }
-        manager.download(collection_name, &snap_name, output_path).await?;
+        if OUTPUT.is_interactive {
+            println!("Downloading snapshot '{}'...", snap_name);
+        }
+        manager
+            .download(collection_name, &snap_name, output_path)
+            .await?;
         println!("Downloaded to: {:?}", output_path);
     } else if let Some(file_path) = args.restore {
-            if OUTPUT.is_interactive { println!("Restoring snapshot from {:?} to collection '{}'...", file_path, collection_name); }
-        manager.restore(collection_name, std::path::Path::new(&file_path)).await?;
+        if OUTPUT.is_interactive {
+            println!(
+                "Restoring snapshot from {:?} to collection '{}'...",
+                file_path, collection_name
+            );
+        }
+        manager
+            .restore(collection_name, std::path::Path::new(&file_path))
+            .await?;
         println!("Snapshot restored successfully.");
     } else {
-        println!("Please specify an action: --create, --list, --download <NAME>, or --restore <PATH>");
+        println!(
+            "Please specify an action: --create, --list, --download <NAME>, or --restore <PATH>"
+        );
     }
-    
+
     Ok(())
 }

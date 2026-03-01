@@ -1,0 +1,32 @@
+default_profile = "default"
+local_embedding_model = "all-minilm-l6-v2"
+fastembed_cache_path = "/tmp/.tmp0Oh2pK/config/vecdb/fastembed_cache"
+local_use_gpu = false
+smart_routing_keys = [
+    "source_type",
+    "language",
+]
+
+[profiles.default]
+qdrant_url = "http://localhost:6336"
+default_collection_name = "docs"
+embedding_model = "all-minilm-l6-v2"
+accept_invalid_certs = false
+ollama_url = "http://localhost:11434"
+embedder_type = "local"
+quantization = "none"
+
+[collections]
+
+[collection_aliases]
+
+[ingestion]
+default_strategy = "recursive"
+chunk_size = 512
+chunk_overlap = 50
+respect_gitignore = false
+tokenizer = "cl100k_base"
+path_rules = []
+max_concurrent_requests = 4
+
+[ingestion.overrides]

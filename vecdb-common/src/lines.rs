@@ -39,7 +39,8 @@ pub fn line_number_from_offset(content: &str, offset: usize) -> usize {
     content[..offset.min(content.len())]
         .chars()
         .filter(|&c| c == '\n')
-        .count() + 1
+        .count()
+        + 1
 }
 
 /// Extract line range for a span of text (Legacy O(N) implementation).

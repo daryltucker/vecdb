@@ -56,10 +56,19 @@ pub trait Backend: Send + Sync {
     async fn health_check(&self) -> Result<()>;
 
     /// Create a new collection (index) with the specified vector dimension.
-    async fn create_collection(&self, name: &str, vector_size: u64, quantization: Option<crate::config::QuantizationType>) -> Result<()>;
+    async fn create_collection(
+        &self,
+        name: &str,
+        vector_size: u64,
+        quantization: Option<crate::config::QuantizationType>,
+    ) -> Result<()>;
 
     /// Update collection configuration (specifically quantization)
-    async fn update_collection_quantization(&self, name: &str, quantization: crate::config::QuantizationType) -> Result<()>;
+    async fn update_collection_quantization(
+        &self,
+        name: &str,
+        quantization: crate::config::QuantizationType,
+    ) -> Result<()>;
 
     /// Check if a collection exists.
     async fn collection_exists(&self, name: &str) -> Result<bool>;
@@ -72,7 +81,7 @@ pub trait Backend: Send + Sync {
     async fn upsert(&self, collection: &str, chunks: Vec<Chunk>) -> Result<()>;
 
     /// Perform a semantic search.
-    /// 
+    ///
     /// # Arguments
     /// * `collection` - Name of the collection to search
     /// * `vector` - Query vector (embedding)
@@ -85,7 +94,7 @@ pub trait Backend: Send + Sync {
         limit: u64,
         filter: Option<serde_json::Value>,
     ) -> Result<Vec<SearchResult>>;
-    
+
     /// Check if a set of points (by ID) exist in the collection.
     /// Returns a list of IDs that DO exist.
     async fn points_exists(&self, collection: &str, ids: Vec<String>) -> Result<Vec<String>>;

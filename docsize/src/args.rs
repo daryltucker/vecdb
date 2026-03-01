@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "docsize")]
-#[command(version = "0.0.9")]
+#[command(version = "1.0.0")]
 #[command(about = "Contextualized prompt generator for vecdb/vecq")]
 pub struct Args {
     /// The query or prompt to send

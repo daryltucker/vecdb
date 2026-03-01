@@ -13,7 +13,7 @@
  *       Actual chunk sizes may vary slightly due to boundary adjustments.
  */
 
-use vecdb_core::chunking::{Chunker, RecursiveChunker, CodeChunker, Factory, ChunkParams};
+use vecdb_core::chunking::{ChunkParams, Chunker, CodeChunker, Factory, RecursiveChunker};
 
 // ═══════════════════════════════════════════════════════════
 // FACTORY TESTS
@@ -63,9 +63,9 @@ async fn test_recursive_char_short_text_single_chunk() {
     let chunker = RecursiveChunker;
     let text = "Hello world";
     let params = char_params(100);
-    
+
     let chunks = chunker.chunk(text, &params).await.expect("Chunking failed");
-    
+
     assert_eq!(chunks.len(), 1, "Short text should be single chunk");
     assert_eq!(chunks[0].content, "Hello world");
 }
@@ -76,14 +76,24 @@ async fn test_recursive_char_splits_long_text() {
     // Create text longer than chunk size
     let text = "a".repeat(250);
     let params = char_params(100);
-    
-    let chunks = chunker.chunk(&text, &params).await.expect("Chunking failed");
-    
-    assert!(chunks.len() >= 2, "Long text should be split into multiple chunks");
-    
+
+    let chunks = chunker
+        .chunk(&text, &params)
+        .await
+        .expect("Chunking failed");
+
+    assert!(
+        chunks.len() >= 2,
+        "Long text should be split into multiple chunks"
+    );
+
     // Each chunk should be <= chunk_size (approximately)
     for chunk in &chunks {
-        assert!(chunk.content.len() <= 110, "Chunk too large: {} chars", chunk.content.len());
+        assert!(
+            chunk.content.len() <= 110,
+            "Chunk too large: {} chars",
+            chunk.content.len()
+        );
     }
 }
 
@@ -93,12 +103,19 @@ async fn test_recursive_char_preserves_content() {
     let text = "The quick brown fox jumps over the lazy dog. ";
     let long_text = text.repeat(10);
     let params = char_params(100);
-    
-    let chunks = chunker.chunk(&long_text, &params).await.expect("Chunking failed");
-    
+
+    let chunks = chunker
+        .chunk(&long_text, &params)
+        .await
+        .expect("Chunking failed");
+
     // All chunks combined should contain all words from original
-    let combined: String = chunks.iter().map(|c| c.content.clone()).collect::<Vec<_>>().join("");
-    
+    let combined: String = chunks
+        .iter()
+        .map(|c| c.content.clone())
+        .collect::<Vec<_>>()
+        .join("");
+
     // Check key words are preserved
     assert!(combined.contains("quick"), "Should preserve 'quick'");
     assert!(combined.contains("fox"), "Should preserve 'fox'");
@@ -110,9 +127,9 @@ async fn test_recursive_char_preserves_content() {
 async fn test_recursive_char_handles_empty_text() {
     let chunker = RecursiveChunker;
     let params = char_params(100);
-    
+
     let chunks = chunker.chunk("", &params).await.expect("Chunking failed");
-    
+
     // Empty text should produce no chunks or one empty chunk
     assert!(chunks.is_empty() || (chunks.len() == 1 && chunks[0].content.is_empty()));
 }
@@ -136,9 +153,9 @@ async fn test_recursive_token_short_text_single_chunk() {
     let chunker = RecursiveChunker;
     let text = "Hello world";
     let params = token_params(100);
-    
+
     let chunks = chunker.chunk(text, &params).await.expect("Chunking failed");
-    
+
     assert_eq!(chunks.len(), 1, "Short text should be single chunk");
 }
 
@@ -148,11 +165,14 @@ async fn test_recursive_token_splits_at_word_boundaries() {
     // Long text with clear words
     let text = "The quick brown fox jumps over the lazy dog. ".repeat(50);
     let params = token_params(20); // Small token limit
-    
-    let chunks = chunker.chunk(&text, &params).await.expect("Chunking failed");
-    
+
+    let chunks = chunker
+        .chunk(&text, &params)
+        .await
+        .expect("Chunking failed");
+
     assert!(chunks.len() > 1, "Should split long text");
-    
+
     // Each chunk should end at reasonable boundary (not mid-word usually)
     for chunk in &chunks {
         // Text-splitter typically respects word boundaries when possible
@@ -160,10 +180,15 @@ async fn test_recursive_token_splits_at_word_boundaries() {
         if !trimmed.is_empty() {
             // Simple heuristic: most chunks shouldn't end with partial words
             assert!(
-                trimmed.ends_with('.') || 
-                trimmed.ends_with(' ') || 
-                trimmed.chars().last().map(|c: char| c.is_alphanumeric()).unwrap_or(true),
-                "Chunk may have bad boundary: '{}'", trimmed
+                trimmed.ends_with('.')
+                    || trimmed.ends_with(' ')
+                    || trimmed
+                        .chars()
+                        .last()
+                        .map(|c: char| c.is_alphanumeric())
+                        .unwrap_or(true),
+                "Chunk may have bad boundary: '{}'",
+                trimmed
             );
         }
     }
@@ -196,9 +221,9 @@ fn world() {
 }
 "#;
     let params = code_params(500, "rs");
-    
+
     let chunks = chunker.chunk(code, &params).await.expect("Chunking failed");
-    
+
     // With small functions and big chunk size, may be 2 chunks (one per function)
     // or could be combined. Main test is that it doesn't crash.
     assert!(!chunks.is_empty(), "Should produce chunks from Rust code");
@@ -215,7 +240,7 @@ def world():
     print("World")
 "#;
     let params = code_params(500, "py");
-    
+
     let chunks = chunker.chunk(code, &params).await.expect("Chunking failed");
     assert!(!chunks.is_empty(), "Should produce chunks from Python code");
 }
@@ -227,9 +252,12 @@ async fn test_code_chunker_splits_large_function() {
     let large_body = "    x = 1;\n".repeat(50);
     let code = format!("fn big_function() {{\n{}}}\n", large_body);
     let params = code_params(100, "rs");
-    
-    let chunks = chunker.chunk(&code, &params).await.expect("Chunking failed");
-    
+
+    let chunks = chunker
+        .chunk(&code, &params)
+        .await
+        .expect("Chunking failed");
+
     // Large function should be split into multiple chunks
     assert!(chunks.len() >= 1, "Should produce at least one chunk");
 }
@@ -239,11 +267,14 @@ async fn test_code_chunker_falls_back_for_unknown_extension() {
     let chunker = CodeChunker;
     let text = "Some random text that isn't code for a .xyz file type";
     let params = code_params(100, "xyz");
-    
+
     let chunks = chunker.chunk(text, &params).await.expect("Chunking failed");
-    
+
     // Should fall back to recursive chunker without error
-    assert!(!chunks.is_empty(), "Should fall back to recursive for unknown extension");
+    assert!(
+        !chunks.is_empty(),
+        "Should fall back to recursive for unknown extension"
+    );
 }
 
 #[tokio::test]
@@ -262,8 +293,11 @@ More content with **bold** and *italic*.
 - List item 2
 "#;
     let params = code_params(500, "md");
-    
-    let chunks = chunker.chunk(markdown, &params).await.expect("Chunking failed");
+
+    let chunks = chunker
+        .chunk(markdown, &params)
+        .await
+        .expect("Chunking failed");
     assert!(!chunks.is_empty(), "Should handle markdown");
 }
 
@@ -276,9 +310,12 @@ async fn test_chunker_with_unicode() {
     let chunker = RecursiveChunker;
     let text = "日本語テキスト。これは長いテキストです。".repeat(20);
     let params = char_params(50);
-    
-    let chunks = chunker.chunk(&text, &params).await.expect("Chunking failed");
-    
+
+    let chunks = chunker
+        .chunk(&text, &params)
+        .await
+        .expect("Chunking failed");
+
     assert!(chunks.len() >= 1, "Should handle unicode text");
     // Verify no panic or corruption
     // Verify no panic or corruption
@@ -292,8 +329,11 @@ async fn test_chunker_with_special_characters() {
     let chunker = RecursiveChunker;
     let text = r#"fn main() { println!("Hello\nWorld\t!"); }"#.repeat(10);
     let params = char_params(50);
-    
-    let chunks = chunker.chunk(&text, &params).await.expect("Chunking failed");
+
+    let chunks = chunker
+        .chunk(&text, &params)
+        .await
+        .expect("Chunking failed");
     assert!(!chunks.is_empty(), "Should handle special characters");
 }
 
@@ -303,9 +343,12 @@ async fn test_chunker_single_very_long_word() {
     // Single word longer than chunk size
     let text = "a".repeat(500);
     let params = char_params(100);
-    
-    let chunks = chunker.chunk(&text, &params).await.expect("Chunking failed");
-    
+
+    let chunks = chunker
+        .chunk(&text, &params)
+        .await
+        .expect("Chunking failed");
+
     // Should still split, even if awkwardly
     assert!(chunks.len() >= 1, "Should handle long word");
 }

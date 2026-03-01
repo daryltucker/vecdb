@@ -2,8 +2,9 @@
 name = "vecdb-server"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 authors.workspace = true
+repository = "https://github.com/daryltucker/vecdb"
 description = "MCP Server implementation for vecdb (server name: vecdb-mcp)"
 
 [dependencies]
@@ -25,6 +26,8 @@ axum = "0.8"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 hyper = { version = "1.1", features = ["full"] }
 tower = "0.5"
+tokio-stream = "0.1.18"
+rustls = { workspace = true }
 
 
 
@@ -36,3 +39,11 @@ tower = "0.5"
 async-trait = { workspace = true }
 vecdb-core = { workspace = true } # Already in deps but harmless
 tokio-test = "0.4.5"
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/vecdb-{ target }.tar.gz"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/vecdb-{ target }.zip"
+pkg-fmt = "zip"

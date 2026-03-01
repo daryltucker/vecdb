@@ -18,9 +18,9 @@
  *      Rationale: Fail fast if config is corrupt (unless init).
  */
 
+mod cli;
 mod commands;
 mod vecq_adapter;
-mod cli;
 
 // SAFETY: Jemalloc is configured as the global allocator for Linux targets to reduce fragmentation
 // in long-running async server workloads (ingestion/search).
@@ -47,19 +47,25 @@ impl From<QuantizationArg> for vecdb_core::config::QuantizationType {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Install aws-lc-rs as the TLS crypto provider before any connections.
+    // Required because fastembed (reqwest 0.12) and vecdb-core (reqwest 0.13) each
+    // pull in a different rustls backend (ring vs aws-lc-rs), leaving rustls unable
+    // to auto-select one. Must run before tokio or reqwest initialize TLS.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     // Initialize logging (clean production default)
-    vecdb_common::logging::init_logging(); 
-    
+    vecdb_common::logging::init_logging();
+
     let result = cli::run().await;
-    
+
     // Handle SIGPIPE (Broken Pipe) gracefully
     if let Err(err) = result {
-            if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
-                if io_err.kind() == std::io::ErrorKind::BrokenPipe {
-                    std::process::exit(0);
-                }
+        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+            if io_err.kind() == std::io::ErrorKind::BrokenPipe {
+                std::process::exit(0);
             }
-            return Err(err);
+        }
+        return Err(err);
     }
     Ok(())
 }

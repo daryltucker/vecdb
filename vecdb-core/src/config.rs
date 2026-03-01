@@ -41,8 +41,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 
 const DEFAULT_PROFILE_NAME: &str = "default";
 const DEFAULT_QDRANT_URL: &str = "http://localhost:6334";
@@ -65,23 +65,23 @@ pub struct Config {
     pub profiles: HashMap<String, Profile>,
     #[serde(default = "default_profile_name")]
     pub default_profile: String,
-    
+
     /// Global: Local embedding model (shared across all profiles with embedder_type="local")
     /// This enforces the single-local-embedder constraint
     #[serde(default = "default_local_embedding_model")]
     pub local_embedding_model: String,
-    
+
     /// Collection Profiles: Detailed configuration per collection
     #[serde(default)]
     pub collections: HashMap<String, CollectionConfig>,
-    
+
     /// Simple aliases: short_name -> collection_profile_name
     #[serde(default)]
     pub collection_aliases: HashMap<String, String>,
-    
+
     #[serde(default)]
     pub ingestion: IngestionConfig,
-    
+
     /// Global: Location for fastembed model cache
     #[serde(default = "default_fastembed_cache_path")]
     pub fastembed_cache_path: PathBuf,
@@ -103,11 +103,20 @@ pub struct CollectionConfig {
     pub name: String,
     /// Description for listing
     pub description: Option<String>,
-    
+
+    /// The base profile to inherit from (e.g., "medium")
+    pub profile: Option<String>,
+
+    /// Override: Qdrant URL (allows a collection to target a different Qdrant instance than the profile)
+    pub qdrant_url: Option<String>,
     /// Override: Embedder type
     pub embedder_type: Option<String>,
     /// Override: Model name
     pub embedding_model: Option<String>,
+    /// Override: Ollama Context Window (num_ctx)
+    pub num_ctx: Option<usize>,
+    /// Override: Batch Size for embeddings
+    pub gpu_batch_size: Option<usize>,
     /// Override: Ollama URL
     pub ollama_url: Option<String>,
     /// Override: target chunk size
@@ -144,19 +153,19 @@ pub struct IngestionConfig {
     // Wildcard -> Config
     #[serde(default)]
     pub overrides: HashMap<String, IngestionOverride>,
-    
+
     /// Path parsing rules for metadata extraction
     /// Path parsing rules for metadata extraction
     #[serde(default)]
     pub path_rules: Vec<PathRule>,
-    
+
     /// Concurrency Limit: Max number of file processing tasks running in parallel
     #[serde(default = "default_concurrency")]
     pub max_concurrent_requests: usize,
 
-    /// GPU Concurrency: Batch size for GPU embedding (prevents OOM)
-    #[serde(default = "default_gpu_batch_size")]
-    pub gpu_batch_size: usize,
+    /// GPU Concurrency: Batch size for GPU embedding (None = auto calculate optimal size)
+    #[serde(default)]
+    pub gpu_batch_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,13 +186,9 @@ impl Default for IngestionConfig {
             overrides: HashMap::new(),
             path_rules: Vec::new(),
             max_concurrent_requests: default_concurrency(),
-            gpu_batch_size: default_gpu_batch_size(),
+            gpu_batch_size: None, // Default into auto-sizing mode
         }
     }
-}
-
-fn default_gpu_batch_size() -> usize {
-    2
 }
 
 fn default_concurrency() -> usize {
@@ -221,9 +226,11 @@ fn default_tokenizer() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     pub qdrant_url: String,
-    /// Default collection to use if none specified
-    // No default here - forced requirement to prevent ambiguity
-    pub default_collection_name: String,
+    /// Default collection to use if none specified.
+    /// Optional — profiles do not need to know about collections.
+    /// Set by resolve_profile() when a collection is resolved at runtime.
+    #[serde(default)]
+    pub default_collection_name: Option<String>,
     #[serde(default = "default_embedding_model")]
     pub embedding_model: String,
     /// Accept invalid TLS certificates (for staging/self-signed HTTPS endpoints)
@@ -235,13 +242,23 @@ pub struct Profile {
     /// Default: "local" for zero-config experience
     #[serde(default = "default_embedder_type")]
     pub embedder_type: String,
-    
+
     // Credentials
     pub qdrant_api_key: Option<String>,
     pub ollama_api_key: Option<String>,
-    
+
+    // Tuning Parameters
+    pub num_ctx: Option<usize>,
+    pub gpu_batch_size: Option<usize>,
+
     // Default Quantization for collections created under this profile
     pub quantization: Option<QuantizationType>,
+    pub chunk_size: Option<usize>,
+    pub max_chunk_size: Option<usize>,
+    pub chunk_overlap: Option<usize>,
+    /// The name of the profile that was resolved (Skip serialization)
+    #[serde(skip)]
+    pub resolved_profile_name: String,
 }
 
 fn default_embedder_type() -> String {
@@ -281,22 +298,29 @@ impl Default for Config {
         profiles.insert(
             DEFAULT_PROFILE_NAME.to_string(),
             Profile {
-                qdrant_url: std::env::var("QDRANT_URL").unwrap_or_else(|_| DEFAULT_QDRANT_URL.to_string()),
+                qdrant_url: std::env::var("QDRANT_URL")
+                    .unwrap_or_else(|_| DEFAULT_QDRANT_URL.to_string()),
                 embedding_model: DEFAULT_EMBEDDING_MODEL.to_string(),
-                default_collection_name: "docs".to_string(),
+                default_collection_name: None,
                 accept_invalid_certs: false,
                 ollama_url: DEFAULT_OLLAMA_URL.to_string(),
                 embedder_type: "local".to_string(),
 
                 qdrant_api_key: None,
                 ollama_api_key: None,
-                quantization: Some(QuantizationType::None), // Default to None for safety/compat, or Scalar? Plan says default scalar if not set, but explicit config might be safer as None.
+                num_ctx: None,
+                gpu_batch_size: None,
+                quantization: Some(QuantizationType::None), // Default to None for safety/compat
+                chunk_size: None,
+                max_chunk_size: None,
+                chunk_overlap: None,
+                resolved_profile_name: DEFAULT_PROFILE_NAME.to_string(),
             },
         );
         Self {
             profiles,
             default_profile: DEFAULT_PROFILE_NAME.to_string(),
-            local_embedding_model: "bge-micro-v2".to_string(),
+            local_embedding_model: "all-minilm-l6-v2".to_string(),
             collections: HashMap::new(),
             collection_aliases: HashMap::new(),
             ingestion: IngestionConfig::default(),
@@ -312,14 +336,20 @@ impl Config {
     /// This unifies the logic: "if local, use global local model, else use profile model"
     pub fn resolve_embedding_model(&self, profile: &Profile) -> String {
         if profile.embedder_type == "local" {
-            self.local_embedding_model.clone()
+            // If the profile/collection explicitly specifies a non-default model, use it.
+            // Otherwise, use the global local_embedding_model.
+            if profile.embedding_model != DEFAULT_EMBEDDING_MODEL {
+                profile.embedding_model.clone()
+            } else {
+                self.local_embedding_model.clone()
+            }
         } else {
             profile.embedding_model.clone()
         }
     }
 
     /// Resolve the effective profile to use for a given run.
-    /// 
+    ///
     /// Logic:
     /// 1. Start with the base Profile (from -p flag or default)
     /// 2. If a collection is requested (-c):
@@ -329,125 +359,204 @@ impl Config {
     ///    - Overrides: embedder, model, url, chunk_size (we need to pass chunk_size out separately or add to Profile)
     ///    - Sets: default_collection_name = config.name
     /// 4. Return the finalized Profile.
-    pub fn resolve_profile(&self, requested_profile: Option<&str>, requested_collection: Option<&str>) -> Result<Profile> {
-        // 1. Get Base Profile
-        let base_profile_name = requested_profile.unwrap_or(&self.default_profile);
-        let mut profile = self.profiles.get(base_profile_name)
+    pub fn resolve_profile(
+        &self,
+        requested_profile: Option<&str>,
+        requested_collection: Option<&str>,
+    ) -> Result<Profile> {
+        // 1. Resolve Collection Config
+        let mut final_c_name = requested_collection;
+        let c_config = if let Some(mut c_name) = requested_collection {
+            // Check aliases first
+            if let Some(real_key) = self.collection_aliases.get(c_name) {
+                c_name = real_key.as_str();
+                final_c_name = Some(c_name);
+            }
+            
+            // Try direct lookup in the collections map
+            let mut resolved_config = self.collections.get(c_name);
+            
+            // Fallback: Search by the 'name' field within the CollectionConfigs
+            // This handles cases where the TOML key might differ from the actual collection name
+            if resolved_config.is_none() {
+                resolved_config = self.collections.values().find(|c| c.name == c_name);
+            }
+            
+            resolved_config
+        } else {
+            None
+        };
+
+        // 2. Determine Base Profile Name
+        // Precedence: CLI Flag > Collection Profile > Default Profile
+        let base_profile_name = requested_profile
+            .or_else(|| c_config.and_then(|c| c.profile.as_deref()))
+            .unwrap_or(&self.default_profile);
+
+        let mut profile = self
+            .profiles
+            .get(base_profile_name)
             .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found", base_profile_name))?
             .clone();
+        profile.resolved_profile_name = base_profile_name.to_string();
 
-        // 2. Resolve Collection
-        if let Some(mut c_name) = requested_collection {
-             // 2a. Resolve Alias -> Real Key
-             if let Some(real_key) = self.collection_aliases.get(c_name) {
-                 c_name = real_key.as_str();
-             }
-             
-             // 2b. Check for Collection Config
-             if let Some(c_config) = self.collections.get(c_name) {
-                 // 3. Merge Overrides
-                 profile.default_collection_name = c_config.name.clone();
-                 
-                 if let Some(ref et) = c_config.embedder_type {
-                     profile.embedder_type = et.clone();
-                 }
-                 if let Some(ref em) = c_config.embedding_model {
-                     profile.embedding_model = em.clone();
-                 }
-                  if let Some(ref url) = c_config.ollama_url {
-                      profile.ollama_url = url.clone();
-                  }
-                  if let Some(ref key) = c_config.qdrant_api_key {
-                      profile.qdrant_api_key = Some(key.clone());
-                  }
-                  if let Some(ref key) = c_config.ollama_api_key {
-                      profile.ollama_api_key = Some(key.clone());
-                  }
-                  if let Some(ref q) = c_config.quantization {
-                      profile.quantization = Some(q.clone());
-                  }
-                 // chunk_size is currently in IngestionConfig, not Profile. 
-                 // We might need to carry it? 
-                 // For now, let's just update the profile fields we have.
-             } else {
-                 // No config found, just use the raw name
-                 profile.default_collection_name = c_name.to_string();
-             }
+        // 3. Merge Collection Overrides
+        if let Some(c_name) = final_c_name {
+            if let Some(config) = c_config {
+                profile.default_collection_name = Some(config.name.clone());
+
+                if let Some(ref url) = config.qdrant_url {
+                    profile.qdrant_url = url.clone();
+                }
+                if let Some(ref et) = config.embedder_type {
+                    profile.embedder_type = et.clone();
+                }
+                if let Some(ref em) = config.embedding_model {
+                    profile.embedding_model = em.clone();
+                }
+                if let Some(ref num) = config.num_ctx {
+                    profile.num_ctx = Some(*num);
+                }
+                if let Some(ref sz) = config.gpu_batch_size {
+                    profile.gpu_batch_size = Some(*sz);
+                }
+                if let Some(ref url) = config.ollama_url {
+                    profile.ollama_url = url.clone();
+                }
+                if let Some(ref key) = config.qdrant_api_key {
+                    profile.qdrant_api_key = Some(key.clone());
+                }
+                if let Some(ref key) = config.ollama_api_key {
+                    profile.ollama_api_key = Some(key.clone());
+                }
+                if let Some(ref q) = config.quantization {
+                    profile.quantization = Some(q.clone());
+                }
+                if let Some(sz) = config.chunk_size {
+                    profile.chunk_size = Some(sz);
+                }
+                if let Some(max) = config.max_chunk_size {
+                    profile.max_chunk_size = Some(max);
+                }
+                if let Some(ov) = config.chunk_overlap {
+                    profile.chunk_overlap = Some(ov);
+                }
+            } else {
+                profile.default_collection_name = Some(c_name.to_string());
+            }
         }
-        
+
         Ok(profile)
     }
 
     /// Helper to get effective chunk size if a collection overrides it
     pub fn resolve_chunk_size(&self, requested_collection: Option<&str>) -> usize {
         if let Some(mut c_name) = requested_collection {
-             if let Some(real_key) = self.collection_aliases.get(c_name) {
-                 c_name = real_key.as_str();
-             }
-             if let Some(c_config) = self.collections.get(c_name) {
-                 if let Some(size) = c_config.chunk_size {
-                     return size;
-                 }
-             }
+            if let Some(real_key) = self.collection_aliases.get(c_name) {
+                c_name = real_key.as_str();
+            }
+            if let Some(c_config) = self.collections.get(c_name) {
+                if let Some(size) = c_config.chunk_size {
+                    return size;
+                }
+            }
         }
         self.ingestion.chunk_size
     }
 
+    /// Helper to get effective chunk size from a profile
+    pub fn resolve_chunk_size_from_profile(&self, profile: &Profile) -> usize {
+        profile.chunk_size.unwrap_or(self.ingestion.chunk_size)
+    }
+
     /// Helper to get effective max_chunk_size if a collection overrides it
-    pub fn resolve_max_chunk_size(&self, requested_collection: Option<&str>) -> Option<usize> {
+    pub fn resolve_max_chunk_size(&self, profile: &Profile, requested_collection: Option<&str>) -> Option<usize> {
         if let Some(mut c_name) = requested_collection {
-             if let Some(real_key) = self.collection_aliases.get(c_name) {
-                 c_name = real_key.as_str();
-             }
-             if let Some(c_config) = self.collections.get(c_name) {
-                 if let Some(max) = c_config.max_chunk_size {
-                     return Some(max);
-                 }
-             }
+            if let Some(real_key) = self.collection_aliases.get(c_name) {
+                c_name = real_key.as_str();
+            }
+            if let Some(c_config) = self.collections.get(c_name) {
+                if let Some(max) = c_config.max_chunk_size {
+                    return Some(max);
+                }
+            }
         }
-        self.ingestion.max_chunk_size
+        
+        profile.max_chunk_size.or(self.ingestion.max_chunk_size).or_else(|| {
+            // Safe fallback (4 chars per token roughly) to prevent 
+            // chunk inflation crashes against models with limited context.
+            Some(self.resolve_chunk_size_from_profile(profile) * 4) 
+        })
     }
 
     /// Helper to get effective chunk_overlap if a collection overrides it
-    pub fn resolve_chunk_overlap(&self, requested_collection: Option<&str>) -> usize {
+    pub fn resolve_chunk_overlap(&self, profile: &Profile, requested_collection: Option<&str>) -> usize {
         if let Some(mut c_name) = requested_collection {
-             if let Some(real_key) = self.collection_aliases.get(c_name) {
-                 c_name = real_key.as_str();
-             }
-             if let Some(c_config) = self.collections.get(c_name) {
-                 if let Some(overlap) = c_config.chunk_overlap {
-                     return overlap;
-                 }
-             }
+            if let Some(real_key) = self.collection_aliases.get(c_name) {
+                c_name = real_key.as_str();
+            }
+            if let Some(c_config) = self.collections.get(c_name) {
+                if let Some(overlap) = c_config.chunk_overlap {
+                    return overlap;
+                }
+            }
         }
-        self.ingestion.chunk_overlap
+        profile.chunk_overlap.unwrap_or(self.ingestion.chunk_overlap)
+    }
+
+    /// Resolve num_ctx context window
+    pub fn resolve_num_ctx(&self, profile: &Profile) -> usize {
+        profile.num_ctx.unwrap_or(4096)
+    }
+
+    /// Helper to dynamically compute optimal gpu_batch_size 
+    /// Ensures we stay within 75% of context limits without hanging
+    pub fn resolve_gpu_batch_size(&self, profile: &Profile, _requested_collection: Option<&str>) -> usize {
+        // 1. Explicit profile definition overrides all (from collection merge or profile direct)
+        if let Some(size) = profile.gpu_batch_size {
+            return size;
+        }
+
+        // 2. Global explicit setting
+        if let Some(size) = self.ingestion.gpu_batch_size {
+            return size;
+        }
+
+        // 3. Dynamic Auto-calculation
+        if profile.embedder_type == "ollama" {
+            // Ollama's /api/embed processes each input independently within its own
+            // context window — inputs are NOT concatenated into a single sequence.
+            // Context-window math therefore does NOT govern batch size here.
+            // Use 8 parallel inputs per HTTP request to ensure responsiveness
+            // on remote or large models (e.g. Qwen 4B).
+            return 8;
+        }
+
+        // Generic fallback for local fastembed
+        2
     }
 
     /// Helper to resolve whether to use GPU for local embeddings
     pub fn resolve_local_use_gpu(&self, requested_collection: Option<&str>) -> bool {
         if let Some(mut c_name) = requested_collection {
-             if let Some(real_key) = self.collection_aliases.get(c_name) {
-                 c_name = real_key.as_str();
-             }
-             if let Some(c_config) = self.collections.get(c_name) {
-                 if let Some(use_gpu) = c_config.use_gpu {
-                     return use_gpu;
-                 }
-             }
+            if let Some(real_key) = self.collection_aliases.get(c_name) {
+                c_name = real_key.as_str();
+            }
+            if let Some(c_config) = self.collections.get(c_name) {
+                if let Some(use_gpu) = c_config.use_gpu {
+                    return use_gpu;
+                }
+            }
         }
         self.local_use_gpu
     }
 
-    /// Helper to get effective gpu_batch_size
-    pub fn resolve_gpu_batch_size(&self, _requested_collection: Option<&str>) -> usize {
-        // For now, it's just the global ingestion setting
-        self.ingestion.gpu_batch_size
-    }
+
 
     /// Load config from XDG config directory or create default
     pub fn load() -> Result<Self> {
         let config_path = Self::get_path()?;
-        
+
         if !config_path.exists() {
             // Write default config
             let default_config = Config::default();
@@ -460,35 +569,55 @@ impl Config {
             // We continue to load via Figment to ensure consistent behavior
         }
 
-        use figment::{Figment, providers::{Env, Format, Toml, Serialized}};
+        use figment::{
+            providers::{Env, Format, Serialized, Toml},
+            Figment,
+        };
 
-        let mut config: Config = Figment::new()
+        let mut figment = Figment::new()
             .merge(Serialized::defaults(Config::default()))
-            .merge(Toml::file(&config_path))
+            .merge(Toml::file(&config_path));
+            
+        // Check for project-local .vecdb/config.toml and merge it on top if it exists
+        if let Ok(cwd) = std::env::current_dir() {
+            let local_config_path = cwd.join(".vecdb").join("config.toml");
+            if local_config_path.exists() {
+                figment = figment.merge(Toml::file(&local_config_path));
+            }
+        }
+
+        let mut config: Config = figment
             .merge(Env::prefixed("VECDB_").split("__"))
             .extract()
             .context("Failed to load configuration via Figment")?;
-        
+
         // LEGACY ENV VAR SUPPORT: VECDB_USE_GPU
         // We support this for backward compatibility, but prefer VECDB_LOCAL_USE_GPU (handled by figment)
         if let Ok(val) = std::env::var("VECDB_USE_GPU") {
             let val = val.trim().to_lowercase();
             if val == "false" || val == "0" {
                 if crate::output::OUTPUT.is_interactive && config.local_use_gpu {
-                    eprintln!("⚠️  Overriding local_use_gpu=false (via legacy VECDB_USE_GPU env var)");
+                    eprintln!(
+                        "⚠️  Overriding local_use_gpu=false (via legacy VECDB_USE_GPU env var)"
+                    );
                 }
                 config.local_use_gpu = false;
             } else if val == "true" || val == "1" {
                 if crate::output::OUTPUT.is_interactive && !config.local_use_gpu {
-                    eprintln!("ℹ️  Overriding local_use_gpu=true (via legacy VECDB_USE_GPU env var)");
+                    eprintln!(
+                        "ℹ️  Overriding local_use_gpu=true (via legacy VECDB_USE_GPU env var)"
+                    );
                 }
                 config.local_use_gpu = true;
             }
         }
-        
+
         // Validate: Warn if local profiles specify embedding_model (should use global local_embedding_model)
         for (profile_name, profile) in &config.profiles {
-            if crate::output::OUTPUT.is_interactive && profile.embedder_type == "local" && profile.embedding_model != default_embedding_model() {
+            if crate::output::OUTPUT.is_interactive
+                && profile.embedder_type == "local"
+                && profile.embedding_model != default_embedding_model()
+            {
                 eprintln!(
                     "⚠️  WARNING: Profile '{}' uses embedder_type=\"local\" but specifies embedding_model=\"{}\".\n\
                      Local profiles should use the global 'local_embedding_model' config field.\n\
@@ -497,7 +626,7 @@ impl Config {
                 );
             }
         }
-        
+
         Ok(config)
     }
 
@@ -525,9 +654,9 @@ impl Config {
     /// Get a specific profile or the default one
     pub fn get_profile(&self, name: Option<&str>) -> Result<&Profile> {
         let profile_name = name.unwrap_or(&self.default_profile);
-        self.profiles.get(profile_name).ok_or_else(|| {
-            anyhow::anyhow!("Profile '{}' not found in configuration", profile_name)
-        })
+        self.profiles
+            .get(profile_name)
+            .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found in configuration", profile_name))
     }
 }
 
@@ -538,32 +667,48 @@ mod tests {
     #[test]
     fn test_resolve_profile_defaults() {
         let mut config = Config::default();
-        // Create an "edge" profile with specific collection
+        // Create an "edge" profile — no collection dependency
         config.profiles.insert(
             "edge".to_string(),
             Profile {
                 qdrant_url: "http://localhost:6333".to_string(),
-                default_collection_name: "docs_qwen".to_string(), // DIFFERENT from default "docs"
+                default_collection_name: None, // profiles don't own collections
                 ollama_url: "http://localhost:11434".to_string(),
                 embedding_model: "test-model".to_string(),
                 accept_invalid_certs: true,
                 embedder_type: "ollama".to_string(),
                 qdrant_api_key: None,
                 ollama_api_key: None,
+                num_ctx: None,
+                gpu_batch_size: None,
                 quantization: None,
-            }
+                chunk_size: None,
+                max_chunk_size: None,
+                chunk_overlap: None,
+                resolved_profile_name: "edge".to_string(),
+            },
         );
 
-        // Case 1: No explicit collection provided -> Should use profile's "docs_qwen"
+        // Case 1: No explicit collection provided -> None (profile is collection-agnostic)
         let resolved = config.resolve_profile(Some("edge"), None).unwrap();
-        assert_eq!(resolved.default_collection_name, "docs_qwen");
+        assert_eq!(resolved.default_collection_name, None);
 
-        // Case 2: Explicit override -> Should use override
-        let resolved_override = config.resolve_profile(Some("edge"), Some("my_custom_col")).unwrap();
-        assert_eq!(resolved_override.default_collection_name, "my_custom_col");
+        // Case 2: Explicit collection provided -> resolver sets it
+        let resolved_override = config
+            .resolve_profile(Some("edge"), Some("my_custom_col"))
+            .unwrap();
+        assert_eq!(resolved_override.default_collection_name, Some("my_custom_col".to_string()));
 
-        // Case 3: Default profile -> Should use default "docs"
+        // Case 3: Default profile, no collection -> None
         let resolved_default = config.resolve_profile(None, None).unwrap();
-        assert_eq!(resolved_default.default_collection_name, "docs");
+        assert_eq!(resolved_default.default_collection_name, None);
+    }
+
+    #[test]
+    fn test_resolve_max_chunk_size_fallback() {
+        let config = Config::default();
+        let profile = config.get_profile(None).unwrap();
+        // By default chunk size is 512, so max should be 512 * 4 = 2048
+        assert_eq!(config.resolve_max_chunk_size(profile, None), Some(2048));
     }
 }

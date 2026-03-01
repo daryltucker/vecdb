@@ -8,18 +8,19 @@ vecq allows AI Agents to query source code structure (AST) as if it were JSON.
 
 ### 1. Querying (`query`)
 - **Action**: Parse source code and filter AST nodes using jq syntax.
-- **Usage**: `vecq <INPUT> <QUERY>`
+- **Usage**: `vecq <INPUT>... -- <QUERY>` or `vecq <INPUT> -q <QUERY>`
 - **Output**: JSON Lines or Array.
 - **Recursion**: Use `-R` to recursively process a directory. This is the recommended default for directories.
+- **Important**: Always use `--` to separate input files from the query, or use `-q` flag.
 - **Common Queries**:
     - `.functions[]` : List all functions
     - `.structs[]` : List all structs/classes
     - `.code_blocks[]` : List markdown code blocks (useful for extraction)
     - `.imports[]` : List imports
 - **Examples**:
-    - `vecq -R src/ -q '.functions[] | select(.visibility == "pub")' --grep-format` (Find public functions)
-    - `vecq README.md -q '.code_blocks[] | select(.attributes.language == "bash") | .content' -r` (Extract bash code)
-    - `vecq src/main.rs -L examples/functions -q 'my_lib::filter'`
+    - `vecq -R src/ -- '.functions[] | select(.visibility == "pub")' --grep-format` (Find public functions)
+    - `vecq README.md -- '.code_blocks[] | select(.attributes.language == "bash") | .content' -r` (Extract bash code)
+    - `vecq src/main.rs -q '.functions[] | map(.name)'` (Using -q flag instead of --)
 
 ### 2. Filtering & Manipulation (`select`, `map`)
 - **`select(condition)`**: Keep nodes matching a predicate.
@@ -69,6 +70,20 @@ vecq allows AI Agents to query source code structure (AST) as if it were JSON.
 - `--grep-format`: Shortcut for `-o grep` (Recommended for search tasks)
 - `-r, --raw-output`: Output raw strings, not JSON text (Critical for code extraction)
 - `-R, --recursive`: Recursively process directories
+
+## TROUBLESHOOTING
+
+### Common Issues
+- **"Input path does not exist"**: This usually means your query syntax is being interpreted as a file path. Always use `--` to separate files from queries: `vecq file.rs -- '.query'`
+- **No output**: Check if your query path exists. Use `--convert` first to see the JSON structure.
+- **Query syntax errors**: Use `--explain` with a simple query to debug: `vecq /dev/null -- '. | keys'`
+- **Pipeline issues**: When using xargs, use `-I {}` syntax: `find . -name "*.rs" | xargs -I {} vecq {} -- '.query'`
+
+### Getting Help
+- `vecq --help`: Basic usage and options
+- `vecq man --agent`: Complete agent interface specification (this document)
+- `vecq elements <language>`: See what structural elements are available for parsing
+- `vecq suggest "natural language description"`: Get query suggestions
 
 ## CONTEXT
 Use this tool when you need to:

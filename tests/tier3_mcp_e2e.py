@@ -132,9 +132,13 @@ accept_invalid_certs = true
             req["params"] = params
             
         json_line = json.dumps(req) + "\n"
-        self.process.stdin.write(json_line)
-        self.process.stdin.flush()
-        
+        try:
+            self.process.stdin.write(json_line)
+            self.process.stdin.flush()
+        except BrokenPipeError:
+            err = self.process.stderr.read()
+            raise Exception(f"Server Process Exited with Broken Pipe. Stderr: {err}")
+            
         # Read with timeout safety mechanism could be added here
         # For now, blocking read is okay for tests
         response_line = self.process.stdout.readline()

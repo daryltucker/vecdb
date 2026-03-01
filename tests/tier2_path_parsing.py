@@ -78,6 +78,12 @@ def setup():
     with open(f"{dir_2024}/strategy.txt", "w") as f:
         f.write("Our strategy for 2024 was focused on stability.")
 
+    os.environ["VECDB_CONFIG"] = os.path.abspath(CONFIG_PATH)
+    
+    # Init DB (MUST run before writing custom config due to safety check)
+    print("Initializing...")
+    subprocess.run([VECDB_BIN, "init"], check=True, capture_output=True)
+    
     # Create Config
     config_content = """
 smart_routing_keys = ["year", "quarter"]
@@ -97,8 +103,6 @@ pattern = "(?P<year>\\\\d{4})/(?P<quarter>Q\\\\d)/.*"
     
     with open(CONFIG_PATH, "w") as f:
         f.write(config_content)
-        
-    os.environ["VECDB_CONFIG"] = os.path.abspath(CONFIG_PATH)
 
 def run_search(query, smart=False):
     cmd = [VECDB_BIN, "search", query, "--json"]
@@ -115,15 +119,9 @@ def run_search(query, smart=False):
 def main():
     setup()
     
-    # Init DB
-    print("Initializing...")
-    subprocess.run([VECDB_BIN, "init"], check=True, capture_output=True)
-    
     # Clean previous run
     print("Cleaning collection...")
-    res = subprocess.run([VECDB_BIN, "delete", "test_path_parsing", "--force"], capture_output=True, text=True)
-    if res.returncode != 0:
-         print(f"Warning: delete collection failed (ignored if first run): {res.stderr}")
+    subprocess.run([VECDB_BIN, "delete", "test_path_parsing", "--force"], check=True, capture_output=True)
     
     # Ingest
     print(f"Ingesting data from {TEST_DIR}/data...")

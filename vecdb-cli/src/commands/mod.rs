@@ -1,16 +1,17 @@
 use clap::Subcommand;
 use clap_complete::Shell;
 
-pub mod delete;
-pub mod man;
-pub mod status;
-pub mod ingest;
-pub mod search;
-pub mod list;
-pub mod history;
 pub mod config;
+pub mod delete;
+pub mod enable_usages;
+pub mod history;
+pub mod ingest;
+pub mod list;
+pub mod man;
 pub mod optimize;
+pub mod search;
 pub mod snapshot;
+pub mod status;
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
@@ -40,12 +41,15 @@ pub enum Commands {
 
     /// Manage config settings
     Config(config::ConfigArgs),
-    
+
     /// Optimize a collection (apply quantization)
     Optimize(optimize::OptimizeArgs),
 
     /// Time Travel / History Operations
     History(history::HistoryArgs),
+
+    /// Enable usage/reference extraction mode
+    EnableUsages(enable_usages::EnableUsagesArgs),
 
     /// Generate shell completions
     Completions {

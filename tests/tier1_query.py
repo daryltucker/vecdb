@@ -5,7 +5,7 @@ import json
 
 # --- Configuration ---
 VECDB_BINARY = "./target/debug/vecdb"
-VECQ_BINARY = "./target/release/vecq" # Assumes vecq was built in release mode previously
+VECQ_BINARY = "./target/debug/vecq"
 
 def run_command(cmd, input_text=None):
     """Runs a shell command with optional input."""

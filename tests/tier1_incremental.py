@@ -45,10 +45,11 @@ def run_test():
         res1 = subprocess.run(cmd, capture_output=True, text=True)
         if res1.returncode != 0: raise Exception(res1.stderr)
         
-        if "Processed 4" not in res1.stderr: 
-             # file1.txt, .gitignore, ignored.txt, .vectorignore processed.
+        if "Processed 2" not in res1.stderr: 
+             # file1.txt, ignored.txt processed.
+             # .gitignore and .vectorignore are skipped by the 'ignore' walker when active.
              # vector_ignored.txt skipped by .vectorignore.
-             print("FAILURE: Run 1 should process exactly 4 files (file1, ignored.txt, .gitignore, .vectorignore).")
+             print("FAILURE: Run 1 should process exactly 2 files (file1, ignored.txt).")
              print(f"Actual Output: {res1.stderr}")
              exit(1)
              

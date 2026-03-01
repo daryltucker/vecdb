@@ -47,7 +47,6 @@ impl CParser {
         &self,
         node: tree_sitter::Node,
         content: &str,
-        source: &[u8],
     ) -> Vec<DocumentElement> {
         let mut elements = Vec::new();
         let mut cursor = node.walk();
@@ -77,7 +76,7 @@ impl CParser {
                     let mut element = self.parse_complex_type(content, child, effective_type);
                     
                     if let Some(body) = child.child_by_field_name("body") {
-                        let children = self.process_nodes(body, content, source);
+                        let children = self.process_nodes(body, content);
                         element = element.with_children(children);
                     }
                     elements.push(element);
@@ -99,13 +98,13 @@ impl CParser {
                          elements.push(field);
                      }
                      // Recurse to find nested types defined within the declaration (e.g. struct defined in field type)
-                     elements.extend(self.process_nodes(child, content, source));
+                     elements.extend(self.process_nodes(child, content));
                 }
                 _ => {
                     // Recurse into linkage specs or blocks
                     if kind == "linkage_specification" || kind == "compound_statement" {
                         if let Some(body) = child.child_by_field_name("body") {
-                             let children = self.process_nodes(body, content, source);
+                             let children = self.process_nodes(body, content);
                              elements.extend(children);
                         }
                     }
@@ -264,6 +263,7 @@ impl CParser {
               }
          }
         
+        #[allow(clippy::manual_map)]
         if let Some(n) = name {
             Some(DocumentElement::new(
                 ElementType::Variable,
@@ -325,7 +325,7 @@ impl Parser for CParser {
                 source: None,
             })?;
 
-        let elements = self.process_nodes(tree.root_node(), content, content.as_bytes());
+        let elements = self.process_nodes(tree.root_node(), content);
 
         let mut doc = ParsedDocument::new(
             DocumentMetadata::new(PathBuf::from("file.c"), content.len() as u64)

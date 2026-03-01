@@ -1,10 +1,14 @@
 /// Stitches two text fragments by finding the maximum overlapping suffix of `base`
 /// that matches the prefix of `extension`.
-/// 
+///
 /// Returns the merged string.
 pub fn stitch_text(base: &str, extension: &str) -> String {
-    if extension.is_empty() { return base.to_string(); }
-    if base.is_empty() { return extension.to_string(); }
+    if extension.is_empty() {
+        return base.to_string();
+    }
+    if base.is_empty() {
+        return extension.to_string();
+    }
 
     let base_bytes = base.as_bytes();
     let ext_bytes = extension.as_bytes();
@@ -12,7 +16,7 @@ pub fn stitch_text(base: &str, extension: &str) -> String {
 
     // Minimum overlap to consider stitching (prevents accidental matches)
     let min_overlap = 10;
-    
+
     // Limits the search range to avoid O(N^2) on huge strings
     let search_range = std::cmp::min(std::cmp::min(base_bytes.len(), ext_bytes.len()), 5000);
 

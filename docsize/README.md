@@ -1,4 +1,4 @@
-# docsize v0.0.9
+# docsize v1.0.0
 
 `docsize` is a contextualized LLM wrapper designed to work seamlessly with `vecdb` and `vecq`. It gathers directory structure and semantic search results to provide a high-fidelity prompt to local LLMs (primarily Ollama).
 

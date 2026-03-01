@@ -8,19 +8,22 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait Parser: Send + Sync {
     /// Parse the file content and return chunks
-    async fn parse(&self, content: &str, path: &Path, base_metadata: Option<serde_json::Value>) -> Result<Vec<Chunk>>;
-    
+    async fn parse(
+        &self,
+        content: &str,
+        path: &Path,
+        base_metadata: Option<serde_json::Value>,
+    ) -> Result<Vec<Chunk>>;
+
     /// Get the file extensions supported by this parser
     fn supported_extensions(&self) -> Vec<&str>;
 }
 
-
 pub mod json;
 
-pub mod yaml;
 pub mod streaming_json;
+pub mod yaml;
 // pub mod vecq_adapter; // Moved to CLI layer
-
 
 use vecdb_common::FileType;
 
@@ -55,4 +58,3 @@ impl ParserFactory for BuiltinParserFactory {
         }
     }
 }
-

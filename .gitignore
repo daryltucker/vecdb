@@ -34,3 +34,6 @@
 !vecdb-server
 !vecdb-asm
 !vecq
+!xtask/
+!Makefile
+!Dockerfile

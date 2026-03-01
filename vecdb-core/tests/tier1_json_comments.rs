@@ -1,22 +1,22 @@
+use std::path::Path;
 use vecdb_core::parsers::json::JsonParser;
 use vecdb_core::parsers::Parser;
-use std::path::Path;
 
 #[tokio::test]
 async fn test_json_parser_handles_comments() {
     let parser = JsonParser;
-    
+
     let json_content = r#"{
         "key": "value",
         // This is a comment
         "number": 123
     }"#;
-    
+
     let path = Path::new("test.json");
-    
+
     // This should fail with standard serde_json, but pass with our new implementation
     let result = parser.parse(json_content, path, None).await;
-    
+
     assert!(result.is_ok(), "Parser should handle JSONC");
     let chunks = result.unwrap();
     assert!(!chunks.is_empty());
@@ -38,9 +38,12 @@ async fn test_json_parser_handles_trailing_commas() {
         "key": "value",
         "list": [1, 2, ],
     }"#;
-    
+
     let path = Path::new("trailing.json");
     // json5 handles trailing commas
     let result = parser.parse(json_content, path, None).await;
-    assert!(result.is_ok(), "Should handle trailing commas via json5 fallback");
+    assert!(
+        result.is_ok(),
+        "Should handle trailing commas via json5 fallback"
+    );
 }

@@ -22,8 +22,8 @@ SAMPLES = {
 
 def run_vecq(filepath):
     """Runs vecq on a file and returns the JSON output."""
-    cmd = f"{VECQ_BINARY} {filepath}"
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    cmd = [VECQ_BINARY, filepath]
+    result = subprocess.run(cmd, shell=False, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"FAILED to process {filepath}")
         print("STDERR:", result.stderr)

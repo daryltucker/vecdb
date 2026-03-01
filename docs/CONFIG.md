@@ -12,10 +12,15 @@ default_profile = "default"
 
 [profiles.default]
 qdrant_url = "http://localhost:6334"
-default_collection_name = "docs"
+
+[collections.docs]
+name = "docs"
+profile = "default"
 ```
 
 That's it! The local embedder is enabled by default, so no external services are required (except Qdrant).
+
+> **Note:** `default_collection_name` on profiles is optional. The recommended pattern is for **collections to reference profiles** (via `profile = "..."`) rather than profiles referencing collections. This lets you reuse a single profile across many collections.
 
 ---
 
@@ -39,39 +44,40 @@ local_embedding_model = "bge-micro-v2"
 local_use_gpu = true
 
 # ═══════════════════════════════════════════════════════════
-# PROFILES - Define multiple backend configurations
+# PROFILES - Connection + model presets. Collection-agnostic.
 # ═══════════════════════════════════════════════════════════
 [profiles.default]
 qdrant_url = "http://localhost:6334"        # Qdrant gRPC endpoint
-default_collection_name = "docs"            # Default collection for searches
 embedder_type = "local"                     # "local" (built-in) or "ollama"
-
-# TLS settings
 accept_invalid_certs = false                # Set true for self-signed certs
 
-# Example: Production profile with Ollama (remote embedder)
-[profiles.production]
-qdrant_url = "https://qdrant.example.com:6334"
-default_collection_name = "prod_docs"
-embedder_type = "ollama"
+# Tier 2: Remote Ollama, high-quality model
+[profiles.high]
+qdrant_url = "http://localhost:6334"
 ollama_url = "https://ollama.example.com"
-embedding_model = "nomic-embed-text"        # ← Only for ollama profiles!
-accept_invalid_certs = true
-
-# ═══════════════════════════════════════════════════════════
-# COLLECTION PROFILES - Collection-specific overrides
-# ═══════════════════════════════════════════════════════════
-[collections.brain]
-name = "agent_memory_v1"                    # Real collection name
-description = "My agent's memory"
-embedder_type = "local"                     # Override embedder for this collection
-
-[collections.code]
-name = "codebase_embeddings_nomic"
 embedder_type = "ollama"
-embedding_model = "nomic-embed-text"
-chunk_size = 1024                           # Override chunk size
-use_gpu = false                             # Override GPU usage for this collection
+embedding_model = "Qwen3-Embedding-4B-Q8_0:latest"
+accept_invalid_certs = true
+num_ctx = 8192
+
+# ═══════════════════════════════════════════════════════════
+# COLLECTIONS - Data stores. Each points to a profile.
+#   Collections CAN override any profile field.
+#   This is the recommended way to bind models to collections.
+# ═══════════════════════════════════════════════════════════
+[collections.docs]
+name = "docs"
+description = "General project documentation"
+profile = "default"                         # Inherit from "default" profile
+
+[collections.docs-lts]
+name = "docs-lts"
+description = "High quality, long-term embeddings on remote Qdrant"
+profile = "high"                            # Inherit from "high" profile
+qdrant_url = "https://qdrant.example.com"  # Override: use remote Qdrant
+chunk_size = 2048
+max_chunk_size = 3072
+chunk_overlap = 256
 
 # Legacy Aliases (Simple redirects)
 [collection_aliases]
@@ -118,13 +124,19 @@ chunk_size = 800
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `qdrant_url` | string | `"http://localhost:6334"` | Qdrant gRPC endpoint URL |
-| `default_collection_name` | string | **REQUIRED** | Default collection to use if not overridden. Acts as the "Home Base" for this profile. |
+| `default_collection_name` | string | `null` | **Optional** fallback collection when `-c` is not specified. Prefer using `profile =` on the collection instead. |
 | `embedder_type` | string | `"local"` | Embedding backend: `"local"` or `"ollama"` |
 | `ollama_url` | string | `"http://localhost:11434"` | Ollama API URL (only for `embedder_type = "ollama"`) |
 | `embedding_model` | string | `"nomic-embed-text"` | Ollama model name (**only for** `embedder_type = "ollama"`). If set on a `local` profile, a warning will be displayed and this field will be ignored. |
 | `accept_invalid_certs` | bool | `false` | Accept invalid TLS certificates |
 | `qdrant_api_key` | string | `null` | Optional API Key for Qdrant authentication |
 | `ollama_api_key` | string | `null` | Optional API Key for Ollama proxy authentication |
+| `quantization` | string | `null` | "scalar", "binary", or "none" |
+| `chunk_size` | integer | `null` | Override ingestion chunk size |
+| `chunk_overlap` | integer | `null` | Override chunk overlap |
+| `max_chunk_size` | integer | `null` | Override max chunk size |
+| `gpu_batch_size` | integer | `null` | Override GPU batch size |
+| `num_ctx` | integer | `null` | Override Ollama context window size |
 
 ### Embedder Types
 
@@ -140,18 +152,28 @@ chunk_size = 800
 Define named collections with specific configurations that override the active profile.
  
 ```toml
+# Recommended pattern: collection → profile
 [collections.brain]
 name = "agent_memory_v1"        # Actual Qdrant collection name
-embedder_type = "local"         # Force local embedder
-chunk_size = 512                # Force chunk size
- 
+profile = "default"             # Inherit connection + model from "default" profile
+description = "My agent's memory"
+chunk_size = 512                # Collection-specific chunk size
+
+# A collection can target a different Qdrant instance than its profile
+[collections.docs-lts]
+name = "docs-lts"
+profile = "high"                # High-quality remote Ollama model
+qdrant_url = "https://qdrant.example.com"  # But store on remote Qdrant
+chunk_size = 2048
+
 [collection_aliases]            # Simple redirects
 b = "brain"
 ```
- 
-Usage: 
-- `vecdb search -c brain "query"` (Uses "local" embedder, searchs "agent_memory_v1")
-- `vecdb search -c b "query"` (Redirects to "brain", then applies "brain" profile)
+
+Usage:
+- `vecdb search -c brain "query"` — resolves "brain" → uses `agent_memory_v1` with `default` profile
+- `vecdb search -c b "query"` — alias redirects to "brain", same result
+- `vecdb ingest ./ -c docs-lts` — uses `high` profile's model, stores on remote Qdrant
 
 #### Collection Profile Options (`[collections.<name>]`)
 
@@ -159,15 +181,19 @@ Usage:
 |-----|------|---------|-------------|
 | `name` | string | **REQUIRED** | Actual Qdrant collection name |
 | `description` | string | `null` | Optional description for listing |
+| `profile` | string | `null` | Base profile to inherit from (e.g., `"high"`). Recommended way to bind a collection to its model. |
+| `qdrant_url` | string | `null` | Override Qdrant URL (e.g., point to a remote instance for this collection only) |
 | `embedder_type` | string | `null` | Override active profile's embedder type |
 | `embedding_model`| string | `null` | Override active profile's embedding model |
 | `ollama_url` | string | `null` | Override Ollama URL |
 | `qdrant_api_key` | string | `null` | Override Qdrant API Key |
 | `ollama_api_key` | string | `null` | Override Ollama API Key |
+| `num_ctx` | integer | `null` | Override Ollama context window size |
 | `chunk_size` | integer | `null` | Override ingestion chunk size |
 | `max_chunk_size` | integer | `null` | Override max chunk size |
 | `chunk_overlap` | integer | `null` | Override chunk overlap |
 | `use_gpu` | bool | `null` | Override `local_use_gpu` for this collection |
+| `gpu_batch_size` | integer | `null` | Override GPU batch size |
 | `quantization` | string | `null` | "scalar", "binary", or "none" (See Quantization below) |
 
 > **Warning:** Changing the `embedder_type` or `embedding_model` for an existing collection will likely break searches due to vector dimension mismatches (e.g., 384 vs 768). If you change the model, you must delete and re-ingest the collection.

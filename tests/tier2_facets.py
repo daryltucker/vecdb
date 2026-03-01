@@ -70,6 +70,12 @@ def setup():
     os.makedirs(TEST_DIR)
     os.makedirs(f"{TEST_DIR}/data")
     
+    os.environ["VECDB_CONFIG"] = os.path.abspath(CONFIG_PATH)
+    
+    # Init DB (MUST run before writing custom config due to safety check)
+    print("Initializing...")
+    subprocess.run([VECDB_BIN, "init"], check=True, capture_output=True)
+    
     # Create Config with custom smart_routing_keys manually
     # NOTE: qdrant_url points to 6336 (gRPC) for rust client
     # NOTE: smart_routing_keys MUST be at top level
@@ -85,8 +91,6 @@ embedder_type = "local"
     
     with open(CONFIG_PATH, "w") as f:
         f.write(config_content)
-        
-    os.environ["VECDB_CONFIG"] = os.path.abspath(CONFIG_PATH)
 
 def ingest_data():
     # 1. Windows content
@@ -123,12 +127,9 @@ def run_search(query, smart_routing=False):
 def main():
     setup()
     
-    # Init DB
-    print("Initializing...")
-    subprocess.run([VECDB_BIN, "init"], check=True, capture_output=True)
-    
     # Clean previous run
-    subprocess.run([VECDB_BIN, "delete", "--collection", "test_facets", "--confirm"], capture_output=True)
+    print("Cleaning collection...")
+    subprocess.run([VECDB_BIN, "delete", "test_facets", "--force"], check=True, capture_output=True)
     
     ingest_data()
     

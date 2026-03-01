@@ -11,7 +11,7 @@
 //   - Must verify confidence scoring works correctly across detection strategies
 //   - Must ensure custom file type mappings work seamlessly with built-in detection
 //   - Must validate graceful handling of unknown and malformed files
-//   
+//
 //   Implementation-discovered:
 //   - Requires realistic test data generation for all supported file types
 //   - Must test all detection strategies (extension, MIME, shebang, content analysis)
@@ -22,19 +22,19 @@
 // IMPLEMENTATION RULES:
 //   1. Generate realistic file content for each supported language
 //      Rationale: Artificial test data may not catch real-world detection issues
-//   
+//
 //   2. Test all detection strategies independently and in combination
 //      Rationale: Each strategy has different failure modes that must be validated
-//   
+//
 //   3. Use minimum 1000 iterations per property test for comprehensive coverage
 //      Rationale: File type detection has many edge cases that require extensive testing
-//   
+//
 //   4. Validate confidence scoring accuracy and consistency
 //      Rationale: Confidence scores guide parser selection and user feedback
-//   
+//
 //   5. Test custom configuration scenarios thoroughly
 //      Rationale: Users rely on custom mappings for specialized file types
-//   
+//
 //   Critical:
 //   - DO NOT use hardcoded file content that doesn't represent real-world usage
 //   - DO NOT skip testing edge cases like empty files or binary content
@@ -43,13 +43,13 @@
 // USAGE:
 //   # Run property tests for file detection
 //   cargo test property_file_detection --release
-//   
+//
 //   # Run with specific iteration count
 //   PROPTEST_CASES=5000 cargo test property_file_detection
-//   
+//
 //   # Debug failing test cases
 //   cargo test property_file_detection -- --nocapture
-//   
+//
 //   # Run only extension detection tests
 //   cargo test test_extension_based_detection
 //
@@ -61,7 +61,7 @@
 //   4. Add shebang patterns if the language supports script execution
 //   5. Update confidence scoring validation for new detection patterns
 //   6. Add edge cases specific to the new file type
-//   
+//
 //   When detection accuracy issues are reported:
 //   1. Add failing cases to test fixtures for regression testing
 //   2. Update content analysis scoring if needed
@@ -89,14 +89,14 @@
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use std::path::PathBuf;
-use vecq::detection::{FileTypeDetector, HybridDetector, DetectionConfig};
+use vecq::detection::{DetectionConfig, FileTypeDetector, HybridDetector};
 use vecq::types::FileType;
 
 // Property 2: Schema Consistency Across File Types
-// 
-// For any file type supported by vecq, the JSON output should follow consistent 
+//
+// For any file type supported by vecq, the JSON output should follow consistent
 // schema patterns with standardized field names and structure.
-// 
+//
 // This property ensures that:
 // 1. All detected file types can be successfully parsed
 // 2. Parsed documents produce JSON with consistent schema patterns
@@ -127,7 +127,11 @@ fn generate_file_content(file_type: FileType) -> BoxedStrategy<Vec<u8>> {
 /// Generate realistic TOML content
 fn generate_toml_content() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![
-        Just("[package]\nname = \"vecq\"\nversion = \"0.1.0\"".as_bytes().to_vec()),
+        Just(
+            "[package]\nname = \"vecq\"\nversion = \"0.1.0\""
+                .as_bytes()
+                .to_vec()
+        ),
         Just("key = \"value\"\nnumber = 123".as_bytes().to_vec()),
     ]
 }
@@ -283,10 +287,22 @@ fn generate_text_content() -> impl Strategy<Value = Vec<u8>> {
 /// Generate realistic HTML/XML content
 fn generate_html_content() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![
-        Just("<!DOCTYPE html><html><body><h1>Hello</h1></body></html>".as_bytes().to_vec()),
+        Just(
+            "<!DOCTYPE html><html><body><h1>Hello</h1></body></html>"
+                .as_bytes()
+                .to_vec()
+        ),
         Just("<div class=\"test\">Content</div>".as_bytes().to_vec()),
-        Just("<?xml version=\"1.0\"?><root><item>Value</item></root>".as_bytes().to_vec()),
-        Just("<mcp_servers><server>test</server></mcp_servers>".as_bytes().to_vec()),
+        Just(
+            "<?xml version=\"1.0\"?><root><item>Value</item></root>"
+                .as_bytes()
+                .to_vec()
+        ),
+        Just(
+            "<mcp_servers><server>test</server></mcp_servers>"
+                .as_bytes()
+                .to_vec()
+        ),
     ]
 }
 
@@ -294,14 +310,15 @@ fn generate_html_content() -> impl Strategy<Value = Vec<u8>> {
 fn generate_unknown_content() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![
         // Random text
-        Just("This is some random text content\nthat doesn't match any known file type\npatterns.".as_bytes().to_vec()),
-        
+        Just(
+            "This is some random text content\nthat doesn't match any known file type\npatterns."
+                .as_bytes()
+                .to_vec()
+        ),
         // Binary-like content
         Just(vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]), // PNG header
-        
         // Empty content
         Just(Vec::new()),
-        
         // Random binary
         Just(vec![0x00, 0x01, 0x02, 0x03]),
     ]
@@ -315,76 +332,89 @@ fn generate_file_path(file_type: FileType) -> BoxedStrategy<PathBuf> {
             Just(PathBuf::from("lib.rs")),
             Just(PathBuf::from("src/parser.rs")),
             Just(PathBuf::from("tests/integration.rs")),
-        ].boxed(),
+        ]
+        .boxed(),
         FileType::Python => prop_oneof![
             Just(PathBuf::from("main.py")),
             Just(PathBuf::from("script.py")),
             Just(PathBuf::from("src/utils.py")),
             Just(PathBuf::from("test_example.py")),
-        ].boxed(),
+        ]
+        .boxed(),
         FileType::Markdown => prop_oneof![
             Just(PathBuf::from("README.md")),
             Just(PathBuf::from("CHANGELOG.md")),
             Just(PathBuf::from("docs/guide.md")),
             Just(PathBuf::from("notes.markdown")),
-        ].boxed(),
+        ]
+        .boxed(),
         FileType::C => prop_oneof![
             Just(PathBuf::from("main.c")),
             Just(PathBuf::from("utils.c")),
             Just(PathBuf::from("src/parser.c")),
             Just(PathBuf::from("include/header.h")),
-        ].boxed(),
+        ]
+        .boxed(),
         FileType::Cpp => prop_oneof![
             Just(PathBuf::from("main.cpp")),
             Just(PathBuf::from("utils.cc")),
             Just(PathBuf::from("src/parser.cxx")),
             Just(PathBuf::from("include/header.hpp")),
-        ].boxed(),
+        ]
+        .boxed(),
         FileType::Cuda => prop_oneof![
             Just(PathBuf::from("kernel.cu")),
             Just(PathBuf::from("compute.cu")),
             Just(PathBuf::from("src/gpu_utils.cu")),
-        ].boxed(),
+        ]
+        .boxed(),
         FileType::Go => prop_oneof![
             Just(PathBuf::from("main.go")),
             Just(PathBuf::from("utils.go")),
             Just(PathBuf::from("src/parser.go")),
             Just(PathBuf::from("cmd/cli.go")),
-        ].boxed(),
+        ]
+        .boxed(),
         FileType::Bash => prop_oneof![
             Just(PathBuf::from("script.sh")),
             Just(PathBuf::from("build.bash")),
             Just(PathBuf::from("bin/deploy")),
             Just(PathBuf::from("scripts/setup")),
-        ].boxed(),
+        ]
+        .boxed(),
         FileType::Json => prop_oneof![
             Just(PathBuf::from("data.json")),
             Just(PathBuf::from("config.json")),
             Just(PathBuf::from("package.json")),
-        ].boxed(),
+        ]
+        .boxed(),
         FileType::Text => prop_oneof![
             Just(PathBuf::from("notes.txt")),
             Just(PathBuf::from("log.txt")),
             Just(PathBuf::from("config.ini")),
             Just(PathBuf::from("data.yaml")),
-        ].boxed(),
+        ]
+        .boxed(),
         FileType::Html => prop_oneof![
             Just(PathBuf::from("index.html")),
             Just(PathBuf::from("page.htm")),
             Just(PathBuf::from("config.xml")),
             Just(PathBuf::from("template.xhtml")),
-        ].boxed(),
+        ]
+        .boxed(),
         FileType::Toml => prop_oneof![
             Just(PathBuf::from("Cargo.toml")),
             Just(PathBuf::from("config.toml")),
             Just(PathBuf::from("Pipfile")),
-        ].boxed(),
+        ]
+        .boxed(),
         FileType::Unknown => prop_oneof![
             Just(PathBuf::from("unknown.xyz")),
             Just(PathBuf::from("data.bin")),
             Just(PathBuf::from("config")),
             Just(PathBuf::from("file_without_extension")),
-        ].boxed(),
+        ]
+        .boxed(),
     }
 }
 
@@ -418,15 +448,15 @@ proptest! {
     ) {
         let detector = HybridDetector::new();
         let path = generate_file_path(file_type).new_tree(&mut Default::default()).unwrap().current();
-        
+
         let detected_type = detector.detect_type(&path, &content).unwrap();
         let confidence = detector.get_confidence(&path, &content);
-        
+
         // Extension-based detection should be highly confident for correct extensions
         if detected_type == file_type {
             prop_assert!(confidence >= 0.8, "Extension detection should have high confidence");
         }
-        
+
         // Should be able to get a parser for detected type
         let parser_result = detector.get_parser(detected_type);
         prop_assert!(parser_result.is_ok() || detected_type == FileType::Unknown);
@@ -440,17 +470,17 @@ proptest! {
     ) {
         let detector = HybridDetector::new();
         let path = PathBuf::from("script"); // No extension
-        
+
         let shebang = match script_type {
             FileType::Python => "#!/usr/bin/env python3\n",
             FileType::Bash => "#!/bin/bash\n",
             _ => unreachable!(),
         };
-        
+
         let content = format!("{}{}", shebang, additional_content);
         let detected_type = detector.detect_type(&path, content.as_bytes()).unwrap();
         let confidence = detector.get_confidence(&path, content.as_bytes());
-        
+
         // Shebang detection should work even without file extension
         prop_assert_eq!(detected_type, script_type);
         prop_assert!(confidence >= 0.7, "Shebang detection should have good confidence");
@@ -463,15 +493,15 @@ proptest! {
     ) {
         let detector = HybridDetector::new();
         let path = PathBuf::from("unknown_file"); // No extension to force content analysis
-        
+
         let content = generate_file_content(file_type).new_tree(&mut Default::default()).unwrap().current();
-        
+
         let detected_type = detector.detect_type(&path, &content).unwrap();
         let confidence = detector.get_confidence(&path, &content);
-        
+
         // Content analysis should at least not crash and provide some confidence
         prop_assert!((0.0..=1.0).contains(&confidence));
-        
+
         // If detection succeeds, should be able to get parser
         if detected_type != FileType::Unknown {
             let parser_result = detector.get_parser(detected_type);
@@ -489,13 +519,13 @@ proptest! {
         let config = DetectionConfig::new()
             .with_custom_extension(&custom_extension, file_type)
             .with_confidence_threshold(0.5);
-        
+
         let detector = HybridDetector::with_config(config);
         let path = PathBuf::from(format!("test.{}", custom_extension));
-        
+
         let detected_type = detector.detect_type(&path, &content).unwrap();
         let confidence = detector.get_confidence(&path, &content);
-        
+
         // Custom extension mapping should work
         prop_assert_eq!(detected_type, file_type);
         prop_assert!(confidence >= 0.9, "Custom extension should have very high confidence");
@@ -509,17 +539,17 @@ proptest! {
     ) {
         let config = DetectionConfig::new()
             .with_confidence_threshold(threshold);
-        
+
         let detector = HybridDetector::with_config(config);
         let path = PathBuf::from("ambiguous_file"); // No clear indicators
         let content = b"some ambiguous content that might not clearly indicate file type";
-        
+
         let detected_type = detector.detect_type(&path, content).unwrap();
         let confidence = detector.get_confidence(&path, content);
-        
+
         // If detection succeeds, confidence should meet threshold
         if detected_type != FileType::Unknown {
-            prop_assert!(confidence >= threshold, 
+            prop_assert!(confidence >= threshold,
                 "Detected type confidence {} should meet threshold {}", confidence, threshold);
         }
     }
@@ -532,15 +562,15 @@ proptest! {
         let detector = HybridDetector::new();
         let path = generate_file_path(file_type).new_tree(&mut Default::default()).unwrap().current();
         let content = generate_file_content(file_type).new_tree(&mut Default::default()).unwrap().current();
-        
+
         // First detection
         let result1 = detector.detect_type(&path, &content).unwrap();
         let confidence1 = detector.get_confidence(&path, &content);
-        
+
         // Second detection (should use cache)
         let result2 = detector.detect_type(&path, &content).unwrap();
         let confidence2 = detector.get_confidence(&path, &content);
-        
+
         // Results should be identical
         prop_assert_eq!(result1, result2);
         prop_assert!((confidence1 - confidence2).abs() < 0.001, "Confidence should be consistent");
@@ -554,11 +584,11 @@ proptest! {
     ) {
         let detector = HybridDetector::new();
         let path = PathBuf::from(path_str);
-        
+
         // Detection should never panic, even with malformed content
         let result = detector.detect_type(&path, &malformed_content);
         prop_assert!(result.is_ok(), "Detection should handle malformed content gracefully");
-        
+
         let confidence = detector.get_confidence(&path, &malformed_content);
         prop_assert!((0.0..=1.0).contains(&confidence), "Confidence should be valid range");
     }
@@ -571,16 +601,16 @@ proptest! {
         let detector = HybridDetector::new();
         let path = generate_file_path(file_type).new_tree(&mut Default::default()).unwrap().current();
         let content = generate_file_content(file_type).new_tree(&mut Default::default()).unwrap().current();
-        
+
         // Detect file type
         let detected_type = detector.detect_type(&path, &content).unwrap();
-        
+
         // Get parser for detected type
         let parser_result = detector.get_parser(detected_type);
-        
+
         if detected_type != FileType::Unknown {
             prop_assert!(parser_result.is_ok(), "Should be able to get parser for detected type");
-            
+
             // Try to parse content (this validates the entire pipeline)
             if let Ok(_parser) = parser_result {
                 let _content_str = String::from_utf8_lossy(&content);
@@ -602,17 +632,19 @@ mod unit_tests {
     #[test]
     fn test_basic_extension_detection() {
         let detector = HybridDetector::new();
-        
+
         // Test Rust
         let rust_path = PathBuf::from("main.rs");
         let result = detector.detect_type(&rust_path, b"fn main() {}").unwrap();
         assert_eq!(result, FileType::Rust);
-        
+
         // Test Python
         let python_path = PathBuf::from("script.py");
-        let result = detector.detect_type(&python_path, b"def main(): pass").unwrap();
+        let result = detector
+            .detect_type(&python_path, b"def main(): pass")
+            .unwrap();
         assert_eq!(result, FileType::Python);
-        
+
         // Test Markdown
         let md_path = PathBuf::from("README.md");
         let result = detector.detect_type(&md_path, b"# Title").unwrap();
@@ -623,12 +655,12 @@ mod unit_tests {
     fn test_shebang_detection() {
         let detector = HybridDetector::new();
         let path = PathBuf::from("script");
-        
+
         // Python shebang
         let python_content = b"#!/usr/bin/env python3\nprint('hello')";
         let result = detector.detect_type(&path, python_content).unwrap();
         assert_eq!(result, FileType::Python);
-        
+
         // Bash shebang
         let bash_content = b"#!/bin/bash\necho 'hello'";
         let result = detector.detect_type(&path, bash_content).unwrap();
@@ -638,12 +670,12 @@ mod unit_tests {
     #[test]
     fn test_confidence_scoring() {
         let detector = HybridDetector::new();
-        
+
         // High confidence for clear extension match
         let rust_path = PathBuf::from("main.rs");
         let confidence = detector.get_confidence(&rust_path, b"fn main() {}");
         assert!(confidence > 0.8);
-        
+
         // Lower confidence for ambiguous content
         let unknown_path = PathBuf::from("unknown");
         let confidence = detector.get_confidence(&unknown_path, b"random content");
@@ -655,7 +687,7 @@ mod unit_tests {
         let config = DetectionConfig::new()
             .with_custom_extension("mylang", FileType::Unknown)
             .with_confidence_threshold(0.8);
-        
+
         let detector = HybridDetector::with_config(config);
         let path = PathBuf::from("test.mylang");
         let result = detector.detect_type(&path, b"custom content").unwrap();
@@ -665,12 +697,12 @@ mod unit_tests {
     #[test]
     fn test_empty_and_binary_content() {
         let detector = HybridDetector::new();
-        
+
         // Empty content
         let path = PathBuf::from("empty.rs");
         let result = detector.detect_type(&path, b"");
         assert!(result.is_ok());
-        
+
         // Binary content
         let binary_content = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
         let result = detector.detect_type(&path, &binary_content);

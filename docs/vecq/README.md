@@ -33,27 +33,38 @@ vecq src/main.rs
 *Defaults to outputting the full JSON structure.*
 
 ### 2. Querying
-Use `jq` syntax to filter the output.
+Use `jq` syntax to filter the output. **Important**: Always use `--` to separate input files from queries.
 ```bash
 # List all functions
-vecq src/main.rs '.functions[] | .name'
+vecq src/main.rs -- '.functions[] | .name'
 
 # List public functions
-vecq src/main.rs '.functions[] | select(.visibility == "pub") | .name'
+vecq src/main.rs -- '.functions[] | select(.visibility == "pub") | .name'
+
+# Alternative: use -q flag
+vecq src/main.rs -q '.functions[] | select(.visibility == "pub") | .name'
 
 # Load query from file
-vecq src/main.rs -f queries/public_functions.jq
+vecq src/main.rs -f queries/public_functions.jq --
 
 # Use custom library functions
 vecq src/main.rs -L ~/.config/vecq/functions -q 'my_custom_filter'
 ```
 
-> **Note on `-q` flag**: While you can pass the query as a positional argument (e.g., `vecq file.rs '.filter'`), using `-q` (`vecq file.rs -q '.filter'`) is recommended when piping input to avoid ambiguity.
-
 ### 3. Integration
 Output in grep-compatible format for editor integration:
 ```bash
-vecq src/ --grep-format -q '.functions[] | select(.name | contains("test"))'
+vecq src/ --grep-format -- '.functions[] | select(.name | contains("test"))'
+```
+
+### 4. Batch Processing
+Process multiple files with Unix tools:
+```bash
+# Find functions across multiple files
+find src -name "*.rs" | xargs -I {} vecq {} -- '.functions[].name'
+
+# Count functions per file
+find src -name "*.rs" | xargs -I {} sh -c 'echo -n "{}: "; vecq {} -- ".functions | length"'
 ```
 
 ### 4. Syntax Highlighting
@@ -91,16 +102,9 @@ $ vecq list-filters
 $ vecq --list-types
 
 Supported file types:
-  Markdown (md, markdown)
-  Rust (rs)
-  Python (py, pyw)
-  C (c, h)
-  C++ (cpp, cc, cxx, hpp, hxx)
-  CUDA (cu, cuh)
-  Go (go)
-  Bash (sh, bash)
-  JSON (json, jsonl, ndjson)
-
+  Rust (.rs), Python (.py), Markdown (.md), C (.c, .h),
+  C++ (.cpp, .hpp), CUDA (.cu), Go (.go), Bash (.sh),
+  HTML (.html), JSON (.json), TOML (.toml), Text (any)
 ```
 
 ### Man Page
@@ -133,6 +137,21 @@ To see the exact schema for a file, run `vecq --convert <file>`.
 - `.structs[]`: Class/Struct definitions (`{ name, content }`)
 - `.imports[]`: Import statements
 - `.comments[]`: Top-level comments
+
+## Troubleshooting
+
+### Common Issues
+- **"Input path does not exist"**: This usually means your query is being interpreted as a file path. Always use `--` to separate files from queries: `vecq file.rs -- '.query'`
+- **No output**: Use `--convert` first to see the JSON structure of your file
+- **Pipeline issues**: When using `xargs`, use `-I {}` syntax: `find . -name "*.rs" | xargs -I {} vecq {} -- '.query'`
+- **Query syntax errors**: Use `--explain` to debug queries (though this feature may be limited)
+
+### Getting Help
+- `vecq --help`: Basic usage and current examples
+- `vecq man`: Human-readable manual
+- `vecq man --agent`: Technical reference for agents/tools
+- `vecq elements <language>`: See what structural elements are detectable
+- `vecq suggest "description"`: Get query suggestions
 
 ## Documentation
 *   [Examples](EXAMPLES.md): Common recipes and query patterns.

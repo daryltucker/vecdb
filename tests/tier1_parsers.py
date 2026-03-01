@@ -52,7 +52,7 @@ def test_search_json():
     print("--- Verifying JSON ---")
     # Search for flattened key
     # Search for flattened key in the JSON object
-    result = run_command(f"{BINARY_PATH} search 'config.server.port'")
+    result = run_command(f"{BINARY_PATH} search -M 'config.server.port'")
     
     # With recursive AST/TreeSitter, we might get the full JSON object for the block
     # Expected: {"server":{"host":"0.0.0.0","port":8080}} or similar structure
@@ -63,7 +63,7 @@ def test_search_json():
         sys.exit(1)
     
     # Search for array content
-    result = run_command(f"{BINARY_PATH} search 'users[0].name'")
+    result = run_command(f"{BINARY_PATH} search -M 'users[0].name'")
     # Should find alice
     if 'alice' not in result.stdout:
         print("FAILED: JSON array content (alice) not found.")
@@ -75,7 +75,7 @@ def test_search_yaml():
     """Verifies YAML flattening."""
     print("--- Verifying YAML ---")
     # Search for flattened key
-    result = run_command(f"{BINARY_PATH} search 'app.database.host'")
+    result = run_command(f"{BINARY_PATH} search -M 'app.database.host'")
     
     # TreeSitter/Recursive parser preserves structure, it does NOT flatten keys like the old linear parser.
     # So we should expect to find the content block containing the key.

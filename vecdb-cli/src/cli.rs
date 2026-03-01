@@ -1,7 +1,7 @@
-use clap::{Parser, CommandFactory};
+use crate::commands::{self, Commands};
+use clap::{CommandFactory, Parser};
 use clap_complete::generate;
 use vecdb_core::config::Config;
-use crate::commands::{self, Commands};
 
 #[derive(Parser, Debug)]
 #[command(name = "vecdb")]
@@ -28,23 +28,19 @@ pub async fn run() -> anyhow::Result<()> {
     // Build Version String
     let app_version = env!("CARGO_PKG_VERSION");
     let ort_version = vecdb_core::get_ort_version();
-    let long_version = format!(
-        "vecdb v{}\nONNX v{}", 
-        app_version, 
-        ort_version
-    );
+    let long_version = format!("vecdb v{}\nONNX v{}", app_version, ort_version);
 
     // We manually build the command to inject the version
     let long_version_static: &'static str = Box::leak(long_version.into_boxed_str());
     let cmd = Cli::command().version(long_version_static);
-    
+
     // Parse using the modified command definition
     let matches = cmd.get_matches();
-    
+
     // Convert matches back to Cli struct
     use clap::FromArgMatches;
     let cli = Cli::from_arg_matches(&matches)?;
-    
+
     // Safety Check for Init:
     if let Commands::Init = cli.command {
         let path = Config::get_path()?;
@@ -57,9 +53,9 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     // Load Configuration
-    let mut config = Config::load()?; 
-    let base_profile_name = cli.profile.as_deref().unwrap_or(&config.default_profile).to_string();
-    
+    let mut config = Config::load()?;
+    let profile_arg = cli.profile.as_deref();
+
     let format = resolve_format_flags(cli.json, cli.markdown);
 
     match cli.command {
@@ -69,33 +65,38 @@ pub async fn run() -> anyhow::Result<()> {
             return Ok(());
         }
         Commands::Init => {
-            let path = Config::get_path()?; 
+            let path = Config::get_path()?;
             println!("✅ Initialized new configuration at: {:?}", path);
             println!("   Default Profile: {}", config.default_profile);
             println!("   Edit this file to configure your profiles and keys.");
         }
-        Commands::Ingest(args) => commands::ingest::run(args, &config, &base_profile_name).await?,
-        Commands::Search(args) => commands::search::run(args, &config, &base_profile_name, format).await?,
-        Commands::List => commands::list::run(&config, &base_profile_name, format).await?,
-        Commands::Status(args) => commands::status::run(args, &config, &base_profile_name, format).await?,
+        Commands::Ingest(args) => commands::ingest::run(args, &config, profile_arg).await?,
+        Commands::Search(args) => {
+            commands::search::run(args, &config, profile_arg, format).await?
+        }
+        Commands::List => commands::list::run(&config, profile_arg, format).await?,
+        Commands::Status(args) => {
+            commands::status::run(args, &config, profile_arg, format).await?
+        }
         Commands::Delete(args) => {
-            let profile = config.resolve_profile(Some(&base_profile_name), args.collection.as_deref())?;
+            let profile =
+                config.resolve_profile(profile_arg, args.collection.as_deref())?;
             // Delete needs full core construction in main if not moved?
             // Actually I should have moved delete logic to commands/delete.rs fully including core creation.
-            // Let's check status.rs/delete.rs - status.rs did core creation. 
+            // Let's check status.rs/delete.rs - status.rs did core creation.
             // commands/delete.rs currently likely just holds args and run?
             // Existing delete.rs has run that takes &Core.
-            // I should wrap it or duplicate core creation here. 
+            // I should wrap it or duplicate core creation here.
             // Better: update delete.rs to create core like others?
             // For now, I will construct core here to keep existing delete.rs intact if possible,
             // OR update delete.rs. Given I updated others to create Core, I should probably do it for delete too.
             // But let's look at `commands/delete.rs` content first? I didn't verify it.
             // I'll stick to constructing core here for Delete to avoid touching unverified file if possible, or assume similar pattern.
-            // Actually, consistency suggests moving core creation to delete.rs. 
+            // Actually, consistency suggests moving core creation to delete.rs.
             // But I cannot see delete.rs right now.
             // I'll instantiate Core here for Delete.
-            use std::sync::Arc;
             use crate::vecq_adapter::VecqParserFactory;
+            use std::sync::Arc;
             use vecq::detection::HybridDetector;
             let file_detector = Arc::new(HybridDetector::new());
             let parser_factory = Arc::new(VecqParserFactory);
@@ -113,28 +114,39 @@ pub async fn run() -> anyhow::Result<()> {
                 config.smart_routing_keys.clone(),
                 config.ingestion.path_rules.clone(),
                 config.ingestion.max_concurrent_requests,
-                config.ingestion.gpu_batch_size,
+                config.resolve_gpu_batch_size(&profile, args.collection.as_deref()),
+                profile.num_ctx,
                 file_detector.clone(),
                 parser_factory.clone(),
-            ).await?;
+            )
+            .await?;
             commands::delete::run(&core, args).await?;
         }
-        Commands::Snapshot(args) => commands::snapshot::run(args, &config, &base_profile_name).await?,
+        Commands::Snapshot(args) => {
+            commands::snapshot::run(args, &config, profile_arg).await?
+        }
         Commands::Man(args) => commands::man::run(args)?,
         Commands::Config(args) => commands::config::run(args, &mut config)?,
-        Commands::Optimize(args) => commands::optimize::run(args, &config, &base_profile_name).await?,
-        Commands::History(args) => commands::history::run(args, &config, &base_profile_name).await?,
+        Commands::Optimize(args) => {
+            commands::optimize::run(args, &config, profile_arg).await?
+        }
+        Commands::History(args) => {
+            commands::history::run(args, &config, profile_arg).await?
+        }
+        Commands::EnableUsages(args) => {
+            commands::enable_usages::run(args).await?
+        }
     }
-    
+
     Ok(())
 }
 
 fn resolve_format_flags(json: bool, markdown: bool) -> vecdb_common::output::OutputFormat {
     if json {
-         vecdb_common::output::OutputFormat::Json
+        vecdb_common::output::OutputFormat::Json
     } else if markdown {
-         vecdb_common::output::OutputFormat::Markdown
+        vecdb_common::output::OutputFormat::Markdown
     } else {
-         vecdb_common::output::OutputContext::detect().resolve_format()
+        vecdb_common::output::OutputContext::detect().resolve_format()
     }
 }

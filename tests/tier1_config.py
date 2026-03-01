@@ -84,9 +84,9 @@ def test_qdrant_url():
             log(f"FAIL: qdrant_url missing or invalid: {qdrant_url}", "FAIL")
             return False
         
-        if "6335" not in qdrant_url:
+        if "6335" not in qdrant_url and "6336" not in qdrant_url:
             log(f"FAIL: Config uses production Qdrant! URL: {qdrant_url}", "FAIL")
-            log("       Expected: http://localhost:6335 (test instance)", "FAIL")
+            log("       Expected: http://localhost:6335 or 6336 (test instance)", "FAIL")
             return False
         
         log(f"PASS: Qdrant URL correct: {qdrant_url}", "PASS")

@@ -6,8 +6,8 @@ import time
 import json
 
 # Configuration
-VECDB_BINARY = "./target/release/vecdb"
-VECQ_BINARY = "./target/release/vecq"
+VECDB_BINARY = "./target/debug/vecdb"
+VECQ_BINARY = "./target/debug/vecq"
 TEST_REPO_DIR = "tests_tmp_repo"
 
 def run_cmd(cmd, cwd=".", check=True):

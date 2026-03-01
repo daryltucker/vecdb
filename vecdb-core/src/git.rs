@@ -78,7 +78,8 @@ impl GitSandbox {
         }
 
         // 1. Clone
-        let repo_url = sandbox_path.to_str()
+        let repo_url = sandbox_path
+            .to_str()
             .ok_or_else(|| anyhow::anyhow!("Sandbox path contains invalid UTF-8"))?;
 
         let status = Command::new("git")
@@ -94,11 +95,11 @@ impl GitSandbox {
             .args(["checkout", git_ref])
             .current_dir(&sandbox_path)
             .status()?;
-            
+
         if !status.success() {
-             // Cleanup if checkout fails
-             let _ = std::fs::remove_dir_all(&sandbox_path);
-             return Err(anyhow::anyhow!("Failed to checkout ref: {}", git_ref));
+            // Cleanup if checkout fails
+            let _ = std::fs::remove_dir_all(&sandbox_path);
+            return Err(anyhow::anyhow!("Failed to checkout ref: {}", git_ref));
         }
 
         Ok(Self { path: sandbox_path })

@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
                 if agent {
                     println!("{}", include_str!("../README.md")); 
                 } else {
-                    println!("docsize v0.0.9 - Contextualized LLM wrapper");
+                    println!("docsize v1.0.0 - Contextualized LLM wrapper");
                     println!("Usage: docsize [QUERY] [-d DIR] [-m MODEL] [-a]");
                 }
                 return Ok(());
