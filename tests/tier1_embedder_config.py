@@ -9,7 +9,7 @@ This test verifies:
 4. Search with local embeddings
 5. Configuration switching (if Ollama available)
 
-Requires: Qdrant running on localhost:6334
+Requires: Qdrant running on localhost:6336 (test instance, see tests/fixtures/config.toml)
 """
 
 import subprocess
@@ -19,8 +19,8 @@ import os
 import tempfile
 import shutil
 
-# Test configuration
-QDRANT_URL = "http://localhost:6334"
+# Test configuration — use test Qdrant instance (port 6336), never production (6334)
+QDRANT_URL = os.environ.get("VECDB_TEST_QDRANT_URL", "http://localhost:6336")
 TEST_COLLECTION = "tier1_embedder_test"
 VECDB_CLI = "./target/debug/vecdb"
 
@@ -31,19 +31,24 @@ def fail(msg):
     print(f"[FAIL] {msg}", file=sys.stderr)
     sys.exit(1)
 
-def run_vecdb(args, check=True, capture_output=True):
-    """Run vecdb CLI command"""
+def run_vecdb(args, check=True, capture_output=True, config_path=None):
+    """Run vecdb CLI command with an isolated VECDB_CONFIG."""
     cmd = [VECDB_CLI] + args
-    result = subprocess.run(cmd, capture_output=capture_output, text=True)
+    env = os.environ.copy()
+    if config_path:
+        env["VECDB_CONFIG"] = config_path
+    result = subprocess.run(cmd, capture_output=capture_output, text=True, env=env)
     if check and result.returncode != 0:
         fail(f"Command failed: {' '.join(cmd)}\nstderr: {result.stderr}")
     return result
 
 def check_qdrant():
-    """Verify Qdrant is running"""
+    """Verify Qdrant is running (uses HTTP REST port derived from gRPC URL)"""
     try:
         import urllib.request
-        req = urllib.request.urlopen(f"{QDRANT_URL.replace('6334', '6333')}/collections", timeout=5)
+        # Test Qdrant gRPC is 6336; HTTP REST is 6335. Production: gRPC 6334, HTTP 6333.
+        http_url = QDRANT_URL.replace(":6336", ":6335").replace(":6334", ":6333")
+        req = urllib.request.urlopen(f"{http_url}/collections", timeout=5)
         return req.status == 200
     except Exception as e:
         return False
@@ -52,8 +57,9 @@ def cleanup_collection():
     """Delete test collection if it exists"""
     try:
         import urllib.request
+        http_url = QDRANT_URL.replace(":6336", ":6335").replace(":6334", ":6333")
         req = urllib.request.Request(
-            f"{QDRANT_URL.replace('6334', '6333')}/collections/{TEST_COLLECTION}",
+            f"{http_url}/collections/{TEST_COLLECTION}",
             method='DELETE'
         )
         urllib.request.urlopen(req, timeout=5)
@@ -61,45 +67,27 @@ def cleanup_collection():
     except:
         pass  # Collection might not exist
 
-def create_test_config(embedder_type="local"):
-    """Create a temporary config file"""
+def create_test_config(tmpdir, embedder_type="local"):
+    """Write a test config file into tmpdir. Returns the config file path.
+    Uses VECDB_CONFIG env var — never mutates ~/.config/vecdb/config.toml.
+    """
     config_content = f"""
 default_profile = "test"
 
 [profiles.test]
 qdrant_url = "{QDRANT_URL}"
-collection_name = "{TEST_COLLECTION}"
+default_collection_name = "{TEST_COLLECTION}"
 embedder_type = "{embedder_type}"
 ollama_url = "http://localhost:11434"
 embedding_model = "nomic-embed-text"
 
 [ingestion]
-default_strategy = "recursive"
 chunk_size = 256
 """
-    config_dir = os.path.expanduser("~/.config/vecdb")
-    os.makedirs(config_dir, exist_ok=True)
-    config_path = os.path.join(config_dir, "config.toml")
-    
-    # Backup existing config
-    backup_path = None
-    if os.path.exists(config_path):
-        backup_path = config_path + ".backup"
-        shutil.copy(config_path, backup_path)
-    
+    config_path = os.path.join(tmpdir, "config.toml")
     with open(config_path, 'w') as f:
         f.write(config_content)
-    
-    return backup_path
-
-def restore_config(backup_path):
-    """Restore original config"""
-    config_path = os.path.expanduser("~/.config/vecdb/config.toml")
-    if backup_path and os.path.exists(backup_path):
-        shutil.move(backup_path, config_path)
-        log("Restored original config")
-    elif os.path.exists(config_path):
-        os.remove(config_path)
+    return config_path
 
 def create_test_fixtures():
     """Create temporary test files"""
@@ -125,32 +113,32 @@ Semantic search finds similar content based on meaning.
 def test_local_embedder():
     """Test the local embedder configuration and functionality"""
     log("Testing Local Embedder...")
-    
-    # Create test config with local embedder
-    backup_path = create_test_config("local")
-    tmpdir = create_test_fixtures()
-    
+
+    tmpdir = tempfile.mkdtemp(prefix="vecdb_embedder_test_")
+    config_path = create_test_config(tmpdir, "local")
+    fixture_dir = create_test_fixtures()
+
     try:
         # 1. Verify CLI loads
-        result = run_vecdb(["--help"], check=False)
+        result = run_vecdb(["--help"], check=False, config_path=config_path)
         if result.returncode == 0:
             log("✓ CLI loads successfully")
-        
+
         # 2. Ingest test files
         log("Ingesting test files...")
-        result = run_vecdb(["ingest", tmpdir, "-c", TEST_COLLECTION])
+        result = run_vecdb(["ingest", fixture_dir, "-c", TEST_COLLECTION], config_path=config_path)
         log(f"Ingest output: {result.stdout[:200] if result.stdout else '(no output)'}")
-        
+
         # Check stderr for embedder type message
         if "Using local embedder" in result.stderr:
             log("✓ Local embedder confirmed in use")
         else:
             log(f"Note: stderr = {result.stderr[:200] if result.stderr else '(empty)'}")
-        
+
         # 3. Search for known content
         log("Searching for 'vector embeddings'...")
-        result = run_vecdb(["search", "-c", TEST_COLLECTION, "--json", "vector embeddings"])
-        
+        result = run_vecdb(["search", "-c", TEST_COLLECTION, "--json", "vector embeddings"], config_path=config_path)
+
         if result.stdout:
             try:
                 results = json.loads(result.stdout)
@@ -163,22 +151,21 @@ def test_local_embedder():
                 log(f"⚠ Could not parse search output: {result.stdout[:100]}")
         else:
             log("⚠ No search output")
-        
+
         # 4. List collections
         log("Listing collections...")
-        result = run_vecdb(["list"])
+        result = run_vecdb(["list"], config_path=config_path)
         if TEST_COLLECTION in result.stdout:
             log(f"✓ Test collection appears in list")
         else:
             log(f"⚠ Collection not in list: {result.stdout[:200]}")
-        
+
         log("✓ Local embedder test completed")
         return True
-        
+
     finally:
-        # Cleanup
-        restore_config(backup_path)
         shutil.rmtree(tmpdir, ignore_errors=True)
+        shutil.rmtree(fixture_dir, ignore_errors=True)
         cleanup_collection()
 
 def main():
@@ -191,7 +178,7 @@ def main():
         fail(f"CLI not found at {VECDB_CLI}. Run: cargo build")
     
     if not check_qdrant():
-        fail("Qdrant not running. Start with: docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant")
+        fail(f"Test Qdrant not running at {QDRANT_URL}. Start test instance with: docker run -p 6335:6334 -p 6336:6333 qdrant/qdrant")
     
     log("✓ Prerequisites OK")
     

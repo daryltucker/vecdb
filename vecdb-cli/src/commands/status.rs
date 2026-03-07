@@ -43,7 +43,7 @@ pub async fn run(
         config.smart_routing_keys.clone(),
         config.ingestion.path_rules.clone(),
         config.ingestion.max_concurrent_requests,
-        config.resolve_gpu_batch_size(&profile, None),
+        config.resolve_gpu_batch_size(profile, None),
         profile.num_ctx,
         file_detector.clone(),
         parser_factory.clone(),

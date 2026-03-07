@@ -12,10 +12,10 @@ class InstalledBinaryTest(unittest.TestCase):
         self.test_dir = tempfile.mkdtemp()
         self.config_path = os.path.join(self.test_dir, "config.toml")
         
-        # Point to mocked qdrant just so it starts
+        # ALL TESTS MUST USE TEST QDRANT — NEVER PRODUCTION (6333/6334)
         config_content = """
 [profiles.default]
-qdrant_url = "http://localhost:6334"
+qdrant_url = "http://localhost:6336"
 collection_name = "install_verify_test"
 ollama_url = "http://localhost:11434"
 embedding_model = "nomic-embed-text"
@@ -38,7 +38,7 @@ accept_invalid_certs = true
         print(f"Testing binary at: {self.server_bin}")
         
         self.process = subprocess.Popen(
-            [self.server_bin, "--allow-local-fs"],
+            [self.server_bin, "--stdio", "--allow-local-fs"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

@@ -90,9 +90,20 @@ pub async fn ingest_path(
     let remote_id = match backend.get_collection_id(&collection_name).await? {
         Some(id) => id,
         None => {
-            // Collection exists but has no ID (legacy or just created without ID)
+            // Collection exists but has no ID (legacy or just created without ID).
+            // set_collection_id is best-effort: if it fails (e.g. dimension unknown on a
+            // freshly created collection), we fall back to a local-only UUID and warn.
+            // The worst case is a full re-scan on the next ingest — never data corruption.
             let new_id = uuid::Uuid::new_v4().to_string();
-            backend.set_collection_id(&collection_name, &new_id).await?;
+            if let Err(e) = backend.set_collection_id(&collection_name, &new_id).await {
+                if OUTPUT.is_interactive {
+                    eprintln!(
+                        "Warning: Could not persist collection ID for '{}': {}. \
+                         Next ingest will perform a full scan.",
+                        collection_name, e
+                    );
+                }
+            }
             new_id
         }
     };
@@ -208,7 +219,14 @@ pub async fn ingest_path(
                         continue;
                     }
 
-                    let rel_path = path.strip_prefix(root_path).unwrap_or(&path).to_path_buf();
+                    let stripped = path.strip_prefix(root_path).unwrap_or(&path);
+                    let canonical_root = std::fs::canonicalize(root_path).unwrap_or_else(|_| root_path.to_path_buf());
+                    let project_dir_name = canonical_root.file_name().unwrap_or_else(|| std::ffi::OsStr::new(""));
+                    let rel_path = if project_dir_name.is_empty() {
+                        stripped.to_path_buf()
+                    } else {
+                        std::path::Path::new(project_dir_name).join(stripped)
+                    };
 
                     if let Ok(meta_hash) = crate::state::compute_file_metadata_hash(&path) {
                         if !state.update_file(&collection_name, rel_path.clone(), meta_hash.clone())
@@ -282,7 +300,7 @@ pub async fn ingest_path(
 
                     if chunks_buffer.len() >= batch_size {
                         let batch = std::mem::take(&mut chunks_buffer);
-                        if let Err(_) = tx.send(batch).await {
+                        if (tx.send(batch).await).is_err() {
                              // Background worker failed. Break to catch the real error below.
                              break 'discovery_loop;
                         }
@@ -321,7 +339,7 @@ pub async fn ingest_path(
                 chunks_buffer.append(&mut file_chunks);
                 if chunks_buffer.len() >= batch_size {
                     let batch = std::mem::take(&mut chunks_buffer);
-                    if let Err(_) = tx.send(batch).await {
+                    if (tx.send(batch).await).is_err() {
                         break 'parsing_finish;
                     }
                 }

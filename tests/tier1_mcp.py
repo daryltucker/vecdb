@@ -30,7 +30,8 @@ def load_test_config():
     config_path = os.path.join(os.path.dirname(__file__), "fixtures", "config.toml")
     with open(config_path, "rb") as f:
         config = tomllib.load(f)
-    return config.get("qdrant_url", "http://localhost:6333")  # Default to prod if missing
+    # ALL TESTS MUST USE TEST QDRANT — NEVER PRODUCTION (6333/6334)
+    return config.get("qdrant_url", "http://localhost:6336")
 
 def cleanup_tier1():
     """Cleanup phase - remove state files so ingestion actually processes files"""

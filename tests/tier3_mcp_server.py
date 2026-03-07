@@ -35,6 +35,8 @@ def main():
     env = os.environ.copy()
     env["XDG_CONFIG_HOME"] = config_dir
     env["VECDB_ALLOW_LOCAL_FS"] = "true" # Enable for test
+    # Unset VECDB_CONFIG so XDG_CONFIG_HOME takes effect (run_all.sh force-sets it).
+    env.pop("VECDB_CONFIG", None)
     
     log(f"Config Dir: {config_dir}")
 
@@ -54,7 +56,7 @@ def main():
         # 3. Start Server Process
         log("Starting Server Process...")
         process = subprocess.Popen(
-            [server_bin, "--allow-local-fs"],
+            [server_bin, "--stdio", "--allow-local-fs"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

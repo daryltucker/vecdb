@@ -81,20 +81,23 @@ pub async fn run() -> anyhow::Result<()> {
         Commands::Delete(args) => {
             let profile =
                 config.resolve_profile(profile_arg, args.collection.as_deref())?;
-            // Delete needs full core construction in main if not moved?
-            // Actually I should have moved delete logic to commands/delete.rs fully including core creation.
-            // Let's check status.rs/delete.rs - status.rs did core creation.
-            // commands/delete.rs currently likely just holds args and run?
-            // Existing delete.rs has run that takes &Core.
-            // I should wrap it or duplicate core creation here.
-            // Better: update delete.rs to create core like others?
-            // For now, I will construct core here to keep existing delete.rs intact if possible,
-            // OR update delete.rs. Given I updated others to create Core, I should probably do it for delete too.
-            // But let's look at `commands/delete.rs` content first? I didn't verify it.
-            // I'll stick to constructing core here for Delete to avoid touching unverified file if possible, or assume similar pattern.
-            // Actually, consistency suggests moving core creation to delete.rs.
-            // But I cannot see delete.rs right now.
-            // I'll instantiate Core here for Delete.
+                
+            if args.all {
+                let is_local = profile.qdrant_url.contains("localhost") 
+                    || profile.qdrant_url.contains("127.0.0.1") 
+                    || profile.qdrant_url.contains("0.0.0.0");
+                if !is_local {
+                    anyhow::bail!(
+                        "Bulk deletion (--all) is restricted to local backends to prevent accidental data loss on remote systems ({}). \
+                        To delete a remote collection, please specify it by name.", 
+                        profile.qdrant_url
+                    );
+                }
+            }
+
+            // Delete only needs the backend (Qdrant) — no embedder required.
+            // Set VECDB_SKIP_PROBE to prevent LocalEmbedder from eagerly loading the ONNX model.
+            unsafe { std::env::set_var("VECDB_SKIP_PROBE", "true"); }
             use crate::vecq_adapter::VecqParserFactory;
             use std::sync::Arc;
             use vecq::detection::HybridDetector;

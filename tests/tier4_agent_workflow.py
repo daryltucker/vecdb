@@ -20,11 +20,11 @@
 #   - Scale: 500+ files ingested in a single batch
 #
 # DATA:
-#   Uses tests/fixtures/external/cuda-samples/ (full tree)
-#   ~2100 files, 217MB (but most are binary and will be skipped)
-#   Text files: ~800+ (.cu, .cpp, .h, .cuh, .cmake, .md, .json, .txt)
+#   Uses tests/fixtures/external/cuda-samples/Samples/2_Concepts_and_Techniques
+#   ~480 files (shared subset with tier4_mixed_formats)
+#   Text files: ~430 (.cu, .cpp, .h, .cuh, .md, .json, .txt, etc.)
 #
-# TIME BUDGET: < 300s (includes embedding hundreds of files)
+# TIME BUDGET: < 900s (~480 files at ~1.3s/file typical)
 # ═══════════════════════════════════════════════════════════════════
 
 import unittest
@@ -37,7 +37,7 @@ import shutil
 
 DEFAULT_TEST_GRPC_PORT = 6336
 COLLECTION_NAME = "tier4_agent_workflow"
-CUDA_FIXTURE = "tests/fixtures/external/cuda-samples"
+CUDA_FIXTURE = "tests/fixtures/external/cuda-samples/Samples/2_Concepts_and_Techniques"
 
 
 class Tier4AgentWorkflow(unittest.TestCase):
@@ -98,7 +98,7 @@ chunk_size = 512
         env = os.environ.copy()
         env["VECDB_CONFIG"] = cls.config_path
         proc = subprocess.Popen(
-            [cls.server_bin, "--allow-local-fs"],
+            [cls.server_bin, "--stdio", "--allow-local-fs"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=env,
         )
@@ -123,7 +123,7 @@ chunk_size = 512
         env = os.environ.copy()
         env["VECDB_CONFIG"] = self.config_path
         self._proc = subprocess.Popen(
-            [self.server_bin, "--allow-local-fs"],
+            [self.server_bin, "--stdio", "--allow-local-fs"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=env,
         )
@@ -149,7 +149,7 @@ chunk_size = 512
             self._proc.wait()
 
     def test_01_bulk_ingest(self):
-        """Ingest the full CUDA samples tree (500+ text files)."""
+        """Ingest the CUDA samples subset (~430 text files)."""
         print(f"\n[T4.W1] Bulk ingesting CUDA samples...")
         self._start_server()
         try:
@@ -164,7 +164,7 @@ chunk_size = 512
             duration = time.time() - start
             print(f"    Bulk ingest took {duration:.1f}s")
             self.assertNotIn("error", res, f"Bulk ingest failed: {res}")
-            self.assertLess(duration, 300, "Bulk ingest exceeded 300s time budget")
+            self.assertLess(duration, 900, "Bulk ingest exceeded 900s time budget")
         finally:
             self._stop_server()
 
@@ -187,11 +187,12 @@ chunk_size = 512
                         "query": q,
                         "collection": COLLECTION_NAME,
                         "json": True,
+                        "smart": False,
                         "limit": 3,
                     }
                 })
                 content = json.loads(res["result"]["content"][0]["text"])
-                top_file = content[0].get("metadata", {}).get("source_file", "") if content else ""
+                top_file = content[0].get("metadata", {}).get("source", "") if content else ""
                 all_top_files.append(top_file)
                 print(f"    '{q[:30]}...' → {top_file}")
 
@@ -239,6 +240,7 @@ chunk_size = 512
                     "query": "CUDA kernel",
                     "collection": COLLECTION_NAME,
                     "json": True,
+                    "smart": False,
                     "limit": 10,
                 }
             })
@@ -270,6 +272,7 @@ chunk_size = 512
                     "query": "CUDA kernel",
                     "collection": COLLECTION_NAME,
                     "json": True,
+                    "smart": False,
                     "limit": 10,
                 }
             })

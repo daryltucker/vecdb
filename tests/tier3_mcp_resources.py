@@ -13,11 +13,11 @@ class Tier3ResourcesTest(unittest.TestCase):
         self.config_path = os.path.join(self.test_dir, "config.toml")
         
         # Use existing Qdrant if available (assuming previous tests left it running/available)
-        # For simplicity, we assume Qdrant on localhost:6334 (default)
-        
+        # ALL TESTS MUST USE TEST QDRANT — NEVER PRODUCTION (6333/6334)
+
         config_content = """
 [profiles.default]
-qdrant_url = "http://localhost:6334"
+qdrant_url = "http://localhost:6336"
 collection_name = "tier3_resources_test"
 ollama_url = "http://localhost:11434"
 embedding_model = "nomic-embed-text"
@@ -36,7 +36,7 @@ accept_invalid_certs = true
         self.server_bin = "./target/debug/vecdb-server"
         
         self.process = subprocess.Popen(
-            [self.server_bin, "--allow-local-fs"],
+            [self.server_bin, "--stdio", "--allow-local-fs"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -109,10 +109,10 @@ accept_invalid_certs = true
         # Now list again
         res = self._rpc("resources/list")
         resources = res["result"]["resources"]
-        target_uri = "vecdb://tier3_res_test"
+        target_uri = "vecdb://collections/tier3_res_test"
         found = any(r["uri"] == target_uri for r in resources)
         self.assertTrue(found, "Newly ingested collection should appear in resources")
-        
+
         # Read it
         res = self._rpc("resources/read", {"uri": target_uri})
         self.assertNotIn("error", res)

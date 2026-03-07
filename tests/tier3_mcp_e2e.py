@@ -104,7 +104,7 @@ accept_invalid_certs = true
         self.env = os.environ.copy()
         self.env["VECDB_CONFIG"] = self.config_path
         self.process = subprocess.Popen(
-            [self.server_bin, "--allow-local-fs"],
+            [self.server_bin, "--stdio", "--allow-local-fs"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

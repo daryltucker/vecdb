@@ -11,7 +11,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 authors = ["Sextant <daryl@daryltucker.com>"]
 license-file = "LICENSE"
@@ -19,33 +19,33 @@ repository = "https://github.com/daryltucker/vecdb"
 
 [workspace.dependencies]
 # Core
-vecdb-common = { path = "vecdb-common", version = "1.0.0" }
-vecdb-core = { path = "vecdb-core", version = "1.0.0" }
-vecq = { path = "vecq", version = "1.0.0" }
-tokio = { version = "1.49.0", features = ["full"] }
-serde = { version = "1.0.228", features = ["derive"] }
+vecdb-common = { path = "vecdb-common", version = "1.0.1" }
+vecdb-core = { path = "vecdb-core", version = "1.0.1" }
+vecq = { path = "vecq", version = "1.0.1" }
+tokio = { version = "1.50.0", features = ["full"] }
+serde = { version = "1.0.128", features = ["derive"] }
 serde_json = "1.0.149"
-thiserror = "2.0.17"
-anyhow = "1.0.100"
+thiserror = "2.0.18"
+anyhow = "1.0.102"
 async-trait = "0.1.89"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.22"
-uuid = { version = "1.19.0", features = ["v4", "v5", "serde"] }
-chrono = { version = "0.4.42", features = ["serde"] }
+uuid = { version = "1.21.0", features = ["v4", "v5", "serde"] }
+chrono = { version = "0.4.44", features = ["serde"] }
 
 # Configuration
-toml = "0.9.11"
+toml = "1.0.4"
 dotenvy = "0.15.7"
 
 # CLI
-clap = { version = "4.5.54", features = ["derive", "env"] }
-clap_complete = "4.5.65"
+clap = { version = "4.5.60", features = ["derive", "env"] }
+clap_complete = "4.5.66"
 
 # TLS
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 
 # Vector DB
-qdrant-client = "1.16.0"
+qdrant-client = "1.17.0"
 
 # ML / Embeddings
 infer = "0.19.0"

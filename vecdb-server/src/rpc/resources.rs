@@ -1,14 +1,23 @@
 // Resource handlers for vecdb-server JSON-RPC interface
 // Handles resources/list and resources/read requests
 
+use crate::core_registry::CoreRegistry;
 use crate::rpc::types::{JsonRpcError, JsonRpcRequest};
 use serde_json::json;
-use vecdb_core::config::Config;
-use vecdb_core::Core;
 use std::sync::Arc;
+use vecdb_core::config::Config;
 
 /// Handle resources/list request
-pub async fn handle_resources_list(core: &Arc<Core>) -> Result<serde_json::Value, JsonRpcError> {
+pub async fn handle_resources_list(
+    registry: &Arc<CoreRegistry>,
+    config: &Arc<Config>,
+) -> Result<serde_json::Value, JsonRpcError> {
+    let core = registry.boot_core(config).await.map_err(|e| JsonRpcError {
+        code: -32000,
+        message: e.to_string(),
+        data: None,
+    })?;
+
     let collections = core.list_collections().await.map_err(|e| JsonRpcError {
         code: -32000,
         message: e.to_string(),
@@ -50,8 +59,8 @@ pub async fn handle_resources_list(core: &Arc<Core>) -> Result<serde_json::Value
 
 /// Handle resources/read request
 pub async fn handle_resources_read(
-    core: &Arc<Core>,
-    config: &Config,
+    registry: &Arc<CoreRegistry>,
+    config: &Arc<Config>,
     req: &JsonRpcRequest,
     active_profile_name: &str,
 ) -> Result<serde_json::Value, JsonRpcError> {
@@ -80,6 +89,12 @@ pub async fn handle_resources_read(
     }
 
     if uri == "vecdb://registry" || uri == "vecdb://services" {
+        let core = registry.boot_core(config).await.map_err(|e| JsonRpcError {
+            code: -32000,
+            message: e.to_string(),
+            data: None,
+        })?;
+
         let collections = core.list_collections().await.map_err(|e| JsonRpcError {
             code: -32000,
             message: e.to_string(),
@@ -95,7 +110,7 @@ pub async fn handle_resources_read(
                 data: None,
             })?;
 
-        let registry = json!({
+        let registry_data = json!({
             "status": "online",
             "active_profile": active_profile_name,
             "default_collection": profile.default_collection_name,
@@ -109,7 +124,7 @@ pub async fn handle_resources_read(
                 {
                     "uri": uri,
                     "mimeType": "application/json",
-                    "text": serde_json::to_string_pretty(&registry).map_err(|e| JsonRpcError {
+                    "text": serde_json::to_string_pretty(&registry_data).map_err(|e| JsonRpcError {
                         code: -32603,
                         message: format!("Serialization error: {}", e),
                         data: None,
@@ -122,6 +137,12 @@ pub async fn handle_resources_read(
 
     // Handle collection-specific URIs
     if let Some(collection_name) = uri.strip_prefix("vecdb://collections/") {
+        let core = registry.boot_core(config).await.map_err(|e| JsonRpcError {
+            code: -32000,
+            message: e.to_string(),
+            data: None,
+        })?;
+
         let collections = core.list_collections().await.map_err(|e| JsonRpcError {
             code: -32000,
             message: e.to_string(),

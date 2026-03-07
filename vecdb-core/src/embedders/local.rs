@@ -116,7 +116,9 @@ impl LocalEmbedder {
         // progress bars (like in `ingest`) are started.
         // If we wait for lazy init, the progress bar will swallow/overwrite the warnings.
         // However, we only do this in INTERACTIVE mode to prevent locking headless/MCP instances.
-        if use_gpu && crate::output::OUTPUT.is_interactive {
+        // VECDB_SKIP_PROBE opt-out: commands like `list` and `delete` don't need an embedder at all.
+        let skip_probe = std::env::var("VECDB_SKIP_PROBE").is_ok();
+        if use_gpu && crate::output::OUTPUT.is_interactive && !skip_probe {
             tracing::debug!("Eagerly initializing LocalEmbedder for CUDA check...");
             if let Err(e) = instance.ensure_initialized() {
                 // If init fails entirely (even fallback), we want to know now.
@@ -157,8 +159,10 @@ impl LocalEmbedder {
             use_gpu,
         };
 
-        // Eager init if GPU requested (consistency with ::new) and interactive
-        if use_gpu && crate::output::OUTPUT.is_interactive {
+        // Eager init if GPU requested (consistency with ::new) and interactive.
+        // Skipped if VECDB_SKIP_PROBE is set (non-embedding commands like list/delete).
+        let skip_probe = std::env::var("VECDB_SKIP_PROBE").is_ok();
+        if use_gpu && crate::output::OUTPUT.is_interactive && !skip_probe {
             tracing::debug!("Eagerly initializing LocalEmbedder (custom model) for CUDA check...");
             match instance.ensure_initialized() {
                 Ok(_) => {}
@@ -316,7 +320,7 @@ impl Embedder for LocalEmbedder {
                 .as_mut()
                 .ok_or_else(|| anyhow::anyhow!("Model not initialized"))?;
             model.embed(vec![text_owned], None)
-                .map_err(|e| wrap_cuda_error(e.into()))
+                .map_err(wrap_cuda_error)
         })
         .await
         .context("Embedding task panicked")??;
@@ -352,7 +356,7 @@ impl Embedder for LocalEmbedder {
                 .as_mut()
                 .ok_or_else(|| anyhow::anyhow!("Model not initialized"))?;
             model.embed(texts_owned, None)
-                .map_err(|e| wrap_cuda_error(e.into()))
+                .map_err(wrap_cuda_error)
         })
         .await
         .context("Embedding batch task panicked")??;

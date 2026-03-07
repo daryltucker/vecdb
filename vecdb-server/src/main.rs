@@ -10,7 +10,8 @@ use clap::Parser;
 use std::sync::Arc;
 use vecdb_core::config::Config;
 use vecdb_core::Core;
-use vecdb_server::rpc::{handle_request, types::{JsonRpcRequest, JsonRpcResponse}}; // Use the new rpc module
+use vecdb_server::core_registry::{CoreFactory, CoreKey, CoreRegistry};
+use vecdb_server::rpc::{handle_request, types::{JsonRpcRequest, JsonRpcResponse}};
 mod vecq_adapter;
 use crate::vecq_adapter::VecqParserFactory;
 use vecq::detection::HybridDetector;
@@ -88,20 +89,20 @@ async fn main() -> anyhow::Result<()> {
     let file_detector = Arc::new(HybridDetector::new());
     let parser_factory = Arc::new(VecqParserFactory);
 
-    let core_instance = Core::new(
+    let boot_core_instance = Core::new(
         &profile.qdrant_url,
         &profile.ollama_url,
         &embedding_model,
         profile.accept_invalid_certs,
         &profile.embedder_type,
         Some(config.fastembed_cache_path.clone()),
-        config.resolve_local_use_gpu(None),
+        config.resolve_local_use_gpu(profile.default_collection_name.as_deref()),
         profile.qdrant_api_key.clone(),
         profile.ollama_api_key.clone(),
         config.smart_routing_keys.clone(),
         config.ingestion.path_rules.clone(),
         config.ingestion.max_concurrent_requests,
-        config.resolve_gpu_batch_size(&profile, None), // Server daemon resolves per request later
+        config.resolve_gpu_batch_size(profile, profile.default_collection_name.as_deref()),
         profile.num_ctx,
         file_detector.clone(),
         parser_factory.clone(),
@@ -112,14 +113,33 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     });
 
-    let core = Arc::new(core_instance);
+    let boot_core = Arc::new(boot_core_instance);
+    let boot_key = CoreKey::from_resolved(profile, &config);
+
+    // Build the factory for lazy Core creation when a request arrives for a
+    // collection that uses a different profile than the boot profile.
+    let factory = CoreFactory {
+        fastembed_cache_path: config.fastembed_cache_path.clone(),
+        smart_routing_keys: config.smart_routing_keys.clone(),
+        path_rules: config.ingestion.path_rules.clone(),
+        max_concurrent_requests: config.ingestion.max_concurrent_requests,
+        file_detector: file_detector.clone(),
+        parser_factory: parser_factory.clone(),
+    };
+
+    let registry = Arc::new(CoreRegistry::new(
+        boot_core,
+        boot_key,
+        target_profile.clone(),
+        factory,
+    ));
     let config = Arc::new(config);
 
     if args.stdio {
-        run_stdio_server(core, config, args.allow_local_fs, target_profile).await
+        run_stdio_server(registry, config, args.allow_local_fs, target_profile).await
     } else {
         vecdb_server::server::run_http_server(
-            core,
+            registry,
             config,
             args.allow_local_fs,
             target_profile,
@@ -130,7 +150,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_stdio_server(
-    core: Arc<Core>,
+    registry: Arc<vecdb_server::core_registry::CoreRegistry>,
     config: Arc<Config>,
     allow_local_fs: bool,
     target_profile: String,
@@ -168,7 +188,7 @@ async fn run_stdio_server(
         };
 
         // Handle Method
-        let result = handle_request(&core, &config, &req, allow_local_fs, &target_profile).await;
+        let result = handle_request(&registry, &config, &req, allow_local_fs, &target_profile).await;
 
         // Send Response
         if let Some(id) = req.id {

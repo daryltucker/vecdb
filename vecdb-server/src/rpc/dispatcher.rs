@@ -1,6 +1,7 @@
 // Main JSON-RPC request dispatcher for vecdb-server
 // Routes incoming requests to appropriate handlers
 
+use crate::core_registry::CoreRegistry;
 use crate::rpc::resources;
 use crate::rpc::tools;
 use crate::rpc::types::{JsonRpcError, JsonRpcRequest, json_rpc_error};
@@ -11,12 +12,11 @@ use vecdb_core::config::Config;
 use vecdb_core::tools::{
     EmbedArgs, IngestHistoryArgs, IngestPathArgs, JobStatusArgs, SearchArgs, VecqToolArgs,
 };
-use vecdb_core::Core;
 
 /// Main entry point for handling JSON-RPC requests
 pub async fn handle_request(
-    core: &Arc<Core>,
-    config: &Config,
+    registry: &Arc<CoreRegistry>,
+    config: &Arc<Config>,
     req: &JsonRpcRequest,
     allow_local_fs: bool,
     active_profile_name: &str,
@@ -25,12 +25,12 @@ pub async fn handle_request(
         "initialize" => handle_initialize(),
         "notifications/initialized" => Ok(Value::Null),
         "tools/list" => handle_tools_list(),
-        "resources/list" => resources::handle_resources_list(core).await,
+        "resources/list" => resources::handle_resources_list(registry, config).await,
         "resources/read" => {
-            resources::handle_resources_read(core, config, req, active_profile_name).await
+            resources::handle_resources_read(registry, config, req, active_profile_name).await
         }
         "tools/call" => {
-            tools::handle_tools_call(core, config, req, allow_local_fs, active_profile_name).await
+            tools::handle_tools_call(registry, config, req, allow_local_fs, active_profile_name).await
         }
         _ => Err(json_rpc_error(
             -32601,
@@ -42,7 +42,7 @@ pub async fn handle_request(
 /// Handle MCP initialization
 fn handle_initialize() -> Result<Value, JsonRpcError> {
     Ok(json!({
-        "protocolVersion": "2024-11-05",
+        "protocolVersion": "2025-11-25",
         "serverInfo": {
             "name": "vecdb-mcp",
             "version": "0.1.0"

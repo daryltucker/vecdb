@@ -78,7 +78,13 @@ pub async fn run(core: &Core, args: DeleteArgs) -> anyhow::Result<()> {
         print!("Deleting '{}'... ", collection);
         std::io::stdout().flush()?;
         match core.delete_collection(&collection).await {
-            Ok(_) => println!("{}", "Done".green()),
+            Ok(_) => {
+                println!("{}", "Done".green());
+                println!(
+                    "  Note: Local .vecdb/state.toml entries for '{}' will be cleared on next ingest.",
+                    collection
+                );
+            }
             Err(e) => println!("{}", format!("Failed: {}", e).red()),
         }
     }

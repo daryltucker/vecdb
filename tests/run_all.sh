@@ -25,6 +25,34 @@ set -o pipefail
 PROJECT_ROOT=$(dirname "$0")/..
 cd "$PROJECT_ROOT"
 
+# ═══════════════════════════════════════════════════════════════════
+# PRODUCTION QDRANT LOCKOUT — NON-BYPASSABLE
+#
+# ALL TESTS MUST ALWAYS USE THE TESTING CONFIGURATION.
+# NEVER HIT PRODUCTION QDRANT (ports 6333/6334).
+#
+# This is enforced here at the shell level BEFORE any test runs.
+# The VECDB_CONFIG variable is FORCED to the test fixture regardless
+# of what was set in the caller's environment.
+# Any test that ignores VECDB_CONFIG or hardcodes production ports
+# will be caught by tier0_qdrant_isolation.py (T0.0) and block the run.
+# ═══════════════════════════════════════════════════════════════════
+readonly TEST_CONFIG="tests/fixtures/config.toml"
+
+if [ ! -f "$TEST_CONFIG" ]; then
+    echo "FATAL: Test config not found at $TEST_CONFIG" >&2
+    echo "       Run from project root: ./tests/run_all.sh" >&2
+    exit 1
+fi
+
+# Force — overwrite any caller-provided VECDB_CONFIG.
+export VECDB_CONFIG="$TEST_CONFIG"
+
+# Also set the Rust-tier test URL so tier2_qdrant.rs tests hit test Qdrant.
+export VECDB_TEST_QDRANT_URL="http://localhost:6336"
+# HTTP REST port (for tests that query Qdrant REST API directly, e.g. tier3_quantization.py).
+export VECDB_TEST_QDRANT_HTTP_URL="http://localhost:6335"
+
 # ==========================================
 # RESOURCE MANAGEMENT
 # ==========================================
@@ -35,7 +63,6 @@ if [ "$HALF_CORES" -lt 1 ]; then HALF_CORES=1; fi
 JOBS=${JOBS:-$HALF_CORES}
 export CARGO_BUILD_JOBS=$JOBS
 export RAYON_NUM_THREADS=$JOBS
-export VECDB_CONFIG=tests/fixtures/config.toml
 
 # ==========================================
 # LOGGING
@@ -75,6 +102,10 @@ log "═════════════════════════
 # ══════════════════════════════════════════
 log ""
 log "━━━ TIER 0: Infrastructure ━━━"
+
+# T0.0 MUST run first: proves the test suite cannot touch production Qdrant.
+# This is a hard gate — if it fails, Qdrant-touching tests are blocked.
+count; run_test "T0.0" python3 tests/tier0_qdrant_isolation.py; passed
 
 count; run_test "T0.1" bash ./tests/fixtures/init.sh; passed
 count; run_test "T0.2" python3 tests/tier1_qdrant.py; passed

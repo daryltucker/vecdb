@@ -1,6 +1,7 @@
 // Tool call handlers for vecdb-server JSON-RPC interface
 // Handles all tools/call requests by dispatching to individual tool handlers
 
+use crate::core_registry::CoreRegistry;
 use crate::rpc::types::{JsonRpcError, JsonRpcRequest};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -8,12 +9,11 @@ use vecdb_core::config::Config;
 use vecdb_core::tools::{
     EmbedArgs, IngestHistoryArgs, IngestPathArgs, JobStatusArgs, SearchArgs, VecqToolArgs,
 };
-use vecdb_core::Core;
 
 /// Handle tools/call request by dispatching to individual tool handlers
 pub async fn handle_tools_call(
-    core: &Arc<Core>,
-    config: &Config,
+    registry: &Arc<CoreRegistry>,
+    config: &Arc<Config>,
     req: &JsonRpcRequest,
     allow_local_fs: bool,
     active_profile_name: &str,
@@ -31,14 +31,14 @@ pub async fn handle_tools_call(
     })?;
 
     match name {
-        "search_vectors" => handle_search_vectors(core, config, params, active_profile_name).await,
-        "delete_collection" => handle_delete_collection(core, params).await,
-        "list_collections" => handle_list_collections(core, config, active_profile_name).await,
-        "embed" => handle_embed(core, params).await,
-        "ingest_path" => handle_ingest_path(core, config, params, allow_local_fs, active_profile_name).await,
-        "ingest_history" => handle_ingest_history(core, config, params, allow_local_fs, active_profile_name).await,
+        "search_vectors" => handle_search_vectors(registry, config, params, active_profile_name).await,
+        "delete_collection" => handle_delete_collection(registry, config, params).await,
+        "list_collections" => handle_list_collections(registry, config, active_profile_name).await,
+        "embed" => handle_embed(registry, config, params).await,
+        "ingest_path" => handle_ingest_path(registry, config, params, allow_local_fs, active_profile_name).await,
+        "ingest_history" => handle_ingest_history(registry, config, params, allow_local_fs, active_profile_name).await,
         "code_query" => handle_code_query(params, allow_local_fs).await,
-        "get_job_status" => handle_get_job_status(core, params).await,
+        "get_job_status" => handle_get_job_status(registry, config, params).await,
         _ => Err(JsonRpcError {
             code: -32601,
             message: format!("Tool not found: {}", name),
@@ -47,10 +47,14 @@ pub async fn handle_tools_call(
     }
 }
 
-/// Handle search_vectors tool
+/// Handle search_vectors tool.
+///
+/// Resolves the collection's configured profile and uses the matching Core
+/// (embedder + backend). This is the fix for the single-boot-embedder bug:
+/// each collection is searched with its own embedder, not the boot embedder.
 async fn handle_search_vectors(
-    core: &Arc<Core>,
-    config: &Config,
+    registry: &Arc<CoreRegistry>,
+    config: &Arc<Config>,
     params: &Value,
     active_profile_name: &str,
 ) -> Result<Value, JsonRpcError> {
@@ -62,33 +66,46 @@ async fn handle_search_vectors(
             data: None,
         })?;
 
-    // Resolve collection using profile argument (if specified) or server default
-    // Note: Server uses the BOOT embedder for all operations (single embedder per process)
-    // Profile argument is used only for collection namespace resolution
-    let profile_name = args.profile.as_deref().unwrap_or(active_profile_name);
-    let profile = config
-        .get_profile(Some(profile_name))
+    // Resolve the user's current profile context for finding the default collection name.
+    // This uses active_profile_name as fallback (the user's current session context).
+    let context_profile_name = args.profile.as_deref().unwrap_or(active_profile_name);
+    let context_profile = config
+        .get_profile(Some(context_profile_name))
         .map_err(|e| JsonRpcError {
             code: -32000,
-            message: format!("Profile '{}' not found: {}", profile_name, e),
+            message: format!("Profile '{}' not found: {}", context_profile_name, e),
             data: None,
         })?;
 
-    // Resolve final collection: explicit > profile default
     let collection = args
         .collection
         .as_deref()
-        .or(profile.default_collection_name.as_deref())
+        .or(context_profile.default_collection_name.as_deref())
         .ok_or_else(|| JsonRpcError {
             code: -32602,
             message: "collection is required: provide it in the request or configure a collection with this profile".into(),
             data: None,
+        })?
+        .to_string();
+
+    // Resolve the Core for this collection.
+    // CRITICAL: pass only the user's EXPLICIT profile (args.profile), not the fallback.
+    // If no explicit profile is given, pass None so that config.resolve_profile() reads
+    // the collection's own configured profile. This is the fix for the single-boot-embedder
+    // bug: the collection config determines the embedder, not the server boot profile.
+    let core = registry
+        .get_for_collection(config, Some(&collection), args.profile.as_deref())
+        .await
+        .map_err(|e| JsonRpcError {
+            code: -32000,
+            message: format!("Failed to resolve embedder for collection '{}': {}", collection, e),
+            data: None,
         })?;
 
     let results = if args.smart {
-        core.search_smart(collection, &args.query, 10).await
+        core.search_smart(&collection, &args.query, 10).await
     } else {
-        core.search(collection, &args.query, 10, None).await
+        core.search(&collection, &args.query, 10, None).await
     }
     .map_err(|e| JsonRpcError {
         code: -32000,
@@ -110,9 +127,13 @@ async fn handle_search_vectors(
     }))
 }
 
-/// Handle delete_collection tool
+/// Handle delete_collection tool.
+///
+/// Uses the boot Core's backend. Collections on remote Qdrant instances cannot be
+/// deleted via this path (BackendRegistry is required — future work).
 async fn handle_delete_collection(
-    core: &Arc<Core>,
+    registry: &Arc<CoreRegistry>,
+    config: &Arc<Config>,
     params: &Value,
 ) -> Result<Value, JsonRpcError> {
     let args_val = &params["arguments"];
@@ -149,6 +170,17 @@ async fn handle_delete_collection(
         });
     }
 
+    // Attempt to use the collection-specific Core (correct backend for remote Qdrant).
+    // Fall back to boot Core if the collection's profile can't be resolved (e.g., Ollama down).
+    let core = match registry.get_for_collection(config, Some(collection), None).await {
+        Ok(core) => core,
+        Err(_) => registry.boot_core(config).await.map_err(|e| JsonRpcError {
+            code: -32000,
+            message: format!("Failed to resolve backend for collection '{}': {}", collection, e),
+            data: None,
+        })?,
+    };
+
     core.delete_collection(collection)
         .await
         .map_err(|e| JsonRpcError {
@@ -163,12 +195,19 @@ async fn handle_delete_collection(
     }))
 }
 
-/// Handle list_collections tool
+/// Handle list_collections tool.
+/// Uses the boot Core (lists collections from the boot Qdrant instance only).
 async fn handle_list_collections(
-    core: &Arc<Core>,
-    config: &Config,
+    registry: &Arc<CoreRegistry>,
+    config: &Arc<Config>,
     active_profile_name: &str,
 ) -> Result<Value, JsonRpcError> {
+    let core = registry.boot_core(config).await.map_err(|e| JsonRpcError {
+        code: -32000,
+        message: e.to_string(),
+        data: None,
+    })?;
+
     let collections = core.list_collections().await.map_err(|e| JsonRpcError {
         code: -32000,
         message: e.to_string(),
@@ -222,9 +261,11 @@ async fn handle_list_collections(
     }))
 }
 
-/// Handle embed tool
+/// Handle embed tool.
+/// Uses the boot Core's embedder (no collection context — caller gets the boot profile's model).
 async fn handle_embed(
-    core: &Arc<Core>,
+    registry: &Arc<CoreRegistry>,
+    config: &Arc<Config>,
     params: &Value,
 ) -> Result<Value, JsonRpcError> {
     let args_val = &params["arguments"];
@@ -234,6 +275,12 @@ async fn handle_embed(
             message: format!("Invalid arguments for embed: {}", e),
             data: None,
         })?;
+
+    let core = registry.boot_core(config).await.map_err(|e| JsonRpcError {
+        code: -32000,
+        message: e.to_string(),
+        data: None,
+    })?;
 
     let embeddings = core.embed(args.texts).await.map_err(|e| JsonRpcError {
         code: -32000,
@@ -255,10 +302,13 @@ async fn handle_embed(
     }))
 }
 
-/// Handle ingest_path tool
+/// Handle ingest_path tool.
+///
+/// Resolves the collection's configured profile and uses the matching Core
+/// (same fix as search_vectors — ingest must use the collection's own embedder).
 async fn handle_ingest_path(
-    core: &Arc<Core>,
-    config: &Config,
+    registry: &Arc<CoreRegistry>,
+    config: &Arc<Config>,
     params: &Value,
     allow_local_fs: bool,
     active_profile_name: &str,
@@ -279,21 +329,21 @@ async fn handle_ingest_path(
             data: None,
         })?;
 
-    // Resolve collection using profile argument (if specified) or server default
-    let profile_name = args.profile.as_deref().unwrap_or(active_profile_name);
+    // Resolve using the collection's own profile (not the boot default).
+    // Pass args.profile as the explicit override (or None to let collection config win).
+    let context_profile_name = args.profile.as_deref().unwrap_or(active_profile_name);
     let profile = config
-        .resolve_profile(Some(profile_name), args.collection.as_deref())
+        .resolve_profile(args.profile.as_deref(), args.collection.as_deref())
+        .or_else(|_| config.resolve_profile(Some(context_profile_name), args.collection.as_deref()))
         .map_err(|e| JsonRpcError {
             code: -32000,
-            message: format!("Profile '{}' not found: {}", profile_name, e),
+            message: format!("Profile resolution failed: {}", e),
             data: None,
         })?;
 
-    // Resolve max_chunk_size and overlap from config if available (server config)
     let max_chunk_size = config.resolve_max_chunk_size(&profile, args.collection.as_deref());
     let chunk_overlap = config.resolve_chunk_overlap(&profile, args.collection.as_deref());
 
-    // Resolve final collection: explicit > profile default
     let collection = args
         .collection
         .as_deref()
@@ -302,11 +352,23 @@ async fn handle_ingest_path(
             code: -32602,
             message: "collection is required: provide it in the request or configure a collection with this profile".into(),
             data: None,
+        })?
+        .to_string();
+
+    // Get the Core whose embedder matches the collection's configured profile.
+    // Pass only the explicit profile (not the fallback) so collection config wins.
+    let core = registry
+        .get_for_collection(config, Some(&collection), args.profile.as_deref())
+        .await
+        .map_err(|e| JsonRpcError {
+            code: -32000,
+            message: format!("Failed to resolve embedder for collection '{}': {}", collection, e),
+            data: None,
         })?;
 
     core.ingest(
         &args.path,
-        collection,
+        &collection,
         true,
         None,
         max_chunk_size,
@@ -337,10 +399,10 @@ async fn handle_ingest_path(
     }))
 }
 
-/// Handle ingest_history tool
+/// Handle ingest_history tool.
 async fn handle_ingest_history(
-    core: &Arc<Core>,
-    config: &Config,
+    registry: &Arc<CoreRegistry>,
+    config: &Arc<Config>,
     params: &Value,
     allow_local_fs: bool,
     active_profile_name: &str,
@@ -364,17 +426,16 @@ async fn handle_ingest_history(
         });
     }
 
-    // Resolve collection using profile argument (if specified) or server default
-    let profile_name = args.profile.as_deref().unwrap_or(active_profile_name);
+    let context_profile_name = args.profile.as_deref().unwrap_or(active_profile_name);
     let profile = config
-        .resolve_profile(Some(profile_name), args.collection.as_deref())
+        .resolve_profile(args.profile.as_deref(), args.collection.as_deref())
+        .or_else(|_| config.resolve_profile(Some(context_profile_name), args.collection.as_deref()))
         .map_err(|e| JsonRpcError {
             code: -32000,
-            message: format!("Profile '{}' not found: {}", profile_name, e),
+            message: format!("Profile resolution failed: {}", e),
             data: None,
         })?;
 
-    // Resolve final collection: explicit > profile default
     let collection = args
         .collection
         .as_deref()
@@ -383,12 +444,24 @@ async fn handle_ingest_history(
             code: -32602,
             message: "collection is required: provide it in the request or configure a collection with this profile".into(),
             data: None,
+        })?
+        .to_string();
+
+    // Get the Core whose embedder matches the collection's configured profile.
+    // Pass only the explicit profile (not the fallback) so collection config wins.
+    let core = registry
+        .get_for_collection(config, Some(&collection), args.profile.as_deref())
+        .await
+        .map_err(|e| JsonRpcError {
+            code: -32000,
+            message: format!("Failed to resolve embedder for collection '{}': {}", collection, e),
+            data: None,
         })?;
 
     core.ingest_history(
         &args.repo_path,
         &args.git_ref,
-        collection,
+        &collection,
         512,
         profile.quantization.clone(),
         None,
@@ -495,9 +568,11 @@ async fn handle_code_query(
     }))
 }
 
-/// Handle get_job_status tool
+/// Handle get_job_status tool.
+/// Uses the boot Core.
 async fn handle_get_job_status(
-    core: &Arc<Core>,
+    registry: &Arc<CoreRegistry>,
+    config: &Arc<Config>,
     params: &Value,
 ) -> Result<Value, JsonRpcError> {
     let args_val = &params["arguments"];
@@ -507,6 +582,12 @@ async fn handle_get_job_status(
             message: format!("Invalid arguments for get_job_status: {}", e),
             data: None,
         })?;
+
+    let core = registry.boot_core(config).await.map_err(|e| JsonRpcError {
+        code: -32000,
+        message: e.to_string(),
+        data: None,
+    })?;
 
     let job_registry = vecdb_core::jobs::JobRegistry::new().ok();
     let local_jobs = job_registry

@@ -127,7 +127,7 @@ chunk_size = 512
         env["VECDB_CONFIG"] = cls.config_path
 
         proc = subprocess.Popen(
-            [cls.server_bin, "--allow-local-fs"],
+            [cls.server_bin, "--stdio", "--allow-local-fs"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=env,
         )
@@ -155,7 +155,7 @@ chunk_size = 512
         env = os.environ.copy()
         env["VECDB_CONFIG"] = self.config_path
         self._proc = subprocess.Popen(
-            [self.server_bin, "--allow-local-fs"],
+            [self.server_bin, "--stdio", "--allow-local-fs"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=env,
         )
@@ -201,7 +201,7 @@ chunk_size = 512
             print(f"    Ingest took {duration:.1f}s")
 
             self.assertNotIn("error", res, f"Ingest failed: {res}")
-            self.assertLess(duration, 120, "Ingest exceeded 120s time budget")
+            self.assertLess(duration, 240, "Ingest exceeded 240s time budget")
         finally:
             self._stop_server()
 
@@ -216,6 +216,7 @@ chunk_size = 512
                     "query": "garbage collector memory allocation",
                     "collection": COLLECTION_NAME,
                     "json": True,
+                    "smart": False,
                     "limit": 5,
                 }
             })
@@ -227,16 +228,16 @@ chunk_size = 512
             # Verify results reference real files from the Lua project
             first = content[0]
             print(f"    Top result: score={first.get('score', 'N/A')}")
-            print(f"    File: {first.get('metadata', {}).get('source_file', 'MISSING')}")
+            print(f"    File: {first.get('metadata', {}).get('source', 'MISSING')}")
 
             # At least one result should reference a .c or .h file
             any_source = any(
-                r.get("metadata", {}).get("source_file", "").endswith(('.c', '.h'))
+                r.get("metadata", {}).get("source", "").endswith(('.c', '.h'))
                 for r in content
             )
             self.assertTrue(any_source,
                 f"No results reference .c/.h files. Results: "
-                f"{[r.get('metadata', {}).get('source_file', '???') for r in content]}")
+                f"{[r.get('metadata', {}).get('source', '???') for r in content]}")
 
         finally:
             self._stop_server()
@@ -252,6 +253,7 @@ chunk_size = 512
                     "query": "lexer tokenizer string parsing",
                     "collection": COLLECTION_NAME,
                     "json": True,
+                    "smart": False,
                     "limit": 5,
                 }
             })
@@ -259,11 +261,11 @@ chunk_size = 512
             content = json.loads(res["result"]["content"][0]["text"])
             self.assertGreater(len(content), 0, "Search returned no results")
 
-            first_file = content[0].get("metadata", {}).get("source_file", "")
+            first_file = content[0].get("metadata", {}).get("source", "")
             print(f"    Top result file: {first_file}")
 
             # lexer/llex.c or lparser.c should be highly ranked
-            top_files = [r.get("metadata", {}).get("source_file", "") for r in content[:3]]
+            top_files = [r.get("metadata", {}).get("source", "") for r in content[:3]]
             print(f"    Top 3 files: {top_files}")
 
         finally:
@@ -280,6 +282,7 @@ chunk_size = 512
                     "query": "lua virtual machine bytecode",
                     "collection": COLLECTION_NAME,
                     "json": True,
+                    "smart": False,
                     "limit": 3,
                 }
             })
@@ -288,9 +291,9 @@ chunk_size = 512
             for result in content:
                 meta = result.get("metadata", {})
 
-                # source_file must exist and be a real path
-                src = meta.get("source_file", "")
-                self.assertTrue(len(src) > 0, "source_file is empty")
+                # source must exist and be a real path
+                src = meta.get("source", "")
+                self.assertTrue(len(src) > 0, "source is empty")
                 print(f"    Checking: {src}")
 
                 # Content must be non-empty

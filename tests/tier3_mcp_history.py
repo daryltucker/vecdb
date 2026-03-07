@@ -35,9 +35,10 @@ class Tier3HistoryTest(unittest.TestCase):
         subprocess.run(["git", "tag", "v2.0.0"], cwd=self.repo_dir, check=True)
         
         # Config
+        # ALL TESTS MUST USE TEST QDRANT — NEVER PRODUCTION (6333/6334)
         config_content = """
 [profiles.default]
-qdrant_url = "http://localhost:6334"
+qdrant_url = "http://localhost:6336"
 collection_name = "tier3_history_test"
 ollama_url = "http://localhost:11434"
 embedding_model = "nomic-embed-text"
@@ -56,7 +57,7 @@ accept_invalid_certs = true
         self.server_bin = "./target/debug/vecdb-server"
         
         self.process = subprocess.Popen(
-            [self.server_bin, "--allow-local-fs"],
+            [self.server_bin, "--stdio", "--allow-local-fs"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -101,12 +102,12 @@ accept_invalid_certs = true
         tools = res["result"]["tools"]
         tool_names = [t["name"] for t in tools]
         print(f"Tools found: {tool_names}")
-        self.assertIn("ingest_historic_version", tool_names, "ingest_historic_version tool missing!")
-        
+        self.assertIn("ingest_history", tool_names, "ingest_history tool missing!")
+
         # 1. Ingest v1
         print("Ingesting v1.0.0...")
         res = self._rpc("tools/call", {
-            "name": "ingest_historic_version",
+            "name": "ingest_history",
             "arguments": {
                 "repo_path": self.repo_dir,
                 "git_ref": "v1.0.0",
@@ -114,11 +115,11 @@ accept_invalid_certs = true
             }
         })
         self.assertNotIn("error", res)
-        
+
         # 2. Ingest v2
         print("Ingesting v2.0.0...")
         res = self._rpc("tools/call", {
-            "name": "ingest_historic_version",
+            "name": "ingest_history",
             "arguments": {
                 "repo_path": self.repo_dir,
                 "git_ref": "v2.0.0",

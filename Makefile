@@ -44,15 +44,15 @@ check:
 	cargo clippy --workspace -- -D warnings
 
 # ───────────────────────────────────────────────────────────
-# test: The COMPLETE test suite. All tiers. No exceptions.
+# tests: The COMPLETE test suite. All tiers. No exceptions.
 #
 # ANTI-CHEAT MANDATE:
 #   This target delegates to tests/run_all.sh which is the
 #   single source of truth for which tests must pass.
 #   Agents MUST NOT bypass this by running individual tests.
-#   A release requires `make test` to pass in its entirety.
+#   A release requires `make tests` to pass in its entirety.
 # ───────────────────────────────────────────────────────────
-test:
+tests:
 	@echo "$(YELLOW)═══════════════════════════════════════════════$(RESET)"
 	@echo "$(YELLOW)  COMPLETE TEST SUITE (All Tiers)$(RESET)"
 	@echo "$(YELLOW)═══════════════════════════════════════════════$(RESET)"
@@ -60,6 +60,9 @@ test:
 	@echo "$(RED)⚠  Running ALL tests. Partial runs are a release blocker.$(RESET)"
 	@echo ""
 	bash tests/run_all.sh
+
+# Backward-compat alias
+test: tests
 
 # Convenience: Rust-only tests (fast, no Python/Bash)
 test-rust:
@@ -101,3 +104,4 @@ run:
 install:
 	@echo "$(YELLOW)Installing to ~/.cargo/bin...$(RESET)"
 	cargo install --path vecdb-cli --force
+	cargo install --path vecdb-server --force
