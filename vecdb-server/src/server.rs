@@ -1,3 +1,4 @@
+#![allow(clippy::result_large_err)]
 use crate::core_registry::CoreRegistry;
 use crate::rpc::{handle_request, types::{JsonRpcRequest, JsonRpcResponse}};
 use axum::{

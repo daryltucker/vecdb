@@ -71,6 +71,10 @@ pub struct Config {
     #[serde(default = "default_local_embedding_model")]
     pub local_embedding_model: String,
 
+    /// Global: Default embedding model for remote embedders (e.g., Ollama) if not specified in profile
+    #[serde(default = "default_embedding_model")]
+    pub embedding_model: String,
+
     /// Collection Profiles: Detailed configuration per collection
     #[serde(default)]
     pub collections: HashMap<String, CollectionConfig>,
@@ -231,8 +235,8 @@ pub struct Profile {
     /// Set by resolve_profile() when a collection is resolved at runtime.
     #[serde(default)]
     pub default_collection_name: Option<String>,
-    #[serde(default = "default_embedding_model")]
-    pub embedding_model: String,
+    #[serde(default)]
+    pub embedding_model: Option<String>,
     /// Accept invalid TLS certificates (for staging/self-signed HTTPS endpoints)
     #[serde(default)]
     pub accept_invalid_certs: bool,
@@ -300,7 +304,7 @@ impl Default for Config {
             Profile {
                 qdrant_url: std::env::var("QDRANT_URL")
                     .unwrap_or_else(|_| DEFAULT_QDRANT_URL.to_string()),
-                embedding_model: DEFAULT_EMBEDDING_MODEL.to_string(),
+                embedding_model: None,
                 default_collection_name: None,
                 accept_invalid_certs: false,
                 ollama_url: DEFAULT_OLLAMA_URL.to_string(),
@@ -321,6 +325,7 @@ impl Default for Config {
             profiles,
             default_profile: DEFAULT_PROFILE_NAME.to_string(),
             local_embedding_model: "all-minilm-l6-v2".to_string(),
+            embedding_model: DEFAULT_EMBEDDING_MODEL.to_string(),
             collections: HashMap::new(),
             collection_aliases: HashMap::new(),
             ingestion: IngestionConfig::default(),
@@ -335,16 +340,17 @@ impl Config {
     /// Helper to resolve the embedding model name based on the profile's configuration
     /// This unifies the logic: "if local, use global local model, else use profile model"
     pub fn resolve_embedding_model(&self, profile: &Profile) -> String {
+        let profile_model = profile.embedding_model.as_deref().unwrap_or(&self.embedding_model);
         if profile.embedder_type == "local" {
             // If the profile/collection explicitly specifies a non-default model, use it.
             // Otherwise, use the global local_embedding_model.
-            if profile.embedding_model != DEFAULT_EMBEDDING_MODEL {
-                profile.embedding_model.clone()
+            if profile_model != DEFAULT_EMBEDDING_MODEL {
+                profile_model.to_string()
             } else {
                 self.local_embedding_model.clone()
             }
         } else {
-            profile.embedding_model.clone()
+            profile_model.to_string()
         }
     }
 
@@ -412,7 +418,7 @@ impl Config {
                     profile.embedder_type = et.clone();
                 }
                 if let Some(ref em) = config.embedding_model {
-                    profile.embedding_model = em.clone();
+                    profile.embedding_model = Some(em.clone());
                 }
                 if let Some(ref num) = config.num_ctx {
                     profile.num_ctx = Some(*num);
@@ -614,15 +620,16 @@ impl Config {
 
         // Validate: Warn if local profiles specify embedding_model (should use global local_embedding_model)
         for (profile_name, profile) in &config.profiles {
+            let actual_model = profile.embedding_model.as_deref().unwrap_or(&config.embedding_model);
             if crate::output::OUTPUT.is_interactive
                 && profile.embedder_type == "local"
-                && profile.embedding_model != default_embedding_model()
+                && actual_model != default_embedding_model()
             {
                 eprintln!(
                     "⚠️  WARNING: Profile '{}' uses embedder_type=\"local\" but specifies embedding_model=\"{}\".\n\
                      Local profiles should use the global 'local_embedding_model' config field.\n\
                      The profile's embedding_model field will be IGNORED.",
-                    profile_name, profile.embedding_model
+                    profile_name, actual_model
                 );
             }
         }
@@ -674,7 +681,7 @@ mod tests {
                 qdrant_url: "http://localhost:6333".to_string(),
                 default_collection_name: None, // profiles don't own collections
                 ollama_url: "http://localhost:11434".to_string(),
-                embedding_model: "test-model".to_string(),
+                embedding_model: Some("test-model".to_string()),
                 accept_invalid_certs: true,
                 embedder_type: "ollama".to_string(),
                 qdrant_api_key: None,

@@ -34,6 +34,16 @@ pub async fn run(config: &Config, profile_name: Option<&str>, format: OutputForm
                 }
             }
         }
+
+        // Also check if any collection specifies a unique qdrant_url
+        for col_name in config.collections.keys() {
+            if let Ok(prof) = config.resolve_profile(None, Some(col_name)) {
+                if !seen.contains(&prof.qdrant_url) {
+                    seen.insert(prof.qdrant_url.clone());
+                    profiles_to_check.push(prof);
+                }
+            }
+        }
     }
 
     let mut results: Vec<(String, Vec<CollectionInfo>)> = Vec::new();

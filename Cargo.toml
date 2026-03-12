@@ -11,7 +11,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 authors = ["Sextant <daryl@daryltucker.com>"]
 license-file = "LICENSE"
@@ -19,9 +19,9 @@ repository = "https://github.com/daryltucker/vecdb"
 
 [workspace.dependencies]
 # Core
-vecdb-common = { path = "vecdb-common", version = "1.0.1" }
-vecdb-core = { path = "vecdb-core", version = "1.0.1" }
-vecq = { path = "vecq", version = "1.0.1" }
+vecdb-common = { path = "vecdb-common", version = "1.0.2" }
+vecdb-core = { path = "vecdb-core", version = "1.0.2" }
+vecq = { path = "vecq", version = "1.0.2" }
 tokio = { version = "1.50.0", features = ["full"] }
 serde = { version = "1.0.128", features = ["derive"] }
 serde_json = "1.0.149"

@@ -265,7 +265,7 @@ async fn test_mcp_multiprofile_dispatch() {
         vecdb_core::config::Profile {
             qdrant_url: "http://localhost:6334".to_string(),
             default_collection_name: Some("alt-col".to_string()),
-            embedding_model: "alternate-model".to_string(),
+            embedding_model: Some("alternate-model".to_string()),
             accept_invalid_certs: false,
             ollama_url: "http://localhost:11434".to_string(),
             embedder_type: "mock".to_string(),

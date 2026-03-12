@@ -27,7 +27,7 @@ async fn test_qdrant_backend_integration() {
         qdrant_url: qdrant_url.clone(),
         default_collection_name: Some("tier2_rust_test".to_string()), // Unique name
         ollama_url: "http://localhost:11434".to_string(),
-        embedding_model: "nomic-embed-text".to_string(),
+        embedding_model: Some("nomic-embed-text".to_string()),
         embedder_type: "local".to_string(),
         accept_invalid_certs: true,
         qdrant_api_key: None,

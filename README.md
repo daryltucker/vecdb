@@ -24,52 +24,34 @@ docsize "How do I install use vecq?"
 
 ### 1. Installation
 
-**Option A: Install via Cargo (Recommended)**
+> Optionally, add `docsize`.
+
+**Option A: Install via Cargo**
 ```bash
 cargo install --git https://github.com/daryltucker/vecdb vecdb-cli vecdb-server vecq docsize
 ```
 
-**Option B: Build from Source**
-
+**Option B: Install via Cargo `binstall`**
 ```bash
-$ ./install.sh
-=== Installing vecdb binaries ===
-Target: ~/.cargo/bin
-
-[1/4] Installing vecq (jq for source code)...
-[2/4] Installing vecdb (CLI)...
-[3/4] Installing vecdb-server (MCP)...
-[4/4] Installing docsize (LLM context tool)...
-
-=== Installation Complete ===
-Installed:
-  - vecq         (jq for source code)
-  - vecdb        (CLI tool)
-  - vecdb-server (MCP server)
-  - docsize      (LLM context tool)
-
-Verify with: vecq --help && vecdb --help && docsize --help
-=== Autocomplete Setup ===
-Detected bash. To enable autocomplete, add this to your /home/daryl/.bashrc:
-
-  # vecdb completions
-  [ -f "/home/daryl/.local/share/vecdb/completions/vecdb" ] && . "/home/daryl/.local/share/vecdb/completions/vecdb"
-  [ -f "/home/daryl/.local/share/vecdb/completions/vecq" ] && . "/home/daryl/.local/share/vecdb/completions/vecq"
-
-Would you like me to add this to your /home/daryl/.bashrc now? (y/N) y
-Added to /home/daryl/.bashrc. Please restart your shell or run: source /home/daryl/.local/share/vecdb/completions/vecdb && source /home/daryl/.local/share/vecdb/completions/vecq
-Tip: Use './install.sh --verbose' to see compilation output
+cargo install --git https://github.com/daryltucker/vecdb vecdb-cli
+cargo install --git https://github.com/daryltucker/vecdb vecdb-server
+cargo install --git https://github.com/daryltucker/vecdb vecq
 ```
 
-See [docs/BUILDING.md](docs/BUILDING.md).
-
-### 2. Initialization
-
-Run the initialization command to set up your configuration:
+**Auto-completions for Cargo Installs**
+If you installed via `cargo install` or `cargo binstall`, you can generate shell completions manually:
 ```bash
-vecdb init
-# Creates ~/.config/vecdb/config.toml
+# Bash
+mkdir -p ~/.local/share/bash-completion/completions/
+vecdb completions bash > ~/.local/share/bash-completion/completions/vecdb
+
+# Zsh
+mkdir -p ~/.zfunc
+vecdb completions zsh > ~/.zfunc/_vecdb
+# Then add to your ~/.zshrc: fpath=(~/.zfunc $fpath); autoload -Uz compinit; compinit
 ```
+
+> See `install.sh` for more install options
 
 ### 3. Start Qdrant (Vector Database)
 
@@ -79,7 +61,7 @@ You need a running Qdrant instance.
 Use a meaningful Docker Volume for persistence:
 ```bash
 docker run -d -p 6333:6333 \
-    -v vecdb_qdrant_data:/qdrant/storage \
+    -v vecdb-data:/qdrant/storage \
     qdrant/qdrant
 ```
 
@@ -229,7 +211,19 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for more details.
 *   **[vecq Guide](docs/vecq/README.md)**: Manual for the `vecq` code query tool.
 *   **Specs**: Detailed feature modules in `docs/specs/` (e.g. [Ingestion Design](docs/specs/INGESTION_DESIGN.md)).
 
-## 🤝 Contributing & support
+## � Testing
+
+The project uses a tiered testing framework. It is **mandatory** to run the complete test suite before any release or major changes.
+
+```bash
+# Run the COMPLETE test suite (All tiers, no exceptions - Release Blocker)
+make tests
+
+# Run Rust-only tests (Unit & Integration)
+make test-rust
+```
+
+## �🤝 Contributing & support
 
 *   **Bug Reports**: Please file an issue on GitHub.
 *   **License**: Business Source License 1.1 (Free for <$1M Revenue). See [LICENSE](LICENSE).

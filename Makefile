@@ -19,14 +19,14 @@ GREEN  := \033[1;32m
 RED    := \033[1;31m
 RESET  := \033[0m
 
-.PHONY: all check test test-rust test-full doc build install clean help run-stdio run
+.PHONY: all check test tests test-rust test-full doc build install clean help run-stdio run
 
-all: check test build
+all: check tests build
 
 help:
 	@echo "$(YELLOW)VecDb MCP Automation$(RESET)"
 	@echo "  check      - Run cargo check & clippy"
-	@echo "  test       - Run COMPLETE test suite (all tiers)"
+	@echo "  tests      - Run COMPLETE test suite (all tiers)"
 	@echo "  test-rust  - Run Rust-only tests (unit + integration)"
 	@echo "  doc        - Generate internal docs"
 	@echo "  build      - Build Docker image"

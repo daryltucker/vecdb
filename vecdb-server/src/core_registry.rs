@@ -204,7 +204,7 @@ impl CoreRegistry {
                  This is a test registry — pre-seed it with the required Core.",
                 profile.resolved_profile_name,
                 profile.embedder_type,
-                profile.embedding_model,
+                config.resolve_embedding_model(&profile),
                 profile.qdrant_url,
             )
         })?;

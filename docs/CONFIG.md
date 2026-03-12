@@ -115,6 +115,7 @@ chunk_size = 800
 |-----|------|---------|-------------|
 | `default_profile` | string | `"default"` | Profile to use when `-p` not specified |
 | `local_embedding_model` | string | `"bge-micro-v2"` | **Global**: Embedding model for ALL profiles with `embedder_type="local"`. Only **ONE** local model can be loaded per process. |
+| `embedding_model` | string | `"nomic-embed-text"` | **Global**: Default embedding model for remote embedders (e.g., `ollama`) if not explicitly specified in the profile. |
 | `local_use_gpu` | bool | `false` | **Global**: Use GPU for local embeddings if available. Requires `cuda` feature flag. |
 | `fastembed_cache_path` | string | `~/.config/vecdb/fastembed_cache` | Path for `local` embedder model cache |
 | `smart_routing_keys` | array | `["source_type", "language"]` | Keys to use for Smart Routing / Facet Auto-Detection. |
@@ -127,7 +128,7 @@ chunk_size = 800
 | `default_collection_name` | string | `null` | **Optional** fallback collection when `-c` is not specified. Prefer using `profile =` on the collection instead. |
 | `embedder_type` | string | `"local"` | Embedding backend: `"local"` or `"ollama"` |
 | `ollama_url` | string | `"http://localhost:11434"` | Ollama API URL (only for `embedder_type = "ollama"`) |
-| `embedding_model` | string | `"nomic-embed-text"` | Ollama model name (**only for** `embedder_type = "ollama"`). If set on a `local` profile, a warning will be displayed and this field will be ignored. |
+| `embedding_model` | string | `null` | Optional embedding model override. If set on a `local` profile, a warning will be displayed and this field will be ignored. |
 | `accept_invalid_certs` | bool | `false` | Accept invalid TLS certificates |
 | `qdrant_api_key` | string | `null` | Optional API Key for Qdrant authentication |
 | `ollama_api_key` | string | `null` | Optional API Key for Ollama proxy authentication |
@@ -308,6 +309,19 @@ The local embedder downloads the model (~30MB) on first use. Ensure you have int
 Ensure Qdrant is running:
 ```bash
 docker run -d -p 6333:6333 -p 6334:6334 qdrant/qdrant
+```
+
+### "Qdrant error (404): The server at this URL did not recognize the gRPC request"
+Qdrant exposes two ports: 6333 (REST/JSON) and 6334 (gRPC/HTTP2). `vecdb` natively uses the high-performance gRPC port (`6334`).
+If you are running Qdrant behind a reverse proxy (like Nginx or Traefik), you **must** configure the proxy to route traffic to port `6334` using HTTP/2 (`h2c`), rather than the standard REST port.
+
+**Example Traefik Configuration:**
+```yaml
+      - "traefik.http.routers.qdrant-grpc.rule=Host(`qdrant-grpc.example.com`)"
+      - "traefik.http.routers.qdrant-grpc.entrypoints=websecure"
+      - "traefik.http.routers.qdrant-grpc.tls.certresolver=letsencrypt"
+      - "traefik.http.services.qdrant-grpc.loadbalancer.server.port=6334"
+      - "traefik.http.services.qdrant-grpc.loadbalancer.server.scheme=h2c"
 ```
 
 ### Switching from Ollama to Local
