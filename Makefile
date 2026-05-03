@@ -102,6 +102,7 @@ run:
 # ═══════════════════════════════════════════════════════════
 
 install:
-	@echo "$(YELLOW)Installing to ~/.cargo/bin...$(RESET)"
-	cargo install --path vecdb-cli --force
-	cargo install --path vecdb-server --force
+	@echo "$(YELLOW)Installing to ~/.cargo/bin (locked)...$(RESET)"
+	cargo install --path vecdb-cli --locked --force
+	cargo install --path vecdb-server --locked --force
+	cargo install --path vecq --locked --force

@@ -1,5 +1,5 @@
 # AGENT INTERFACE SPECIFICATION: vecdb
-Version: 0.1.0
+Version: 1.0.3
 
 ## PURPOSE
 `vecdb-mcp` provides high-performance vector search and structural discovery for large-scale source code repositories.

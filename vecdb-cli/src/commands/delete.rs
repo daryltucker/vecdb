@@ -58,7 +58,6 @@ pub async fn run(core: &Core, args: DeleteArgs) -> anyhow::Result<()> {
         println!("This action CANNOT be undone.");
         println!();
 
-        // Generate simple 4-char token
         let token = generate_token();
 
         let input: String = dialoguer::Input::new()
@@ -81,8 +80,7 @@ pub async fn run(core: &Core, args: DeleteArgs) -> anyhow::Result<()> {
             Ok(_) => {
                 println!("{}", "Done".green());
                 println!(
-                    "  Note: Local .vecdb/state.toml entries for '{}' will be cleared on next ingest.",
-                    collection
+                    "  Note: Re-ingesting will re-process files — the Qdrant collection UUID has changed."
                 );
             }
             Err(e) => println!("{}", format!("Failed: {}", e).red()),
@@ -101,7 +99,6 @@ fn generate_token() -> String {
         .unwrap()
         .as_nanos();
 
-    // Simple PRNG based on time
     let mut seed = start;
     for _ in 0..4 {
         seed = seed

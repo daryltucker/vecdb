@@ -30,11 +30,13 @@ pub mod history;
 pub mod ingestion;
 pub mod jobs;
 pub mod parsers;
+pub mod resource;
 pub mod router;
 pub mod snapshot;
 pub mod state;
 pub mod tools;
 pub mod types;
+pub mod vecdbrc;
 
 // Re-export output from vecdb-common for backwards compatibility
 pub use vecdb_common::output;
@@ -43,11 +45,24 @@ use anyhow::Result;
 use backend::Backend;
 use backends::qdrant::QdrantBackend;
 use embedder::Embedder;
-use embedders::OllamaEmbedder;
+use embedders::{ArbitratedEmbedder, OllamaEmbedder};
 use ingestion::IngestionOptions;
 use parsers::ParserFactory;
+use resource::ResourceArbiter;
 use router::DynamicRouter;
 use std::sync::Arc;
+use std::sync::OnceLock;
+
+/// Process-singleton arbiter shared by every Core constructed in this process.
+///
+/// Why a singleton: two Core instances in the same MCP server process that both
+/// use the local GPU must serialise via the *same* semaphore, otherwise we
+/// regress to the pre-arbiter behaviour where two paths fight CUDA over OOM.
+/// An arbiter local to each Core would defeat the purpose.
+fn process_arbiter() -> Arc<ResourceArbiter> {
+    static ARBITER: OnceLock<Arc<ResourceArbiter>> = OnceLock::new();
+    ARBITER.get_or_init(|| Arc::new(ResourceArbiter::new())).clone()
+}
 use types::SearchResult;
 use vecdb_common::FileTypeDetector;
 // use serde_json::json;
@@ -148,6 +163,14 @@ impl Core {
             }
         };
 
+        // Wrap in ArbitratedEmbedder so embed/embed_batch/dimension calls go
+        // through the process-wide ResourceArbiter. Different embedders with
+        // different required_resources() will not block each other; same-resource
+        // calls serialise correctly (see resource.rs).
+        let embedder: Arc<dyn Embedder + Send + Sync> = Arc::new(
+            ArbitratedEmbedder::new(embedder, process_arbiter()),
+        );
+
         // Upfront Connection Validation: If the user explicitly asks for Ollama or Local,
         // we strictly prove it's alive AND that the specific model can be loaded into memory.
         // This prevents the application from deadlocking or silently failing later.
@@ -171,6 +194,12 @@ impl Core {
             max_concurrent_requests,
             gpu_batch_size,
         })
+    }
+
+    /// Borrow the embedder for lifecycle operations (release, model_name probes).
+    /// Used by the server's idle-eviction watchdog.
+    pub fn embedder(&self) -> &Arc<dyn Embedder + Send + Sync> {
+        &self.embedder
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -220,6 +249,68 @@ impl Core {
             .await
     }
 
+    /// Ingest a file or directory with per-file .vecdbrc routing.
+    /// When `routes` is provided, each file is routed to its matching collection
+    /// instead of using a single collection for everything.
+    /// `collection` serves as the fallback when no route matches.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn ingest_routed(
+        &self,
+        path: &str,
+        collection: &str,
+        routes: Vec<crate::vecdbrc::Route>,
+        vecdbrc_root: std::path::PathBuf,
+        recursive: bool,
+        chunk_size: Option<usize>,
+        max_chunk_size: Option<usize>,
+        chunk_overlap: Option<usize>,
+        extensions: Option<Vec<String>>,
+        excludes: Option<Vec<String>>,
+        dry_run: bool,
+        metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
+        concurrency: Option<usize>,
+        gpu_concurrency: Option<usize>,
+        quantization: Option<config::QuantizationType>,
+        target_dim: Option<usize>,
+        ignore_vectorignore: bool,
+    ) -> Result<()> {
+        let options = IngestionOptions {
+            path: path.to_string(),
+            collection: collection.to_string(),
+            vecdbrc_routes: Some(routes),
+            vecdbrc_root: Some(vecdbrc_root),
+            chunk_size: chunk_size.unwrap_or(config::DEFAULT_CHUNK_SIZE),
+            max_chunk_size,
+            chunk_overlap: chunk_overlap.unwrap_or(50),
+            respect_gitignore: recursive,
+            ignore_vectorignore,
+            strategy: "recursive".to_string(),
+            tokenizer: "cl100k_base".to_string(),
+            git_ref: None,
+            extensions,
+            excludes,
+            dry_run,
+            metadata,
+            file_allowlist: None,
+            project_root: None,
+            path_rules: self.path_rules.clone(),
+            max_concurrent_requests: concurrency
+                .unwrap_or(self.max_concurrent_requests),
+            gpu_batch_size: gpu_concurrency.unwrap_or(self.gpu_batch_size),
+            quantization,
+        };
+
+        ingestion::ingest_path(
+            &self.backend,
+            &self.embedder,
+            &self.file_detector,
+            &self.parser_factory,
+            options,
+            target_dim,
+        )
+        .await
+    }
+
     /// Ingest a file or directory
     #[allow(clippy::too_many_arguments)]
     pub async fn ingest(
@@ -238,6 +329,7 @@ impl Core {
         gpu_concurrency: Option<usize>,
         quantization: Option<config::QuantizationType>,
         target_dim: Option<usize>,
+        ignore_vectorignore: bool,
     ) -> Result<()> {
         // DIMENSION SAFETY GUARD: Before ingesting, verify the embedder dimension
         // is compatible with any existing collection. This prevents silently mixing
@@ -264,10 +356,13 @@ impl Core {
         let options = IngestionOptions {
             path: path.to_string(),
             collection: collection.to_string(),
+            vecdbrc_routes: None,
+            vecdbrc_root: None,
             chunk_size: chunk_size.unwrap_or(config::DEFAULT_CHUNK_SIZE),
             max_chunk_size,
             chunk_overlap: chunk_overlap.unwrap_or(50),
             respect_gitignore: recursive,
+            ignore_vectorignore,
             strategy: "recursive".to_string(),
             tokenizer: "cl100k_base".to_string(),
             git_ref: None,
@@ -275,6 +370,8 @@ impl Core {
             excludes,
             dry_run,
             metadata,
+            file_allowlist: None,
+            project_root: None,
             path_rules: self.path_rules.clone(),
             max_concurrent_requests: concurrency
                 .unwrap_or(self.max_concurrent_requests),
@@ -293,36 +390,88 @@ impl Core {
         .await
     }
 
-    /// Smart search that routes to specific collections or applies filters based on metadata facets
-    pub async fn search_smart(
+    /// Ingest with full control over IngestionOptions.
+    /// Allows passing `file_allowlist` for multi-file glob batching and
+    /// `project_root` for topographic metadata. The standard `ingest()`
+    /// method sets these to None; use this when you need them.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn ingest_with_options(
         &self,
-        collection: &str,
-        query: &str,
-        limit: u64,
-    ) -> Result<Vec<SearchResult>> {
-        // Use DynamicRouter to detect version/theme facets
-        // NOW monitoring keys defined in Config (defaults: version, language, source_type)
-        let router = DynamicRouter::new(self.backend.clone(), self.smart_routing_keys.clone());
-
-        let (detected_filters, clean_query) = router.route(collection, query).await?;
-
-        let filter = if !detected_filters.is_empty() {
-            Some(serde_json::Value::Object(detected_filters))
-        } else {
-            None
-        };
-
-        if let Some(f) = &filter {
-            if output::OUTPUT.is_interactive {
-                eprintln!(
-                    "Smart Route: Applying filter {:?} to query '{}'",
-                    f, clean_query
-                );
+        options: IngestionOptions,
+        target_dim: Option<usize>,
+    ) -> Result<()> {
+        // Dimension safety guard (same as ingest)
+        if let Ok(info) = self.backend.get_collection_info(&options.collection).await {
+            if let Some(stored_dim) = info.vector_size {
+                let embedder_dim = self.embedder.dimension().await? as u64;
+                let effective_dim = target_dim.map(|d| d as u64).unwrap_or(embedder_dim);
+                if effective_dim != stored_dim && info.vector_count.unwrap_or(0) > 0 {
+                    return Err(anyhow::anyhow!(
+                        "Dimension mismatch: embedder produces {}-dim vectors (effective: {}-dim) \
+                         but collection '{}' already contains {} vectors at {}-dim. \
+                         To fix: either (1) delete the collection and re-ingest, \
+                         or (2) change your local_embedding_model in config.toml to match.",
+                        embedder_dim, effective_dim, options.collection,
+                        info.vector_count.unwrap_or(0), stored_dim
+                    ));
+                }
             }
         }
-
-        self.search(collection, &clean_query, limit, filter).await
+        ingestion::ingest_path(
+            &self.backend,
+            &self.embedder,
+            &self.file_detector,
+            &self.parser_factory,
+            options,
+            target_dim,
+        )
+        .await
     }
+
+/// Smart search that routes to specific collections or applies filters based on metadata facets.
+/// Uses DynamicRouter with a built-in timeout to prevent hanging on complex facet queries.
+pub async fn search_smart(
+    &self,
+    collection: &str,
+    query: &str,
+    limit: u64,
+) -> Result<Vec<SearchResult>> {
+    // Use DynamicRouter to detect version/theme facets
+    // NOW monitoring keys defined in Config (defaults: version, language, source_type)
+    let router = DynamicRouter::new(self.backend.clone(), self.smart_routing_keys.clone());
+
+    // Apply timeout to smart routing: if it takes > 5s, fall back to plain search
+    let (detected_filters, clean_query) = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        router.route(collection, query)
+    ).await {
+        Ok(Ok(result)) => result,
+        _ => {
+            // Timeout or error - fall back to plain search
+            if output::OUTPUT.is_interactive {
+                eprintln!("Smart Route: Timeout on facet detection, falling back to plain search");
+            }
+            (serde_json::Map::new(), query.to_string())
+        }
+    };
+
+    let filter = if !detected_filters.is_empty() {
+        Some(serde_json::Value::Object(detected_filters))
+    } else {
+        None
+    };
+
+    if let Some(f) = &filter {
+        if output::OUTPUT.is_interactive {
+            eprintln!(
+                "Smart Route: Applying filter {:?} to query '{}'",
+                f, clean_query
+            );
+        }
+    }
+
+    self.search(collection, &clean_query, limit, filter).await
+}
 
     #[allow(clippy::too_many_arguments)]
     /// Ingest raw content directly (Push Interface)
@@ -417,7 +566,13 @@ impl Core {
         Ok(infos)
     }
 
-    /// Delete a collection
+    /// Delete a collection.
+    ///
+    /// Removes the collection from Qdrant.  Local `.vecdb/state.toml` files
+    /// referencing this collection become stale — they are not removed here
+    /// because the re-ingest path detects the UUID mismatch and clears them
+    /// automatically.  A future `vecdb cleanup` command can surface and prune
+    /// orphaned state entries if desired.
     pub async fn delete_collection(&self, collection: &str) -> Result<()> {
         self.backend.delete_collection(collection).await
     }

@@ -35,6 +35,7 @@ pub async fn ingest_path(
     let job_id = job_registry
         .as_ref()
         .and_then(|r| r.register("ingest", &options.collection).ok());
+
     if OUTPUT.is_interactive {
         eprintln!("Ingesting path: {}", options.path);
     }
@@ -174,7 +175,6 @@ pub async fn ingest_path(
     let mut files_skipped = 0;
     let mut files_processed = 0;
 
-    let collection_name_batch = options.collection.clone();
     let options_arc = Arc::new(options);
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(
@@ -183,21 +183,30 @@ pub async fn ingest_path(
     let mut tasks = tokio::task::JoinSet::new();
 
     // Pipeline Channel: Decouples parsing from embedding
-    // Provides 10 batches of "breathing room" before blocking the parser
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<crate::types::Chunk>>(10);
+    // When routing is active, each message carries its target collection.
+    // Without routing, all messages use the options.collection default.
+    let has_routes = options_arc.vecdbrc_routes.is_some();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, Vec<crate::types::Chunk>)>(10);
 
-    // Dedicated Embedding Worker
+    // Dedicated Embedding Worker (routing-aware)
     let backend_embed = backend.clone();
     let embedder_embed = embedder.clone();
     let gpu_batch_size = options_arc.gpu_batch_size;
     let max_chunk_size = options_arc.max_chunk_size;
-
     let embedding_handle = tokio::spawn(async move {
-        while let Some(mut batch) = rx.recv().await {
+        while let Some((coll, mut batch)) = rx.recv().await {
+            // Auto-create collection if it doesn't exist (routed collections may be new)
+            if !backend_embed.collection_exists(&coll).await? {
+                if crate::output::OUTPUT.is_interactive {
+                    eprintln!("Creating collection '{}' for routed files...", coll);
+                }
+                let dim = embedder_embed.dimension().await?;
+                backend_embed.create_collection(&coll, dim as u64, None).await?;
+            }
             flush_chunks(
                 &backend_embed,
                 &embedder_embed,
-                &collection_name_batch,
+                &coll,
                 &mut batch,
                 gpu_batch_size,
                 resolved_dim,
@@ -219,6 +228,22 @@ pub async fn ingest_path(
                         continue;
                     }
 
+                    // File allowlist: if set, only process files that match
+                    // one of the explicitly listed paths. Used for multi-file
+                    // glob ingestion where the walker walks the common parent
+                    // but we only want specific files.
+                    if let Some(ref allowlist) = options_arc.file_allowlist {
+                        let path_str = path.to_string_lossy().to_string();
+                        if !allowlist.iter().any(|allowed| {
+                            path_str == *allowed
+                                || path_str.ends_with(&format!("/{}", allowed.trim_start_matches("./")))
+                                || path_str.ends_with(&format!("\\{}", allowed.trim_start_matches("./")))
+                        }) {
+                            files_skipped += 1;
+                            continue;
+                        }
+                    }
+
                     let stripped = path.strip_prefix(root_path).unwrap_or(&path);
                     let canonical_root = std::fs::canonicalize(root_path).unwrap_or_else(|_| root_path.to_path_buf());
                     let project_dir_name = canonical_root.file_name().unwrap_or_else(|| std::ffi::OsStr::new(""));
@@ -228,8 +253,32 @@ pub async fn ingest_path(
                         std::path::Path::new(project_dir_name).join(stripped)
                     };
 
+                    // Determine target collection via .vecdbrc routing (if active)
+                    let file_collection: String = if let Some(ref routes) = options_arc.vecdbrc_routes {
+                        let match_path = options_arc.vecdbrc_root.as_ref().and_then(|root| {
+                            path.strip_prefix(root).ok()
+                        }).map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| rel_path.to_string_lossy().to_string());
+
+                        let coll = crate::vecdbrc::resolve_route(
+                            routes, &match_path, Some(&options_arc.collection)
+                        ).0;
+                        // Fall back to options collection if route returned empty
+                        let effective_coll = if coll.is_empty() {
+                            options_arc.collection.clone()
+                        } else {
+                            coll
+                        };
+                        if OUTPUT.is_interactive {
+                            eprintln!("  → '{}' → collection '{}'", rel_path.display(), effective_coll);
+                        }
+                        effective_coll
+                    } else {
+                        options_arc.collection.clone()
+                    };
+
                     if let Ok(meta_hash) = crate::state::compute_file_metadata_hash(&path) {
-                        if !state.update_file(&collection_name, rel_path.clone(), meta_hash.clone())
+                        if !state.update_file(&file_collection, rel_path.clone(), meta_hash.clone())
                         {
                             // Skipped
                             if let Some(ref pb) = pb {
@@ -260,6 +309,7 @@ pub async fn ingest_path(
                     }
 
                     let permit = semaphore.clone().acquire_owned().await?;
+                    let coll_for_task = file_collection.clone();
 
                     let detector = detector.clone();
                     let parser_factory = parser_factory.clone();
@@ -269,7 +319,7 @@ pub async fn ingest_path(
 
                     tasks.spawn(async move {
                         let _permit = permit;
-                        process_single_file(
+                        match process_single_file(
                             path,
                             rel_path,
                             detector,
@@ -279,6 +329,11 @@ pub async fn ingest_path(
                             commit_sha,
                         )
                         .await
+                        {
+                            Ok(Some(chunks)) => Ok(Some((coll_for_task, chunks))),
+                            Ok(None) => Ok(None),
+                            Err(e) => Err(e),
+                        }
                     });
                 }
             }
@@ -294,13 +349,22 @@ pub async fn ingest_path(
         // Drain finished parsing tasks while discovery continues
         while let Some(res) = tasks.try_join_next() {
             match res {
-                Ok(Ok(Some(mut file_chunks))) => {
+                Ok(Ok(Some((coll, mut file_chunks)))) => {
                     files_processed += 1;
+                    if has_routes && !chunks_buffer.is_empty() {
+                        // When routing, flush buffer per-collection to avoid mixing
+                        // different collections in the same batch
+                        let batch = std::mem::take(&mut chunks_buffer);
+                        if (tx.send((coll.clone(), batch)).await).is_err() {
+                            break 'discovery_loop;
+                        }
+                    }
                     chunks_buffer.append(&mut file_chunks);
 
                     if chunks_buffer.len() >= batch_size {
+                        let coll_name = if has_routes { coll.clone() } else { collection_name.clone() };
                         let batch = std::mem::take(&mut chunks_buffer);
-                        if (tx.send(batch).await).is_err() {
+                        if (tx.send((coll_name, batch)).await).is_err() {
                              // Background worker failed. Break to catch the real error below.
                              break 'discovery_loop;
                         }
@@ -334,12 +398,20 @@ pub async fn ingest_path(
     // Pass 2: Finish all pending parsing tasks
     'parsing_finish: while let Some(res) = tasks.join_next().await {
         match res {
-            Ok(Ok(Some(mut file_chunks))) => {
+            Ok(Ok(Some((coll, mut file_chunks)))) => {
                 files_processed += 1;
+                if has_routes && !chunks_buffer.is_empty() {
+                    let coll_name = if has_routes { coll.clone() } else { collection_name.clone() };
+                    let batch = std::mem::take(&mut chunks_buffer);
+                    if (tx.send((coll_name, batch)).await).is_err() {
+                        break 'parsing_finish;
+                    }
+                }
                 chunks_buffer.append(&mut file_chunks);
                 if chunks_buffer.len() >= batch_size {
+                    let coll_name = if has_routes { coll.clone() } else { collection_name.clone() };
                     let batch = std::mem::take(&mut chunks_buffer);
-                    if (tx.send(batch).await).is_err() {
+                    if (tx.send((coll_name, batch)).await).is_err() {
                         break 'parsing_finish;
                     }
                 }
@@ -368,9 +440,11 @@ pub async fn ingest_path(
         }
     }
 
+
+
     // Flush last batch
     if !chunks_buffer.is_empty() {
-        let _ = tx.send(chunks_buffer).await;
+        let _ = tx.send((collection_name.clone(), chunks_buffer)).await;
     }
 
     // Signal completion to embedding worker
@@ -426,10 +500,13 @@ pub async fn ingest_memory(
     let options = IngestionOptions {
         path: "memory".to_string(),
         collection: collection.to_string(),
+        vecdbrc_routes: None,
+        vecdbrc_root: None,
         chunk_size: chunk_size.unwrap_or(512),
         max_chunk_size,
         chunk_overlap: chunk_overlap.unwrap_or(50),
         respect_gitignore: false,
+        ignore_vectorignore: false,
         strategy: "recursive".to_string(),
         tokenizer: "cl100k_base".to_string(),
         git_ref: None,
@@ -437,6 +514,8 @@ pub async fn ingest_memory(
         excludes: None,
         dry_run: false,
         metadata: None,
+        file_allowlist: None,
+        project_root: None,
         path_rules: Vec::new(),
         max_concurrent_requests: 4,
         gpu_batch_size: 2,

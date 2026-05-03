@@ -10,8 +10,13 @@ use clap::Parser;
 use std::sync::Arc;
 use vecdb_core::config::Config;
 use vecdb_core::Core;
-use vecdb_server::core_registry::{CoreFactory, CoreKey, CoreRegistry};
-use vecdb_server::rpc::{handle_request, types::{JsonRpcRequest, JsonRpcResponse}};
+use vecdb_server::core_registry::{
+    start_watchdog, CoreFactory, CoreKey, CoreRegistry, EvictionMode,
+};
+use vecdb_server::rpc::{
+    handle_request,
+    types::{JsonRpcError, JsonRpcRequest, JsonRpcResponse},
+};
 mod vecq_adapter;
 use crate::vecq_adapter::VecqParserFactory;
 use vecq::detection::HybridDetector;
@@ -51,7 +56,21 @@ async fn main() -> anyhow::Result<()> {
     // 0. Parse Args
     let args = Args::parse();
     if args.version {
-        println!("vecdb-server {}", env!("CARGO_PKG_VERSION"));
+        let version = env!("CARGO_PKG_VERSION");
+        // Try to get git hash at runtime
+        let git_hash = std::process::Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .current_dir("/home/daryl/Projects/NRG/vecdb-mcp")
+            .output()
+            .ok()
+            .and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).trim().to_string()) } else { None })
+            .unwrap_or_else(|| "unknown".to_string());
+        
+        println!("vecdb-server {} (git:{})", version, git_hash);
+        // Also show key config paths
+        if let Ok(config_path) = Config::get_path() {
+            eprintln!("Config: {}", config_path.display());
+        }
         return Ok(());
     }
 
@@ -88,6 +107,15 @@ async fn main() -> anyhow::Result<()> {
     // Prepare shared services
     let file_detector = Arc::new(HybridDetector::new());
     let parser_factory = Arc::new(VecqParserFactory);
+
+    // Don't eagerly load GPU at boot. The server creates a boot Core for the default
+    // profile (which may use local GPU embedding). If this server only serves requests 
+    // for remote-Ollama collections, that GPU memory sits unused and blocks other 
+    // processes from using the GPU.
+    // VECDB_SKIP_PROBE defers embedder initialization to the first actual embed() call,
+    // so GPU is only loaded when a request needs local embedding.
+    // If no local-embed requests ever arrive, GPU stays free for other processes.
+    std::env::set_var("VECDB_SKIP_PROBE", "1");
 
     let boot_core_instance = Core::new(
         &profile.qdrant_url,
@@ -132,11 +160,30 @@ async fn main() -> anyhow::Result<()> {
         boot_key,
         target_profile.clone(),
         factory,
+        config.clone(),
     ));
+
+    // Idle-eviction watchdog. Stdio subprocesses exit on deep-idle so the OS reclaims
+    // the residual CUDA context (~80 MiB) — the MCP client respawns them on next use.
+    // HTTP daemons stay up; deep-idle just drops the cache entry.
+    let eviction_mode = if args.stdio {
+        EvictionMode::ExitOnDeepIdle
+    } else {
+        EvictionMode::CacheOnly
+    };
+    let shutdown_rx = start_watchdog(registry.clone(), config.server.clone(), eviction_mode);
+
     let config = Arc::new(config);
 
     if args.stdio {
-        run_stdio_server(registry, config, args.allow_local_fs, target_profile).await
+        run_stdio_server(
+            registry,
+            config,
+            args.allow_local_fs,
+            target_profile,
+            shutdown_rx,
+        )
+        .await
     } else {
         vecdb_server::server::run_http_server(
             registry,
@@ -154,6 +201,7 @@ async fn run_stdio_server(
     config: Arc<Config>,
     allow_local_fs: bool,
     target_profile: String,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     if vecdb_common::OUTPUT.is_interactive {
         eprintln!("vecdb-mcp server running on stdio (Manual JSON-RPC)...");
@@ -173,7 +221,28 @@ async fn run_stdio_server(
     let mut reader = BufReader::new(stdin).lines();
     let mut writer = stdout;
 
-    while let Some(line) = reader.next_line().await? {
+    loop {
+        // Race the next stdin line against a shutdown signal from the watchdog.
+        // On deep-idle, the watchdog flips the channel and we exit cleanly so the
+        // OS reclaims the process-global CUDA context. The MCP client respawns
+        // this subprocess on its next request.
+        let line = tokio::select! {
+            biased; // prefer shutdown over new work if both are ready
+            res = shutdown_rx.changed() => {
+                if res.is_err() || *shutdown_rx.borrow() {
+                    if vecdb_common::OUTPUT.is_interactive {
+                        eprintln!("vecdb-mcp: deep-idle reached, exiting cleanly");
+                    }
+                    break;
+                }
+                continue;
+            }
+            line = reader.next_line() => match line? {
+                Some(l) => l,
+                None => break, // EOF — client disconnected
+            },
+        };
+
         if line.trim().is_empty() {
             continue;
         }
@@ -187,8 +256,48 @@ async fn run_stdio_server(
             }
         };
 
-        // Handle Method
-        let result = handle_request(&registry, &config, &req, allow_local_fs, &target_profile).await;
+        // Handle Method (inside a spawned task so panics don't kill the server).
+        // tokio::task::spawn catches panics and surfaces them as JoinError.
+        // This is our panic boundary — if ANY tool handler panics (e.g. bug in a
+        // dependency, weird file path, OOM), the server logs the panic and returns
+        // a JSON-RPC error instead of crashing the process.
+        let registry_t = registry.clone();
+        let config_t = config.clone();
+        let tp_t = target_profile.clone();
+        let method_t = req.method.clone();
+        let params_t = req.params.clone();
+        let id_t = req.id.clone();
+
+        let handle = tokio::task::spawn(async move {
+            let req = JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                method: method_t,
+                params: params_t,
+                id: id_t,
+            };
+            handle_request(&registry_t, &config_t, &req, allow_local_fs, &tp_t).await
+        });
+
+        let result = match handle.await {
+            Ok(result) => result,
+            Err(e) if e.is_panic() => {
+                let msg = e
+                    .into_panic()
+                    .downcast::<String>()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|_| "unknown panic".to_string());
+                eprintln!("[vecdb-mcp] PANIC in tool handler: {msg}");
+                Err(JsonRpcError {
+                    code: -32000,
+                    message: format!("Internal error (panic): {msg}"),
+                    data: None,
+                })
+            }
+            Err(_) => {
+                // Task cancelled — server is shutting down.
+                continue;
+            }
+        };
 
         // Send Response
         if let Some(id) = req.id {

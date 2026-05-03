@@ -123,7 +123,8 @@ def run_tier1_test():
             "name": "ingest_path",
             "arguments": {
                 "path": lua_path,
-                "collection": "tier1_lua"
+                "collection": "tier1_lua",
+                "ignore_vectorignore": True
             }
         }, 3)
         duration = time.time() - start_time

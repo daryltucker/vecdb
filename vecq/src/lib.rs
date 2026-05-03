@@ -198,6 +198,10 @@ pub mod detection;
 pub mod natural_language;
 pub mod enrich;
 
+// Project-level AST analysis
+pub mod project;
+pub use project::{project_overview, ProjectOverview, ProjectOverviewArgs};
+
 // Re-export essential types and traits
 pub use error::{VecqError, VecqResult};
 pub use types::{ParsedDocument, DocumentElement, ElementType, FileType, DocumentMetadata};

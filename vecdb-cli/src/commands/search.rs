@@ -51,7 +51,8 @@ pub async fn run(
     )
     .await?;
 
-    let results = if args.smart {
+    let use_smart = args.smart.unwrap_or(false);
+    let results = if use_smart {
         if show_progress {
             println!(
                 "Searching with smart routing in collection: {} for: {}",

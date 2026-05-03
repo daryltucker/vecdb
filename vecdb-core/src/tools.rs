@@ -12,17 +12,25 @@ pub struct SearchArgs {
     #[arg(long)]
     pub profile: Option<String>,
 
-    /// The collection to search in. Use 'list_collections' to discover what is available.
+    /// The collection to search in. Use list_collections to discover what is available.
     #[arg(long, short)]
     pub collection: Option<String>,
 
     /// Output results as JSON
     #[arg(long)]
+    #[serde(default)]
     pub json: bool,
 
-    /// Use smart routing to detect facets (overrides default search)
+    /// Use smart routing to detect facets (overrides default search).
+    /// Defaults to false if not specified.
     #[arg(long)]
-    pub smart: bool,
+    #[serde(default)]
+    pub smart: Option<bool>,
+
+    /// Minimum similarity score threshold (0.0-1.0). Results below this are filtered out.
+    #[arg(long)]
+    #[serde(default)]
+    pub min_score: Option<f64>,
 }
 
 /// Tool: Generate vectors from text
@@ -69,6 +77,11 @@ pub struct IngestPathArgs {
     /// Max concurrent GPU embedding tasks (optional, uses server default if not specified)
     #[arg(long, short = 'G')]
     pub gpu_concurrency: Option<usize>,
+
+    /// Ignore .vectorignore files during file walking
+    #[arg(long, default_value_t = false)]
+    #[serde(default)]
+    pub ignore_vectorignore: bool,
 }
 
 /// Tool: Ingest a historic version of a repository
@@ -109,6 +122,43 @@ pub struct VecqToolArgs {
     /// Git repository path (required if source='git')
     #[arg(long)]
     pub repo_path: Option<String>,
+}
+
+/// Tool: Generate a structural overview of a project using AST analysis
+///
+/// Walks a directory (respecting .vectorignore), parses each supported source file,
+/// and returns a JGF v2 architecture graph and Mermaid diagram.
+///
+/// Security: Requires server started with --allow-local-fs flag.
+///
+/// Example: project_overview(path='/absolute/path/to/project')
+#[derive(Debug, Args, Serialize, Deserialize, JsonSchema, Clone)]
+pub struct ProjectOverviewArgs {
+    /// Absolute path to the project root directory
+    pub path: String,
+
+    /// Maximum directory depth to recurse (default: 10)
+    #[arg(long)]
+    pub max_depth: Option<usize>,
+
+    /// Additional ignore patterns on top of .vectorignore (e.g. "*.generated.rs")
+    #[arg(long, num_args = 0..)]
+    #[serde(default)]
+    pub ignore_patterns: Vec<String>,
+
+    /// Whether to respect .gitignore files (default: false)
+    #[arg(long)]
+    pub respect_gitignore: Option<bool>,
+
+    /// If true, bypass `.vectorignore` during file walking (default: false).
+    /// This is the vecdb standard pattern: default false = respect the ignore file,
+    /// set true to opt out for one-off overrides.
+    #[arg(long)]
+    pub ignore_vectorignore: Option<bool>,
+
+    /// Whether to skip hidden files/directories (default: true)
+    #[arg(long)]
+    pub skip_hidden: Option<bool>,
 }
 
 /// Tool: Check status of background jobs

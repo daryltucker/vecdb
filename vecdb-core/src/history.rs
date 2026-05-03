@@ -53,10 +53,13 @@ pub async fn ingest_history(
     let options = IngestionOptions {
         path: sandbox.path().to_string_lossy().to_string(),
         collection: collection.to_string(),
+        vecdbrc_routes: None,
+        vecdbrc_root: None,
         chunk_size,
         max_chunk_size: None, // History ingestion usually relies on standard chunking, no hard limit enforced yet
         chunk_overlap: 50,
         respect_gitignore: true,
+        ignore_vectorignore: false,
         strategy: "recursive".to_string(),
         tokenizer: "cl100k_base".to_string(),
         git_ref: Some(git_ref.to_string()),
@@ -64,6 +67,8 @@ pub async fn ingest_history(
         excludes: None,
         dry_run: false,
         metadata: None,
+        file_allowlist: None,
+        project_root: None,
         path_rules: Vec::new(),
         max_concurrent_requests: 4,
         gpu_batch_size: 2,

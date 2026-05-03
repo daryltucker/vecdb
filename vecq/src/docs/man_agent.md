@@ -28,23 +28,40 @@ vecq allows AI Agents to query source code structure (AST) as if it were JSON.
 - **`map(filter)`**: Apply transformation to each element.
     - Example: `.functions | map(.name)` -> Output list of function names.
 
-### 3. Conversion (`convert`)
+### 3. Codebase Mapping (`map`)
+- **Action**: Analyze a directory and produce a structural graph (files, modules, symbols).
+- **Usage**: `vecq map <PATH> [-d DEPTH] [-o FORMAT] [--no-gitignore] [--no-skip-hidden] [-s]`
+- **Output Formats**:
+    - `mermaid` (default): Mermaid diagram for documentation/IDEs
+    - `json`: Full JGF v2 graph
+    - `graph`: Pruned architectural graph
+    - `human`: Readable summary with optional statistics
+- **Use Cases**:
+    - Generate architecture documentation before refactoring
+    - Understand unfamiliar codebase structure
+    - Visual dependency mapping for planning
+- **Examples**:
+    - `vecq map ./src -o mermaid > architecture.md`
+    - `vecq map ./src -s` (show files analyzed/skipped)
+    - `vecq map ./src -d 3` (limit depth to 3)
+
+### 4. Conversion (`convert`)
 - **Action**: Dump the full AST as JSON.
 - **Usage**: `vecq --convert <INPUT>`
 
-### 4. Introspection (`list-filters`, `elements`)
+### 5. Introspection (`list-filters`, `elements`)
 - **Action**: List tools and AST structures.
 - **Usage**: 
     - `vecq list-filters` : List available jq filters.
     - `vecq elements <EXT>` : List available AST elements for a language.
 
-### 5. Documentation (`doc`)
+### 6. Documentation (`doc`)
 - **Action**: Generate standardized Markdown documentation from semantic code structure.
 - **Usage**: `vecq doc <INPUT>`
 - **Output**: Pure Markdown (headers, code blocks, docstrings).
 - **Mechanism**: Runs embedded `doc.jq` logic on strict Tree-sitter AST.
 
-### 6. Normalization & Schemas (Unified Layer)
+### 7. Normalization & Schemas (Unified Layer)
 - **Action**: Transform disparate raw data (logs, issues, build errors) into canonical schemas.
 - **Philosophy**: "Parse, Don't Validate". Lenient conversion to a shared contract.
 - **Usage**: `vecq <INPUT> -q 'auto_normalize'` or specific functions like `nginx_to_log`.
@@ -90,6 +107,7 @@ Use this tool when you need to:
 1. Understand the structure of a file without reading the whole text.
 2. Find specific code elements (e.g. "all public functions") reliably.
 3. Extract executable code blocks from documentation.
+4. Generate architecture diagrams for documentation.
 
 ## RECIPES (Structural Analysis)
 Common Agentic workflows for codebase understanding.
@@ -109,6 +127,10 @@ Common Agentic workflows for codebase understanding.
 ### 4. The "Dependency Mapper"
 **Goal**: Find all files importing a specific module.
 **Cmd**: `vecq -R src/ -q '(.imports // [])[] | select(.path | contains("target_module")) | .path' --grep-format`
+
+### 5. The "Architecture Explorer"
+**Goal**: Generate a visual map of the codebase structure.
+**Cmd**: `vecq map ./src -o mermaid > architecture.md`
 
 ## DISCOVERY PROTOCOL
 To avoid hallucinating schema structure, Agents MUST follow this protocol when encountering unmatched files:

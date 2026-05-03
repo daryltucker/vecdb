@@ -1,8 +1,9 @@
 // Command-line argument parsing for vecq
 // Contains the Args struct, Commands enum, and argument validation logic
 
-use clap::{builder::TypedValueParser, CommandFactory, Parser, Subcommand};
+use clap::{builder::TypedValueParser, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell};
+use std::path::PathBuf;
 use vecq::{available_output_formats, supported_file_types, FileType, SchemaRegistry};
 
 /// vecq - jq for source code
@@ -196,6 +197,53 @@ pub enum Commands {
     ListFilters,
     /// List available structural elements (AST nodes)
     Elements,
+    /// Analyze a directory and produce a structural graph (files, modules, symbols)
+    Map(MapArgs),
+}
+
+/// Output format for `vecq map`
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum MapOutputFormat {
+    /// Mermaid diagram (default)
+    Mermaid,
+    /// Full JGF v2 JSON graph
+    Json,
+    /// Pruned architectural graph (files, modules, structs only)
+    Graph,
+    /// Human-readable summary
+    Human,
+}
+
+/// Arguments for the `vecq map` command
+#[derive(Parser, Debug, Clone)]
+pub struct MapArgs {
+    /// Directory to analyze
+    #[arg(value_name = "PATH")]
+    pub path: PathBuf,
+
+    /// Maximum directory depth (default: 10)
+    #[arg(short = 'd', long)]
+    pub depth: Option<usize>,
+
+    /// Additional ignore patterns (can be repeated)
+    #[arg(short = 'i', long = "ignore")]
+    pub ignore_patterns: Vec<String>,
+
+    /// Output format (default: mermaid)
+    #[arg(short = 'o', long, value_enum)]
+    pub output: Option<MapOutputFormat>,
+
+    /// Don't respect .gitignore
+    #[arg(long)]
+    pub no_gitignore: bool,
+
+    /// Don't skip hidden files
+    #[arg(long)]
+    pub no_skip_hidden: bool,
+
+    /// Show analysis statistics (files analyzed/skipped)
+    #[arg(long, short = 's')]
+    pub stats: bool,
 }
 
 #[derive(Clone)]

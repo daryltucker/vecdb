@@ -3,6 +3,7 @@
 ## SYNOPSIS
     vecq [OPTIONS] <INPUT> [QUERY]
     vecq --convert <INPUT>
+    vecq map <PATH> [OPTIONS]
     vecq man [COMMAND] [--agent]
 
 ## DESCRIPTION
@@ -18,6 +19,12 @@
     * **query** <INPUT> [QUERY]
         Query a file or directory. The query is optional if you just want to see the structure.
         Example: `vecq src/main.rs '.functions[]'`
+
+    * **map** <PATH> [-d DEPTH] [-o FORMAT] [-s]
+        Analyze a directory and produce a structural graph of files, modules, and symbols.
+        Output formats: mermaid (default), json, graph, human.
+        Example: `vecq map ./src -o mermaid > architecture.md`
+        Example: `vecq map ./src -s` (show statistics)
 
     * **convert** --convert <INPUT>
         Convert file to JSON directly without querying.
@@ -56,6 +63,9 @@
 
     Pipeline integration:
     `find . -name "*.rs" | xargs vecq --grep-format | grep "pub fn"`
+
+    Generate architecture diagram:
+    `vecq map ./src -o mermaid > architecture.md`
 
 ## SUPPORTED FILE TYPES
     Rust (.rs), Python (.py), Markdown (.md), C (.c, .h), 

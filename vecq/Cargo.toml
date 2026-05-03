@@ -64,6 +64,9 @@ dirs = "6.0.0"
 # File type detection
 infer.workspace = true
 
+# Directory walking (respects .gitignore/.vectorignore)
+ignore = "0.4.25"
+
 # Caching and performance
 lru = "0.16.3"
 
@@ -77,11 +80,11 @@ quick-xml = { version = "0.39.2", features = ["serialize"] }
 tree-sitter-rust = "0.24.0"
 regex = "1.12.3"
 ahash = "0.8.12"
-jaq-core = "3.0.0-beta"
-jaq-std = "3.0.0-beta"
-jaq-json = "2.0.0-beta"
-jaq-parse = "1.0.3"
-foldhash = "0.1.5"
+jaq-core = "=3.0.0-beta"
+jaq-std = "=3.0.0-beta"
+jaq-json = "=2.0.0-beta"
+jaq-parse = "=1.0.3"
+foldhash = "=0.1.5"
 
 [dev-dependencies]
 proptest = "1.10.0"

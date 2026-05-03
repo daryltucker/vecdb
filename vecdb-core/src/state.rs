@@ -120,6 +120,12 @@ impl IngestionState {
             c.last_ingested_at = Some(Utc::now());
         }
     }
+
+    /// Remove a collection entry from local state entirely.
+    /// Call this when the collection has been deleted from Qdrant.
+    pub fn remove_collection(&mut self, collection: &str) {
+        self.collections.remove(collection);
+    }
 }
 
 pub fn compute_hash(content: &str) -> String {

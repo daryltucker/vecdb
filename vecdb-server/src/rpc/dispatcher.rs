@@ -10,7 +10,8 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use vecdb_core::config::Config;
 use vecdb_core::tools::{
-    EmbedArgs, IngestHistoryArgs, IngestPathArgs, JobStatusArgs, SearchArgs, VecqToolArgs,
+    EmbedArgs, IngestHistoryArgs, IngestPathArgs, JobStatusArgs, ProjectOverviewArgs, SearchArgs,
+    VecqToolArgs,
 };
 
 /// Main entry point for handling JSON-RPC requests
@@ -41,11 +42,21 @@ pub async fn handle_request(
 
 /// Handle MCP initialization
 fn handle_initialize() -> Result<Value, JsonRpcError> {
+    let version = env!("CARGO_PKG_VERSION");
+    let git_hash = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir("/home/daryl/Projects/NRG/vecdb-mcp")
+        .output()
+        .ok()
+        .and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).trim().to_string()) } else { None })
+        .unwrap_or_else(|| "unknown".to_string());
+    
     Ok(json!({
         "protocolVersion": "2025-11-25",
         "serverInfo": {
             "name": "vecdb-mcp",
-            "version": "0.1.0"
+            "version": version,
+            "git": git_hash
         },
         "capabilities": {
             "tools": {},
@@ -61,6 +72,7 @@ fn handle_tools_list() -> Result<Value, JsonRpcError> {
     let ingest_schema = schema_for!(IngestPathArgs);
     let history_schema = schema_for!(IngestHistoryArgs);
     let vecq_schema = schema_for!(VecqToolArgs);
+    let project_overview_schema = schema_for!(ProjectOverviewArgs);
     let job_status_schema = schema_for!(JobStatusArgs);
 
     let to_json = |val| {
@@ -124,6 +136,11 @@ fn handle_tools_list() -> Result<Value, JsonRpcError> {
                 "name": "code_query",
                 "description": "Execute AST-aware structural queries (jq-style) against code files.\n\nExample: code_query(path='src/main.rs', query='.functions[] | select(.name == \"main\")')\n\nUse case: High-precision extraction of specific code elements (classes, functions, docs) without full file ingestion.\nSupported: Rust (rs), Python (py), Markdown (md), Javascript (js/ts), SQL, Go.",
                 "inputSchema": to_json(vecq_schema)?
+            },
+            {
+                "name": "project_overview",
+                "description": "Generate a structural overview of an entire codebase using AST analysis.\n\nExample: project_overview(path='/absolute/path/to/project')\n\nReturns: A Mermaid architecture diagram and JGF v2 graph showing files, modules, structs, classes, and their import relationships. Respects .vectorignore; .gitignore is opt-in.\n\nSecurity: Requires server started with --allow-local-fs flag.\nUse case: Understand an unfamiliar codebase, generate architecture docs, plan refactoring.",
+                "inputSchema": to_json(project_overview_schema)?
             },
             {
                 "name": "get_job_status",

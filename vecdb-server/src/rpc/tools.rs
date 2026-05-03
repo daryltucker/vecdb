@@ -5,9 +5,12 @@ use crate::core_registry::CoreRegistry;
 use crate::rpc::types::{JsonRpcError, JsonRpcRequest};
 use serde_json::{json, Value};
 use std::sync::Arc;
+use vecdb_core::backend::Backend;
+use vecdb_core::backends::qdrant::QdrantBackend;
 use vecdb_core::config::Config;
 use vecdb_core::tools::{
-    EmbedArgs, IngestHistoryArgs, IngestPathArgs, JobStatusArgs, SearchArgs, VecqToolArgs,
+    EmbedArgs, IngestHistoryArgs, IngestPathArgs, JobStatusArgs, ProjectOverviewArgs, SearchArgs,
+    VecqToolArgs,
 };
 
 /// Handle tools/call request by dispatching to individual tool handlers
@@ -38,6 +41,7 @@ pub async fn handle_tools_call(
         "ingest_path" => handle_ingest_path(registry, config, params, allow_local_fs, active_profile_name).await,
         "ingest_history" => handle_ingest_history(registry, config, params, allow_local_fs, active_profile_name).await,
         "code_query" => handle_code_query(params, allow_local_fs).await,
+        "project_overview" => handle_project_overview(params, allow_local_fs).await,
         "get_job_status" => handle_get_job_status(registry, config, params).await,
         _ => Err(JsonRpcError {
             code: -32601,
@@ -102,7 +106,11 @@ async fn handle_search_vectors(
             data: None,
         })?;
 
-    let results = if args.smart {
+    // Handle smart routing: default to false if not specified
+    let use_smart = args.smart.unwrap_or(false);
+
+    // Perform search (smart or regular)
+    let mut results = if use_smart {
         core.search_smart(&collection, &args.query, 10).await
     } else {
         core.search(&collection, &args.query, 10, None).await
@@ -112,6 +120,12 @@ async fn handle_search_vectors(
         message: e.to_string(),
         data: None,
     })?;
+
+    // Apply min_score threshold filtering if specified
+    if let Some(threshold) = args.min_score {
+        let threshold_f32 = threshold as f32;
+        results.retain(|r| r.score >= threshold_f32);
+    }
 
     Ok(json!({
         "content": [
@@ -196,25 +210,79 @@ async fn handle_delete_collection(
 }
 
 /// Handle list_collections tool.
-/// Uses the boot Core (lists collections from the boot Qdrant instance only).
+///
+/// Queries ALL configured Qdrant backends (not just the boot core) by connecting
+/// directly to each unique Qdrant URL with a lightweight client — no embedder
+/// initialization required. This ensures remote collections (e.g. `docs-lts` on
+/// a separate Qdrant instance) are visible to agents even when their profile's
+/// embedder type (Ollama) differs from the boot profile.
 async fn handle_list_collections(
-    registry: &Arc<CoreRegistry>,
+    _registry: &Arc<CoreRegistry>,
     config: &Arc<Config>,
     active_profile_name: &str,
 ) -> Result<Value, JsonRpcError> {
-    let core = registry.boot_core(config).await.map_err(|e| JsonRpcError {
-        code: -32000,
-        message: e.to_string(),
-        data: None,
-    })?;
+    // Collect all unique (qdrant_url, qdrant_api_key) pairs from config
+    #[derive(Hash, Eq, PartialEq, Clone)]
+    struct QdrantEndpoint {
+        url: String,
+        api_key: Option<String>,
+    }
 
-    let collections = core.list_collections().await.map_err(|e| JsonRpcError {
-        code: -32000,
-        message: e.to_string(),
-        data: None,
-    })?;
+    let mut endpoints: std::collections::HashSet<QdrantEndpoint> = std::collections::HashSet::new();
 
-    // Get default collection for the active profile
+    for name in config.profiles.keys() {
+        if let Ok(prof) = config.get_profile(Some(name)) {
+            endpoints.insert(QdrantEndpoint {
+                url: prof.qdrant_url.clone(),
+                api_key: prof.qdrant_api_key.clone(),
+            });
+        }
+    }
+    // Ensure default profile is included even if not explicitly listed
+    if let Ok(default_prof) = config.get_profile(None) {
+        endpoints.insert(QdrantEndpoint {
+            url: default_prof.qdrant_url.clone(),
+            api_key: default_prof.qdrant_api_key.clone(),
+        });
+    }
+
+    let mut all_results: Vec<serde_json::Value> = Vec::new();
+
+    for endpoint in endpoints {
+        // Lightweight: connect directly to Qdrant without initializing any embedder.
+        // This is the fix — list_collections previously went through get_core_for_profile
+        // which creates a full Core including embedder initialization, causing failures
+        // for profiles with embedder types (Ollama) that may not be reachable.
+        let backend = match QdrantBackend::new(&endpoint.url, endpoint.api_key.clone()) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        let collection_names = match backend.list_collections().await {
+            Ok(names) => names,
+            Err(_) => continue,
+        };
+
+        for name in collection_names {
+            let info: Option<vecdb_core::types::CollectionInfo> = backend.get_collection_info(&name).await.ok();
+            let (count, dim) = info
+                .map(|i| (i.vector_count, i.vector_size))
+                .unwrap_or((None, None));
+
+            all_results.push(json!({
+                "name": name,
+                "count": count,
+                "dimension": dim,
+                "is_compatible": false, // can't determine without an embedder
+                "backend": endpoint.url,
+                "is_local": endpoint.url.contains("localhost") ||
+                           endpoint.url.contains("127.0.0.1") ||
+                           endpoint.url.contains("0.0.0.0")
+            }));
+        }
+    }
+
+    // Get active profile info
     let profile = config
         .get_profile(Some(active_profile_name))
         .or_else(|_| config.get_profile(None))
@@ -224,27 +292,10 @@ async fn handle_list_collections(
             data: None,
         })?;
 
-    // Probe current embedding dimension
-    // If this fails (e.g. Ollama down), we can't determine compatibility, so default to None/false
-    let current_dim = core.get_embedding_dimension().await.ok();
-
     let response_data = json!({
         "active_profile": active_profile_name,
         "default_collection": profile.default_collection_name,
-        "collections": collections.into_iter().map(|c| {
-            let is_compatible = match (current_dim, c.vector_size) {
-                (Some(curr), Some(stored)) => curr as u64 == stored,
-                _ => false, // Cannot determine compatibility
-            };
-
-            json!({
-                "name": c.name,
-                "count": c.vector_count,
-                "dimension": c.vector_size,
-                "is_active": profile.default_collection_name.as_deref() == Some(c.name.as_str()),
-                "is_compatible": is_compatible
-            })
-        }).collect::<Vec<_>>()
+        "collections": all_results
     });
 
     Ok(json!({
@@ -381,6 +432,7 @@ async fn handle_ingest_path(
         args.gpu_concurrency,
         profile.quantization.clone(),
         None,
+        args.ignore_vectorignore,
     )
     .await
     .map_err(|e| JsonRpcError {
@@ -565,6 +617,88 @@ async fn handle_code_query(
                 "text": result
             }
         ]
+    }))
+}
+
+/// Handle project_overview tool.
+///
+/// Walks a directory (respecting .vectorignore), parses each supported source file
+/// with vecq, and returns a JGF v2 architectural graph and Mermaid diagram via the
+/// graph_src / graph_to_architecture jq normalizers already built into vecq's query engine.
+async fn handle_project_overview(
+    params: &Value,
+    allow_local_fs: bool,
+) -> Result<Value, JsonRpcError> {
+    if !allow_local_fs {
+        return Err(JsonRpcError {
+            code: -32000,
+            message: "Security Error: Local filesystem access is disabled. Cannot analyze local projects.".into(),
+            data: None,
+        });
+    }
+
+    let args_val = &params["arguments"];
+    let args: ProjectOverviewArgs =
+        serde_json::from_value(args_val.clone()).map_err(|e| JsonRpcError {
+            code: -32602,
+            message: format!("Invalid arguments for project_overview: {}", e),
+            data: None,
+        })?;
+
+    let path = std::path::Path::new(&args.path);
+    if !path.exists() {
+        return Err(JsonRpcError {
+            code: -32000,
+            message: format!("Path not found: {}", args.path),
+            data: None,
+        });
+    }
+    if !path.is_dir() {
+        return Err(JsonRpcError {
+            code: -32000,
+            message: format!("Path is not a directory: {}", args.path),
+            data: None,
+        });
+    }
+
+    let vecq_args = vecq::ProjectOverviewArgs {
+        path: path.to_path_buf(),
+        max_depth: args.max_depth,
+        ignore_patterns: args.ignore_patterns,
+        respect_gitignore: args.respect_gitignore.unwrap_or(false),
+        ignore_vectorignore: args.ignore_vectorignore.unwrap_or(false),
+        skip_hidden: args.skip_hidden.unwrap_or(true),
+    };
+
+    let overview = vecq::project_overview(vecq_args)
+        .await
+        .map_err(|e| JsonRpcError {
+            code: -32000,
+            message: format!("project_overview failed: {}", e),
+            data: None,
+        })?;
+
+    let summary = format!(
+        "Project: {}\nFiles analyzed: {}\nFiles skipped: {}\n\n{}",
+        overview.project_root,
+        overview.files_analyzed,
+        overview.files_skipped,
+        overview.mermaid
+    );
+
+    Ok(json!({
+        "content": [
+            {
+                "type": "text",
+                "text": summary
+            }
+        ],
+        "_meta": {
+            "project_root": overview.project_root,
+            "files_analyzed": overview.files_analyzed,
+            "files_skipped": overview.files_skipped,
+            "graph": overview.graph
+        }
     }))
 }
 

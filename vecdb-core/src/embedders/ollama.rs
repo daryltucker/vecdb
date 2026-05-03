@@ -224,5 +224,14 @@ impl Embedder for OllamaEmbedder {
     fn model_name(&self) -> String {
         format!("ollama:{}", self.model)
     }
+
+    fn required_resources(&self) -> Vec<crate::resource::Resource> {
+        // Keyed on the base URL — two profiles pointing at the same endpoint
+        // share the per-endpoint permit budget; profiles pointing at different
+        // endpoints don't contend at all.
+        vec![crate::resource::Resource::OllamaEndpoint {
+            url: self.base_url.clone(),
+        }]
+    }
 }
 

@@ -19,23 +19,28 @@ Uses **Qdrant** as the robust storage backend.
 ```bash
 install.sh
 vecdb ingest ./
-docsize "How do I install use vecq?"
+docsize "How do I install and use vecq?"
 ```
 
 ### 1. Installation
 
 > Optionally, add `docsize`.
+>
+> ⚠️ **Important:** Always use `--locked` when installing from git. This pins
+> dependency versions (including the ONNX Runtime binary) to the workspace
+> `Cargo.lock`. Without `--locked`, cargo may resolve newer dependencies
+> that download incompatible prebuilt binaries.
 
 **Option A: Install via Cargo**
 ```bash
-cargo install --git https://github.com/daryltucker/vecdb vecdb-cli vecdb-server vecq docsize
+cargo install --git https://github.com/daryltucker/vecdb --locked vecdb-cli vecdb-server vecq docsize
 ```
 
-**Option B: Install via Cargo `binstall`**
+**Option B: Install individual binaries**
 ```bash
-cargo install --git https://github.com/daryltucker/vecdb vecdb-cli
-cargo install --git https://github.com/daryltucker/vecdb vecdb-server
-cargo install --git https://github.com/daryltucker/vecdb vecq
+cargo install --git https://github.com/daryltucker/vecdb --locked vecdb-cli
+cargo install --git https://github.com/daryltucker/vecdb --locked vecdb-server
+cargo install --git https://github.com/daryltucker/vecdb --locked vecq
 ```
 
 **Auto-completions for Cargo Installs**
@@ -88,16 +93,25 @@ vecdb ingest ./docs --collection my_knowledge -P 4 -G 2
 ```
 ## ⚡ CUDA Support
 
-By default, `vecdb` is built with CUDA support enabled (via `ort` static linking).
+By default, `vecdb` is built with CUDA support enabled. The ONNX Runtime is
+downloaded as prebuilt shared libraries and dynamically loaded at runtime.
 
 1.  **Prerequisites**:
     *   NVIDIA Drivers (v550+ recommended)
     *   **NVIDIA CUDA Toolkit** (`sudo apt install nvidia-cuda-toolkit`)
     *   **NVIDIA cuDNN** (`sudo apt install nvidia-cudnn`) - Required for runtime execution.
 
-2.  **Configuration**:
+2.  **Install with `--locked`**:
+    ```bash
+    cargo install --git https://github.com/daryltucker/vecdb --locked vecdb-cli
+    ```
+    The workspace `Cargo.lock` pins `ort-sys 2.0.0-rc.11` which downloads
+    the ONNX Runtime 1.23.2 CUDA binary. Building without `--locked` may resolve
+    a newer `ort-sys` that downloads an incompatible ORT binary. See
+    [docs/internal/ORT_BINARY_DEPENDENCY.md](docs/internal/ORT_BINARY_DEPENDENCY.md).
+
+3.  **Configuration**:
     *   Set `local_use_gpu = true` in `~/.config/vecdb/config.toml` (default).
-    *   **No manual library paths needed**: The ONNX Runtime is statically linked into the binary.
 
 > **Tip**: GPU is really not required, and you will still benefit from `vecdb` when using the CPU embeddings. However, this feature is here for those who want or need it.
 
@@ -108,18 +122,16 @@ If you do not need GPU support or want to reduce binary size, you can disable th
 cargo install --path vecdb-cli --no-default-features
 ```
 
-> **Note**: `vecdb` uses `ort` with static linking. You do **not** need to set `LD_LIBRARY_PATH` or manually manage `libonnxruntime.so` files.
-
-> **Note**: You will still need the `libonnxruntime_providers` ref: [GPU.md](docs/GPU.md).
-
 ### File Ignoring (`.vectorignore`)
 
 `vecdb` supports two ways to exclude files:
 
-1.  **`.vectorignore`** (Always Respected):
+1.  **`.vectorignore`** (Respected by default):
     *   Works exactly like `.gitignore`.
     *   Place it in your project root or subdirectories.
     *   Example: `vecdb-asm/` or `*.secret`.
+    *   Use `--ignore-vectorignore` to skip `.vectorignore` rules entirely
+        (ingests everything regardless of ignore patterns).
 
 2.  **`.gitignore`** (Optional):
     *   Use `--respect-gitignore` to also respect your git rules.
@@ -139,7 +151,7 @@ vecdb search "latest rust files" --smart
 vecdb search "auth policy" --json | jq .
 ```
 
- **Tip**: `vecdb search` returns raw embeddings.  Use `docsize` to do a more proper search to show what these embeddings can do for your Agent (Even 1B or 4B models).
+ **Tip**: `vecdb search` returns richly-scored results with full content and metadata.  Use `docsize` for context-aware relevance ranking that shows what these embeddings can do for your Agent (Even 1B or 4B models).
 
 **Check Status:**
 ```bash
@@ -171,10 +183,15 @@ To use with an MCP client (like Claude Desktop or an IDE):
 **Arguments**: `--allow-local-fs` (Optional, enables `ingest_path` tool)
 
 **Available Tools**:
-*   `search_vectors`: Semantic search.
-*   `embed`: Generate embeddings.
+*   `search_vectors`: Semantic search with smart routing.
+*   `code_query`: AST-aware structural code search.
+*   `project_overview`: Full-project AST analysis with architecture graph + Mermaid diagram.
+*   `embed`: Generate embeddings from text.
 *   `ingest_path`: Ingest local files/folders.
-*   `ingest_history`: Time-travel ingestion (Git).
+*   `ingest_historic_version`: Time-travel ingestion (Git).
+*   `list_collections`: List collections with stats and compatibility info.
+*   `delete_collection`: Delete a collection with safety confirmation.
+*   `get_job_status`: Check background job progress.
 
 ### Claude Code (User-Global)
 
@@ -211,7 +228,7 @@ See [docs/MCP_SERVER.md](docs/MCP_SERVER.md) for more details.
 *   **[vecq Guide](docs/vecq/README.md)**: Manual for the `vecq` code query tool.
 *   **Specs**: Detailed feature modules in `docs/specs/` (e.g. [Ingestion Design](docs/specs/INGESTION_DESIGN.md)).
 
-## � Testing
+## 🧪 Testing
 
 The project uses a tiered testing framework. It is **mandatory** to run the complete test suite before any release or major changes.
 
@@ -223,7 +240,7 @@ make tests
 make test-rust
 ```
 
-## �🤝 Contributing & support
+## 🤝 Contributing & support
 
 *   **Bug Reports**: Please file an issue on GitHub.
 *   **License**: Business Source License 1.1 (Free for <$1M Revenue). See [LICENSE](LICENSE).

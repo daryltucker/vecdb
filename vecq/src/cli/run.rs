@@ -7,7 +7,7 @@ use std::io::BufRead;
 use vecq::{available_output_formats, supported_file_types, FormatOptions, JqQueryEngine, QueryEngine, VecqError, VecqResult};
 use vecdb_common::output::{OutputContext, OutputFormat};
 
-use super::args::{Args, Commands};
+use super::args::{Args, Commands, MapArgs, MapOutputFormat};
 use super::output::{extract_json_from_input, process_json_value};
 
 /// Execute the main vecq command with the given arguments
@@ -266,6 +266,7 @@ pub async fn handle_subcommand(command: Commands) -> VecqResult<()> {
             print_available_filters();
             Ok(())
         }
+        Commands::Map(args) => handle_map_command(args).await,
     }
 }
 
@@ -430,4 +431,46 @@ pub fn print_query_explanation(explanation: &vecq::QueryExplanation) {
             }
         }
     }
+}
+
+/// Handle the `vecq map` command
+async fn handle_map_command(args: MapArgs) -> VecqResult<()> {
+    let overview = vecq::project_overview(vecq::ProjectOverviewArgs {
+        path: args.path,
+        max_depth: args.depth,
+        ignore_patterns: args.ignore_patterns,
+        respect_gitignore: !args.no_gitignore,
+        ignore_vectorignore: false,
+        skip_hidden: !args.no_skip_hidden,
+    })
+    .await?;
+
+    let output_format = args.output.unwrap_or(MapOutputFormat::Mermaid);
+
+    match output_format {
+        MapOutputFormat::Mermaid => {
+            println!("{}", overview.mermaid);
+        }
+        MapOutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&overview.graph).unwrap_or_default());
+        }
+        MapOutputFormat::Graph => {
+            // Pruned architectural graph - same as JSON but already pruned by library
+            println!("{}", serde_json::to_string_pretty(&overview.graph).unwrap_or_default());
+        }
+        MapOutputFormat::Human => {
+            println!("Project: {}", overview.project_root);
+            if args.stats {
+                println!("Files analyzed: {}", overview.files_analyzed);
+                println!("Files skipped: {}", overview.files_skipped);
+            }
+            println!();
+            if !overview.mermaid.is_empty() {
+                println!("Architecture (Mermaid):");
+                println!("{}", overview.mermaid);
+            }
+        }
+    }
+
+    Ok(())
 }

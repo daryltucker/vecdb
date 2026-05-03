@@ -2,7 +2,7 @@
 
 [package]
 name = "docsize"
-version = "1.0.1"
+version = "1.0.3"
 edition = "2021"
 authors = ["Sextant <daryl@daryltucker.com>"]
 license = "MIT"

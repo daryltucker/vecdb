@@ -99,6 +99,62 @@ pub struct Config {
     /// Add "platform", "version", "cuda" here to enable them.
     #[serde(default = "default_smart_routing_keys")]
     pub smart_routing_keys: Vec<String>,
+
+    /// Server-side runtime tuning (idle eviction, watchdog cadence).
+    /// Only consulted by `vecdb-server`; CLI commands ignore it.
+    #[serde(default)]
+    pub server: ServerConfig,
+}
+
+/// Idle-eviction policy for the server's per-collection Core cache.
+///
+/// Hybrid policy informed by experiment E1 (2026-05-01):
+///
+/// * **Soft idle** — call `Embedder::release()` to drop the loaded model.
+///   On `LocalEmbedder` this frees ~63% of VRAM for a tiny model and a
+///   much higher percentage for large models (the residual ~80 MiB CUDA
+///   context is roughly fixed). Reload on the next request takes ~200 ms.
+///
+/// * **Deep idle** — drop the cache entry entirely and (in stdio mode)
+///   signal the main loop to exit. The MCP client respawns the subprocess
+///   on next use, recovering the residual context. HTTP/daemon mode just
+///   drops the cache entry; the daemon is meant to outlive idle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfig {
+    /// After this many seconds without use, release the embedder's loaded model.
+    /// Set to 0 to disable soft eviction.
+    #[serde(default = "default_soft_idle_secs")]
+    pub soft_idle_secs: u64,
+
+    /// After this many seconds without use, drop the cache entry and (in stdio
+    /// mode) exit the subprocess. Set to 0 to disable deep eviction.
+    /// Should be greater than `soft_idle_secs`; if not, deep wins.
+    #[serde(default = "default_deep_idle_secs")]
+    pub deep_idle_secs: u64,
+
+    /// How often the watchdog wakes up to evaluate idle entries.
+    #[serde(default = "default_idle_check_interval_secs")]
+    pub idle_check_interval_secs: u64,
+
+    /// Master switch — if false, no watchdog is spawned.
+    #[serde(default = "default_idle_eviction_enabled")]
+    pub idle_eviction_enabled: bool,
+}
+
+fn default_soft_idle_secs() -> u64 { 600 }
+fn default_deep_idle_secs() -> u64 { 3600 }
+fn default_idle_check_interval_secs() -> u64 { 60 }
+fn default_idle_eviction_enabled() -> bool { true }
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            soft_idle_secs: default_soft_idle_secs(),
+            deep_idle_secs: default_deep_idle_secs(),
+            idle_check_interval_secs: default_idle_check_interval_secs(),
+            idle_eviction_enabled: default_idle_eviction_enabled(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -332,6 +388,7 @@ impl Default for Config {
             fastembed_cache_path: default_fastembed_cache_path(),
             local_use_gpu: false,
             smart_routing_keys: default_smart_routing_keys(),
+            server: ServerConfig::default(),
         }
     }
 }

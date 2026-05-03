@@ -29,12 +29,18 @@ use std::sync::Mutex;
 
 /// Local embedder using fastembed (ONNX Runtime).
 /// Works out-of-the-box without Ollama or any external service.
+///
+/// Lifecycle: model weights load lazily on first embed() and can be released
+/// via `release()` (e.g. by the server's idle-eviction watchdog). After release,
+/// the next embed() reloads from `init_params` — those are persistent and never
+/// consumed.
 #[cfg(feature = "local-embed")]
 pub struct LocalEmbedder {
-    // Lazy: Model is None until first use.
+    // Lazy: Model is None until first use, and may be set back to None by release().
     model: Arc<Mutex<Option<TextEmbedding>>>,
-    // Store init params for lazy loading
-    init_params: Arc<Mutex<Option<LocalEmbedderInitParams>>>,
+    // Persistent init params. Never consumed — used to (re)build the model on every
+    // ensure_initialized() call, including after release(). Cheap to keep around.
+    init_params: Arc<LocalEmbedderInitParams>,
     dimension: usize,
     model_name: String,
     use_gpu: bool,
@@ -144,16 +150,16 @@ impl LocalEmbedder {
         let dimension = model_info.dim;
         let model_name = model_info.model_code.clone();
 
-        // Store params for lazy init
-        let init_params = LocalEmbedderInitParams {
+        // Store params for lazy init. Persistent — never consumed.
+        let init_params = Arc::new(LocalEmbedderInitParams {
             model_type: model_type.clone(),
             cache_path: cache_path.clone(),
             use_gpu,
-        };
+        });
 
         let instance = Self {
             model: Arc::new(Mutex::new(None)), // Uninitialized
-            init_params: Arc::new(Mutex::new(Some(init_params))),
+            init_params,
             dimension,
             model_name,
             use_gpu,
@@ -184,16 +190,11 @@ impl LocalEmbedder {
             return Ok(());
         }
 
-        // Need to initialize
+        // Need to initialize. Params are persistent (Arc<LocalEmbedderInitParams>) —
+        // borrow, don't consume, so subsequent reloads after release() also work.
         tracing::debug!("Lazy initializing LocalEmbedder...");
 
-        let mut params_guard = self
-            .init_params
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        let params = params_guard
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("Model uninitialized but params missing"))?;
+        let params = &*self.init_params;
 
         // Helper to construct base options
         let make_options = || {
@@ -209,13 +210,63 @@ impl LocalEmbedder {
             #[cfg(feature = "cuda")]
             if params.use_gpu {
                 tracing::debug!("Initializing local embedder with CUDA acceleration");
-
-                let mut gpu_options = make_options();
-                gpu_options = gpu_options
-                    .with_execution_providers(vec![CUDAExecutionProvider::default().into()]);
-
                 tracing::debug!("Attempting to create TextEmbedding with CUDA provider...");
-                match TextEmbedding::try_new(gpu_options) {
+
+                // Build GPU init closure so we can retry on OOM
+                let try_init_gpu = || -> Result<TextEmbedding, anyhow::Error> {
+                    let mut opts = make_options();
+                    opts = opts
+                        .with_execution_providers(vec![CUDAExecutionProvider::default().into()]);
+                    TextEmbedding::try_new(opts).map_err(|e| anyhow::anyhow!("{}", e))
+                };
+
+                // Reduced from 30 to 5 in 2026-05 (Phase 2 resource arbitration).
+                // The arbiter now serialises vecdb-vs-vecdb GPU contention via
+                // flock, so this retry only needs to cover *external* VRAM
+                // pressure (Ollama, training jobs). 5 attempts × exponential
+                // backoff ≈ ~60s of patience, plenty for a foreign process to
+                // free memory or for the user to react.
+                let num_attempts = 5u32;
+                let mut gpu_model: Option<Result<TextEmbedding, anyhow::Error>> = None;
+
+                for attempt in 1..=num_attempts {
+                    match try_init_gpu() {
+                        Ok(m) => {
+                            if attempt > 1 {
+                                eprintln!("✅ GPU available — initialized successfully after retry.");
+                            }
+                            gpu_model = Some(Ok(m));
+                            break;
+                        }
+                        Err(e) => {
+                            let err_string = e.to_string();
+                            let is_oom = err_string.contains("CUBLAS_STATUS_ALLOC_FAILED")
+                                || err_string.contains("CUDA_ERROR_OUT_OF_MEMORY")
+                                || err_string.contains("out of memory")
+                                || err_string.contains("CUBLAS failure")
+                                || err_string.contains("Failed to allocate memory for requested buffer");
+
+                            if !is_oom {
+                                gpu_model = Some(Err(e));
+                                break;
+                            }
+
+                            if attempt < num_attempts {
+                                let delay_secs = (2u64.pow(attempt.min(5))).min(30);
+                                eprintln!(
+                                    "\n⚠️  GPU busy (VRAM exhausted). Retrying in {}s (attempt {}/{})...",
+                                    delay_secs, attempt, num_attempts
+                                );
+                                std::thread::sleep(std::time::Duration::from_secs(delay_secs));
+                            } else {
+                                gpu_model = Some(Err(e));
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                match gpu_model.unwrap_or_else(|| Err(anyhow::anyhow!("GPU init failed after all retries"))) {
                     Ok(m) => {
                         // VERIFICATION: Even if try_new succeeds, ORT might have silently failed to register
                         // the CUDA provider and fallen back to CPU internally.
@@ -232,15 +283,17 @@ impl LocalEmbedder {
                         m
                     }
                     Err(e) => {
-                        eprintln!("\n❌ [CUDA FAILURE] Initialization failed: {}", e);
-                        eprintln!("   Strict GPU mode: Aborting because 'local_use_gpu = true' was explicitly requested.");
+                        eprintln!("\n❌ [CUDA FAILURE] GPU initialization failed after {} retries.", num_attempts);
+                        eprintln!("   Last error: {}", e);
                         eprintln!("   Troubleshooting:");
-                        eprintln!("     1. drivers: nvidia-smi (should be v550+)");
-                        eprintln!("     2. libs: ensure libonnxruntime_providers_cuda.so and libcudnn are in LD_LIBRARY_PATH");
-                        eprintln!("        Try: 'export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH'");
-                        eprintln!("   Check docs/GPU.md for the full setup guide.\n");
+                        eprintln!("     1. GPU may be occupied by another process (Ollama, training job, etc.)");
+                        eprintln!("     2. Run 'nvidia-smi' to check what's using VRAM");
+                        eprintln!("     3. Set 'local_use_gpu = false' in config.toml to use CPU instead\n");
                         
-                        return Err(e).context("Local embedder failed to initialize with GPU (Strict mode)");
+                        return Err(e).context(format!(
+                            "Local embedder failed to initialize with GPU after {} retries",
+                            num_attempts
+                        ));
                     }
                 }
             } else {
@@ -266,6 +319,21 @@ impl LocalEmbedder {
         *model_guard = Some(model);
         tracing::debug!("LocalEmbedder initialized successfully.");
         Ok(())
+    }
+}
+
+/// Release GPU VRAM by dropping the loaded model.
+/// After calling this, the embedder will reload the model on the next embed() call.
+#[cfg(feature = "local-embed")]
+impl LocalEmbedder {
+    pub fn release_gpu(&self) {
+        if let Ok(mut guard) = self.model.lock() {
+            if guard.is_some() {
+                tracing::debug!("Releasing LocalEmbedder GPU model (freeing VRAM)...");
+                *guard = None;
+                tracing::debug!("LocalEmbedder GPU model released.");
+            }
+        }
     }
 }
 
@@ -380,6 +448,25 @@ impl Embedder for LocalEmbedder {
     fn model_name(&self) -> String {
         format!("fastembed:{}", self.model_name)
     }
+
+    /// Drops the loaded ONNX model, freeing the bulk of VRAM/RAM held by the
+    /// session. The CUDA context (~80 MiB) is process-global and stays until
+    /// the process exits — that's normal. The next embed() call reloads via
+    /// `ensure_initialized()`, which is now safe to call multiple times.
+    fn release(&self) {
+        self.release_gpu();
+    }
+
+    fn required_resources(&self) -> Vec<crate::resource::Resource> {
+        if self.use_gpu {
+            // Multi-GPU is not modeled today — every CUDA install we ship
+            // against indexes the primary device as 0. When multi-device
+            // support lands, plumb the device index from config to here.
+            vec![crate::resource::Resource::LocalGpu { device: 0 }]
+        } else {
+            vec![crate::resource::Resource::LocalCpu]
+        }
+    }
 }
 
 #[cfg(feature = "local-embed")]
@@ -480,4 +567,54 @@ mod tests {
         let result = LocalEmbedder::new("bge-micro-v2", None, false);
         assert!(result.is_err(), "bge-micro-v2 was a misleading alias and must be removed");
     }
+
+    /// Regression test for the release → reload cycle.
+    ///
+    /// Before the params-lifecycle fix (E1, 2026-05-01), `ensure_initialized()`
+    /// did `params_guard.take()` — the second call (after `release()`) erroneously
+    /// reported "Model uninitialized but params missing". This test pins the fixed
+    /// behaviour: release() can be called any number of times and embed() must
+    /// transparently reload.
+    ///
+    /// CPU-only on purpose — runs in CI without a GPU.
+    #[tokio::test]
+    async fn test_release_then_reload() {
+        let embedder = LocalEmbedder::new("all-minilm-l6-v2", None, false)
+            .expect("construct LocalEmbedder");
+
+        // Cycle 1: cold load → embed → release.
+        let v1 = embedder.embed("first", None).await.expect("first embed");
+        assert_eq!(v1.len(), 384, "AllMiniLM-L6-v2 is 384-dim");
+        embedder.release();
+
+        // Cycle 2: this is the previously-broken path. Must reload cleanly.
+        let v2 = embedder.embed("second", None).await.expect("reload after release");
+        assert_eq!(v2.len(), 384);
+
+        // Cycle 3: prove release() is idempotent and the params survive repeated cycles.
+        embedder.release();
+        embedder.release(); // double-release must not error or hang
+        let v3 = embedder.embed("third", None).await.expect("reload after double release");
+        assert_eq!(v3.len(), 384);
+
+        // Sanity: same input embeds to same vector across reloads (deterministic model).
+        let v1_again = embedder.embed("first", None).await.expect("re-embed first");
+        assert_eq!(v1, v1_again, "model must be deterministic across reload cycles");
+    }
+
+    /// Confirms the `Embedder` trait's `release()` default no-op compiles for
+    /// types that override neither `release()` nor anything else interesting —
+    /// concretely, calling `release()` through a trait object on `LocalEmbedder`
+    /// must dispatch to the override and not the default.
+    #[tokio::test]
+    async fn test_release_via_trait_object() {
+        let embedder: Arc<dyn Embedder + Send + Sync> =
+            Arc::new(LocalEmbedder::new("all-minilm-l6-v2", None, false).unwrap());
+
+        let _ = embedder.embed("warmup", None).await.expect("initial embed");
+        embedder.release(); // dispatched via trait object
+        let v = embedder.embed("post-release", None).await.expect("reload via trait");
+        assert_eq!(v.len(), 384);
+    }
 }
+

@@ -17,6 +17,7 @@
  *   let vector = embedder.embed("hello world").await?;
  */
 
+use crate::resource::Resource;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -43,6 +44,27 @@ pub trait Embedder: Send + Sync {
 
     /// Return the name of the model being used (e.g. "fastembed:AllMiniLML6V2", "ollama:nomic-embed-text")
     fn model_name(&self) -> String;
+
+    /// Release any heavyweight resources held by this embedder (e.g. GPU model weights).
+    ///
+    /// Called by the server's idle-eviction watchdog. After release, the next embed()
+    /// call must succeed by reloading lazily — implementations that hold no such
+    /// resources can use the default no-op.
+    ///
+    /// Must be idempotent and safe to call concurrently with embed().
+    fn release(&self) {}
+
+    /// The physical / logical resources this embedder needs to perform an embed
+    /// call. Used by `ResourceArbiter` to ensure concurrent embed calls only
+    /// contend on resources they actually share.
+    ///
+    /// Default: empty — meaning "no arbitration needed" (e.g. mock/test
+    /// embedders). Real backends MUST override this so the arbiter can do its
+    /// job. Returning `[]` from a production embedder is correct only if the
+    /// embedder genuinely has no shared resource (rare).
+    fn required_resources(&self) -> Vec<Resource> {
+        Vec::new()
+    }
 }
 
 /// Helper to L2-normalize a vector in place

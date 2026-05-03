@@ -27,8 +27,18 @@ pub struct Cli {
 pub async fn run() -> anyhow::Result<()> {
     // Build Version String
     let app_version = env!("CARGO_PKG_VERSION");
+    
+    // Try to get git hash
+    let git_hash = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir("/home/daryl/Projects/NRG/vecdb-mcp")
+        .output()
+        .ok()
+        .and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).trim().to_string()) } else { None })
+        .unwrap_or_else(|| "unknown".to_string());
+    
     let ort_version = vecdb_core::get_ort_version();
-    let long_version = format!("vecdb v{}\nONNX v{}", app_version, ort_version);
+    let long_version = format!("vecdb v{} (git:{})\nONNX v{}", app_version, git_hash, ort_version);
 
     // We manually build the command to inject the version
     let long_version_static: &'static str = Box::leak(long_version.into_boxed_str());

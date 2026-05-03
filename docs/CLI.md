@@ -41,7 +41,8 @@ Recursively ingest documents from a path into a collection.
 *   **Options**:
     *   `-c, --collection <NAME>`: Target collection name (created if missing).
     *   `-m, --metadata <KEY=VALUE>`: Custom metadata (accumulates).
-    *   `--respect-gitignore`: Skips files ignored by `.gitignore`.
+    *   `--respect-gitignore`: Skips files ignored by `.gitignore` (disabled by default).
+    *   `--ignore-vectorignore`: Bypass `.vectorignore` rules (ingest everything).
     *   `--chunk-size <INT>`: Target chunk size (tokens for text, chars for default).
     *   `-o, --overlap <INT>`: Chunk overlap.
     *   `--extensions <EXT>`: Whitelist file extensions (e.g. `rs,md`).
