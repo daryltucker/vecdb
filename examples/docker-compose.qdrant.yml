@@ -7,7 +7,12 @@ services:
     ports:
       - "6333:6333"
       - "6334:6334"
+    mem_limit: 6g
+    memswap_limit: 6g
     environment:
+      # Store HNSW index on disk (mmap) instead of anonymous RAM.
+      # Keeps searches fast while preventing qdrant from consuming all system memory.
+      - QDRANT__STORAGE__HNSW_INDEX__ON_DISK=true
       # Secure Qdrant with an API Key (Optional)
       # - QDRANT__SERVICE__API_KEY=change_me_to_a_secure_key
     volumes:

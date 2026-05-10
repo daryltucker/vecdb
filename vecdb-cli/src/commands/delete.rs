@@ -2,7 +2,10 @@ use clap::Args;
 use colored::*;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
-use vecdb_core::Core;
+use vecdb_core::config::Config;
+use vecq::detection::HybridDetector;
+
+use crate::vecq_adapter::VecqParserFactory;
 
 #[derive(Args, Debug)]
 pub struct DeleteArgs {
@@ -16,9 +19,19 @@ pub struct DeleteArgs {
     /// Force deletion without confirmation prompt (NOT RECOMMENDED)
     #[arg(long, alias = "yes", hide = true)]
     pub force: bool,
+
+    /// Target specific profile to determine Qdrant endpoint
+    /// Useful when same collection name exists in multiple endpoints
+    #[arg(long, short = 'P')]
+    pub profile: Option<String>,
+
+    /// Target specific Qdrant URL
+    /// Useful when same collection name exists in multiple endpoints
+    #[arg(long)]
+    pub url: Option<String>,
 }
 
-pub async fn run(core: &Core, args: DeleteArgs) -> anyhow::Result<()> {
+pub async fn run(args: DeleteArgs, config: &Config) -> anyhow::Result<()> {
     if !args.all && args.collection.is_none() {
         anyhow::bail!("Please specify a collection name or use --all");
     }
@@ -26,6 +39,49 @@ pub async fn run(core: &Core, args: DeleteArgs) -> anyhow::Result<()> {
     if args.all && args.collection.is_some() {
         anyhow::bail!("Cannot specify both a collection name and --all");
     }
+
+    // Resolve profile to get the right Qdrant endpoint
+    let default_profile = config.get_profile(None)?;
+    let qdrant_url: &String;
+    let ollama_url: &String;
+
+    if let Some(ref url) = args.url {
+        // Explicit URL override - use default profile other fields
+        qdrant_url = url;
+        ollama_url = &default_profile.ollama_url;
+    } else if let Some(ref profile_name) = args.profile {
+        // Profile-based endpoint
+        let profile = config.get_profile(Some(profile_name))?;
+        qdrant_url = &profile.qdrant_url;
+        ollama_url = &profile.ollama_url;
+    } else {
+        // Use default profile
+        qdrant_url = &default_profile.qdrant_url;
+        ollama_url = &default_profile.ollama_url;
+    };
+
+    // Create Core for the resolved endpoint
+    let embedder_type = config.get_profile(None)?.embedder_type.clone();
+    let embedder_model = config.resolve_embedding_model(&default_profile);
+    let core = vecdb_core::Core::new(
+        qdrant_url,
+        ollama_url,
+        &embedder_model,
+        false, // accept_invalid_certs
+        &embedder_type,
+        None, // cache path
+        config.resolve_local_use_gpu(None),
+        None, // qdrant_api_key
+        None, // ollama_api_key
+        vec![], // smart_routing_keys
+        vec![], // path_rules
+        4,   // max_concurrent_requests
+        16,   // gpu_batch_size
+        None,  // num_ctx
+        std::sync::Arc::new(HybridDetector::new()),
+        std::sync::Arc::new(VecqParserFactory),
+    )
+    .await?;
 
     let collections = if args.all {
         let cols = core.list_collections().await?;

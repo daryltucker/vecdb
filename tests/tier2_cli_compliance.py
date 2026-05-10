@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Tier 2 CLI Compliance Test
-Enforces that every subcommand in `vecdb-cli/src/main.rs` is documented in `docs/CLI.md`.
+Enforces that every subcommand in `vecdb-cli/src/commands/mod.rs` is documented in `docs/CLI.md`.
 """
 import re
 import sys
@@ -9,18 +9,18 @@ from pathlib import Path
 
 # Paths
 ROOT = Path(__file__).parent.parent
-MAIN_RS = ROOT / "vecdb-cli/src/main.rs"
+MAIN_RS = ROOT / "vecdb-cli/src/commands/mod.rs"
 DOCS_MD = ROOT / "docs/CLI.md"
 
 def extract_cli_commands(content):
     """
-    Extracts enum variants from the `Commands` enum in main.rs.
+    Extracts enum variants from the `Commands` enum in commands/mod.rs.
     """
     # Find enum Commands start
     start_pattern = re.compile(r"enum Commands\s*\{")
     start_match = start_pattern.search(content)
     if not start_match:
-        print("Error: Could not find enum Commands in main.rs")
+        print("Error: Could not find enum Commands in commands/mod.rs")
         return set()
 
     start_idx = start_match.end()

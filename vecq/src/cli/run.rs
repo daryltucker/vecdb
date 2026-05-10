@@ -149,6 +149,7 @@ pub async fn handle_subcommand(command: Commands) -> VecqResult<()> {
                 recursive: false,
                 max_depth: None,
                 enable_usages: false,
+                raw_json: false,
             };
             let values = extract_json_from_input(&input, &options).await?;
             let engine = JqQueryEngine::new_hermetic();

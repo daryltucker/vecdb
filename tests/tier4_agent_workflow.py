@@ -116,6 +116,9 @@ chunk_size = 512
             line = proc.stdout.readline()
             return json.loads(line) if line else None
         finally:
+            proc.stdin.close()
+            proc.stdout.close()
+            proc.stderr.close()
             proc.terminate()
             proc.wait()
 
@@ -145,6 +148,9 @@ chunk_size = 512
 
     def _stop_server(self):
         if hasattr(self, '_proc'):
+            self._proc.stdin.close()
+            self._proc.stdout.close()
+            self._proc.stderr.close()
             self._proc.terminate()
             self._proc.wait()
 

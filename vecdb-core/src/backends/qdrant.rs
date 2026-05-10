@@ -465,15 +465,15 @@ impl Backend for QdrantBackend {
     async fn get_collection_info(&self, name: &str) -> Result<crate::types::CollectionInfo> {
         let info = self.client.collection_info(name).await?;
 
-        let (vector_count, vector_size, quantization) = if let Some(result) = info.result {
+        let (vector_count, vector_size, quantization, vectors_on_disk, payload_on_disk) = if let Some(result) = info.result {
             let count = result.points_count;
-            let (size, quant) = result
+            let (size, quant, vectors_on_disk_inner, payload_on_disk_inner) = result
                 .config
                 .map(|c| {
-                    let s = c.params.and_then(|p| {
+                    let s = c.params.clone().and_then(|p| {
                         p.vectors_config.and_then(|vc| match vc.config {
                             Some(qdrant_client::qdrant::vectors_config::Config::Params(vp)) => {
-                                Some(vp.size)
+                                Some((vp.size, vp.on_disk))
                             }
                             _ => None,
                         })
@@ -493,13 +493,18 @@ impl Backend for QdrantBackend {
                         })
                     });
 
-                    (s, q)
-                })
-                .unwrap_or((None, None));
+                    let payload_on_disk = c.params.map(|p| p.on_disk_payload);
 
-            (count, size, quant)
+                    match s {
+                        Some((size_val, on_disk)) => (Some(size_val), q, on_disk, payload_on_disk),
+                        None => (None, q, None, payload_on_disk),
+                    }
+                })
+                .unwrap_or((None, None, None, None));
+
+            (count, size, quant, vectors_on_disk_inner, payload_on_disk_inner)
         } else {
-            (None, None, None)
+            (None, None, None, None, None)
         };
 
         Ok(crate::types::CollectionInfo {
@@ -507,6 +512,8 @@ impl Backend for QdrantBackend {
             vector_count,
             vector_size,
             quantization,
+            vectors_on_disk,
+            payload_on_disk,
         })
     }
 

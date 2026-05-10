@@ -160,6 +160,9 @@ async fn test_fixture_ingestion_performance() {
     for entry in walk.into_iter().filter_map(|e| e.ok()) {
         if entry.file_type().is_file() {
             let path = entry.path();
+            if path.components().any(|c| c.as_os_str() == ".vecdb") {
+                continue;
+            }
             let content = fs::read_to_string(path).unwrap_or_default();
             if content.is_empty() {
                 continue;

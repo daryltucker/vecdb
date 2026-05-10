@@ -395,6 +395,10 @@ impl Core {
     /// `project_root` for topographic metadata. The standard `ingest()`
     /// method sets these to None; use this when you need them.
     #[allow(clippy::too_many_arguments)]
+    /// Ingest using a fully-specified `IngestionOptions`.
+    /// Unlike `ingest()`, this does NOT merge `self.path_rules` or any other Core fields —
+    /// the caller owns the entire options struct. If you build `IngestionOptions` manually,
+    /// populate `path_rules` from `config.ingestion.path_rules` yourself.
     pub async fn ingest_with_options(
         &self,
         options: IngestionOptions,
@@ -558,6 +562,8 @@ pub async fn search_smart(
                         vector_count: None,
                         vector_size: None,
                         quantization: None,
+                        vectors_on_disk: None,
+                        payload_on_disk: None,
                     });
                 }
             }

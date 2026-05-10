@@ -153,3 +153,23 @@ Run `vecq elements <ext>` to see available nodes. Common ones include:
 - `.functions[]`: Function definitions (`{ name, signature, content }`)
 - `.structs[]`: Class/Struct definitions (`{ name, content }`)
 - `.imports[]`: Import statements
+
+### JSON (`.json`, `.ndjson`, `.jsonl`)
+Run `vecq elements json` to see available nodes:
+- `.pairs[]`: Scalar key-value entries (`{ name, content, attributes.Json.other.value }`)
+- `.objects[]`: Nested object/array nodes with `.children[]`
+
+**Cross-language query pattern** — works across `.rs`, `.py`, `.json` in one pass:
+```bash
+vecq -R src/ -- '(.functions // .pairs // empty)[] | .name'
+```
+
+**Get a specific value by key:**
+```bash
+vecq package.json -- '.pairs[] | select(.name == "version") | .content'
+```
+
+**List all top-level keys:**
+```bash
+vecq config.json -- '.pairs[] | .name'
+```

@@ -129,6 +129,9 @@ pub struct CollectionInfo {
     pub vector_count: Option<u64>,
     pub vector_size: Option<u64>,
     pub quantization: Option<crate::config::QuantizationType>,
+    // NEW
+    pub vectors_on_disk: Option<bool>,   // VectorParams.on_disk
+    pub payload_on_disk: Option<bool>,   // CollectionParams.on_disk_payload
 }
 
 /// Information about a background task in the backend (e.g., optimization).
