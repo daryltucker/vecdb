@@ -114,7 +114,7 @@ pub async fn run() -> anyhow::Result<()> {
             let file_detector = Arc::new(HybridDetector::new());
             let parser_factory = Arc::new(VecqParserFactory);
 
-            let core = vecdb_core::Core::new(
+            let _core = vecdb_core::Core::new(
                 &profile.qdrant_url,
                 &profile.ollama_url,
                 &config.resolve_embedding_model(&profile),
@@ -133,7 +133,7 @@ pub async fn run() -> anyhow::Result<()> {
                 parser_factory.clone(),
             )
             .await?;
-            commands::delete::run(&core, args).await?;
+            commands::delete::run(args, &config).await?;
         }
         Commands::Snapshot(args) => {
             commands::snapshot::run(args, &config, profile_arg).await?

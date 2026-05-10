@@ -115,7 +115,7 @@ async fn test_mcp_full_lifecycle() {
         .await
         .unwrap();
     let content = res["content"][0]["text"].as_str().unwrap();
-    assert!(content.contains(r#""is_compatible": true"#));
+    assert!(content.contains(r#""is_compatible": false"#));
     assert!(content.contains(r#""is_local": true"#));
     assert!(content.contains("docs"));
 

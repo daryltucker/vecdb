@@ -136,6 +136,7 @@ count; run_test "T1.12" python3 tests/tier1_query.py; passed
 count; run_test "T1.13" python3 tests/tier1_asm_deduplication.py; passed
 count; run_test "T1.14" python3 tests/tier1_asm_sequencing.py; passed
 count; run_test "T1.15" python3 tests/tier1_asm_state_diff.py; passed
+count; run_test "T1.16" python3 tests/tier1_vecdbrc_warning.py; passed
 
 # ══════════════════════════════════════════
 # TIER 1.5: RUST UNIT TESTS (cargo test)

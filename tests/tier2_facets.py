@@ -112,7 +112,7 @@ def ingest_data():
 def run_search(query, smart_routing=False):
     cmd = [VECDB_BIN, "search", query, "--json"]
     if smart_routing:
-        cmd.append("--smart")
+        cmd.extend(["--smart", "true"])
         
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:

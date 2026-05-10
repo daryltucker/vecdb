@@ -1,6 +1,8 @@
 use assert_cmd::Command;
 use serde_json::json;
 
+/// --raw-json: treat .json files as plain data for native jq queries.
+/// Default mode routes .json through the AST pipeline (.pairs[], .objects[]).
 #[test]
 fn test_jq_stdlib_keys() {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_vecq"));
@@ -8,7 +10,11 @@ fn test_jq_stdlib_keys() {
     let mut temp = tempfile::Builder::new().suffix(".json").tempfile().unwrap();
     std::io::Write::write_all(&mut temp, input.as_bytes()).unwrap();
 
-    let assert = cmd.arg("-q").arg("keys | sort").arg(temp.path()).assert();
+    let assert = cmd
+        .arg("--raw-json")
+        .arg("-q").arg("keys | sort")
+        .arg(temp.path())
+        .assert();
 
     assert.success().stdout("[\"a\",\"b\"]\n");
 }
@@ -20,7 +26,11 @@ fn test_jq_stdlib_length() {
     let mut temp = tempfile::Builder::new().suffix(".json").tempfile().unwrap();
     std::io::Write::write_all(&mut temp, input.as_bytes()).unwrap();
 
-    let assert = cmd.arg("-q").arg("length").arg(temp.path()).assert();
+    let assert = cmd
+        .arg("--raw-json")
+        .arg("-q").arg("length")
+        .arg(temp.path())
+        .assert();
 
     assert.success().stdout("3\n");
 }
@@ -33,6 +43,7 @@ fn test_jq_stdlib_to_entries() {
     std::io::Write::write_all(&mut temp, input.as_bytes()).unwrap();
 
     let assert = cmd
+        .arg("--raw-json")
         .arg("-q")
         .arg("to_entries | .[0].key")
         .arg(temp.path())

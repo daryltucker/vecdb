@@ -351,7 +351,12 @@ impl SchemaRegistry {
 
     fn register_json_schema(&mut self) {
         let json_schema = Schema::new("1.0".to_string(), FileType::Json)
-            .with_required_field("metadata".to_string());
+            .with_required_field("pairs".to_string())
+            .with_required_field("objects".to_string())
+            .with_element_mapping(ElementType::Variable, "pairs".to_string())
+            .with_attribute_definition(ElementType::Variable, "value".to_string())
+            .with_element_mapping(ElementType::Block, "objects".to_string())
+            .with_attribute_definition(ElementType::Block, "children".to_string());
         self.register(json_schema);
     }
 }

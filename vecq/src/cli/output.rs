@@ -141,35 +141,38 @@ async fn parse_content_to_json(
     let mut json_vals = if file_type == FileType::Text {
         // Treat content as raw string, wrapped in single JSON string
         vec![serde_json::Value::String(content.to_string())]
-    } else if file_type == FileType::Json
-        || (file_type == FileType::Unknown
-            && (content.trim_start().starts_with('{') || content.trim_start().starts_with('[')))
-    {
-        let deserializer = serde_json::Deserializer::from_str(content);
-        let mut vals = Vec::new();
-        for item in deserializer.into_iter::<serde_json::Value>() {
-            match item {
-                Ok(val) => vals.push(val),
-                Err(e) => {
-                    if file_type == FileType::Json {
-                        return Err(VecqError::json_error(
-                            "Invalid JSON input".to_string(),
-                            Some(e),
-                        ));
-                    } else {
-                        return Err(VecqError::UnsupportedFileType {
-                            file_type: "Unknown (failed JSON heuristic)".to_string(),
-                        });
-                    }
-                }
-            }
-        }
-        vals
     } else {
         if file_type == FileType::Unknown {
+            // Heuristic: bare JSON object/array on stdin or unknown extension — raw passthrough
+            if content.trim_start().starts_with('{') || content.trim_start().starts_with('[') {
+                let deserializer = serde_json::Deserializer::from_str(content);
+                let mut vals = Vec::new();
+                for item in deserializer.into_iter::<serde_json::Value>() {
+                    match item {
+                        Ok(val) => vals.push(val),
+                        Err(_) => return Err(VecqError::UnsupportedFileType {
+                            file_type: "Unknown (failed JSON heuristic)".to_string(),
+                        }),
+                    }
+                }
+                return Ok(vals);
+            }
             return Err(VecqError::UnsupportedFileType {
                 file_type: format!("Unknown file type for: {:?}", path),
             });
+        }
+        // --raw-json: treat .json files as plain data, bypassing the AST schema.
+        // Use for native jq queries (keys, to_entries, .field) on data files.
+        if file_type == FileType::Json && options.raw_json {
+            let deserializer = serde_json::Deserializer::from_str(content);
+            let mut vals = Vec::new();
+            for item in deserializer.into_iter::<serde_json::Value>() {
+                match item {
+                    Ok(val) => vals.push(val),
+                    Err(e) => return Err(VecqError::json_error("Invalid JSON input".to_string(), Some(e))),
+                }
+            }
+            return Ok(vals);
         }
         let parsed = if options.enable_usages {
             parse_file_with_options(content, file_type, true).await?

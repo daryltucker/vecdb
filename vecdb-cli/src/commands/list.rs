@@ -135,8 +135,18 @@ pub async fn run(config: &Config, profile_name: Option<&str>, format: OutputForm
 
                         let total_bytes =
                             (count_val as f64 * dim_val as f64 * bytes_per_dim) * overhead_mult;
-                        let size_gb = total_bytes / (1024.0 * 1024.0 * 1024.0);
-
+                        
+                        // Adjust for on-disk storage: if vectors are on disk, they do not consume RAM
+                        let vectors_on_disk = c.vectors_on_disk.unwrap_or(false);
+                        let adjusted_bytes = if vectors_on_disk {
+                            // Vectors on disk = minimal RAM usage (just metadata/index)
+                            // Estimate ~1% of original for index overhead
+                            total_bytes * 0.01
+                        } else {
+                            total_bytes
+                        };
+                        
+                        let size_gb = adjusted_bytes / (1024.0 * 1024.0 * 1024.0);
                         let count = c
                             .vector_count
                             .map(|v| v.to_string())

@@ -5,16 +5,17 @@ pub fn build_walker(options: &IngestionOptions) -> WalkBuilder {
     let mut builder = WalkBuilder::new(&options.path);
     builder
         .git_ignore(options.respect_gitignore)
-        .ignore(true)
+        .ignore(options.respect_gitignore)
         .hidden(false);
 
     if !options.ignore_vectorignore {
         builder.add_custom_ignore_filename(".vectorignore");
     }
 
-    // Always exclude .vecdbrc files — they are configuration, not ingestable content
+    // Always exclude configuration/ignore files — they are not ingestable content
     builder.filter_entry(move |entry| {
-        entry.file_name() != ".vecdbrc"
+        let name = entry.file_name();
+        name != ".vecdbrc" && name != ".vectorignore" && name != ".gitignore"
     });
 
     builder

@@ -137,6 +137,121 @@ pub async fn ingest_path(
 
     let mut state_changed = false;
 
+    // Check if this is an explicit single file (not a directory/glob)
+    let path_is_file = std::path::Path::new(&options.path).is_file();
+
+    if path_is_file {
+        let path = std::path::PathBuf::from(&options.path);
+
+        // Refuse to ingest files inside .vecdb state directories — same guard the walker applies.
+        // Without this, ingesting state.toml creates .vecdb/.vecdb/state.toml next run, ad infinitum.
+        if path.components().any(|c| c.as_os_str() == ".vecdb") {
+            return Ok(());
+        }
+
+        let options_arc = Arc::new(options);
+        let root_path = path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+
+        // Apply extensions filter (if set)
+        if let Some(ref exts) = options_arc.extensions {
+            let current_ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+            if !exts.iter().any(|e| e.eq_ignore_ascii_case(current_ext)) {
+                eprintln!("Skipping: file extension not in allowlist");
+                return Ok(());
+            }
+        }
+
+        // Apply excludes filter (if set)
+        if let Some(ref excludes) = options_arc.excludes {
+            let path_str = path.to_string_lossy().to_string();
+            for pattern in excludes {
+                if let Ok(glob) = glob::Pattern::new(pattern) {
+                    if glob.matches(&path_str)
+                        || glob.matches(path.file_name().unwrap_or_default().to_str().unwrap_or(""))
+                    {
+                        eprintln!("Skipping: file matches exclude pattern '{}'", pattern);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        // Compute metadata hash and check state
+        let rel_path = path.strip_prefix(&root_path).unwrap_or(&path).to_path_buf();
+        let file_collection: String = if let Some(ref routes) = options_arc.vecdbrc_routes {
+            let match_path = options_arc.vecdbrc_root.as_ref().and_then(|root| {
+                path.strip_prefix(root).ok()
+            }).map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| rel_path.to_string_lossy().to_string());
+
+            let coll = crate::vecdbrc::resolve_route(
+                routes, &match_path, Some(&options_arc.collection)
+            ).0;
+            if coll.is_empty() { options_arc.collection.clone() } else { coll }
+        } else {
+            options_arc.collection.clone()
+        };
+
+        if let Ok(meta_hash) = crate::state::compute_file_metadata_hash(&path) {
+            if !state.update_file(&file_collection, rel_path.clone(), meta_hash.clone()) {
+                eprintln!("Skipping: file unchanged (state match)");
+                return Ok(());
+            }
+            state_changed = true;
+        }
+
+        // Process the file
+        let compiled_rules: Vec<Regex> = options_arc.path_rules.iter()
+            .filter_map(|rule| Regex::new(&rule.pattern).ok())
+            .collect();
+
+        let mut files_processed = 0;
+        let mut files_skipped = 0;
+
+        match process_single_file(
+            path.clone(),
+            rel_path.clone(),
+            detector.clone(),
+            parser_factory.clone(),
+            compiled_rules,
+            options_arc.clone(),
+            commit_sha.clone(),
+        ).await {
+            Ok(Some(mut chunks)) => {
+                // Embed and flush
+                flush_chunks(
+                    backend,
+                    embedder,
+                    &file_collection,
+                    &mut chunks,
+                    options_arc.gpu_batch_size,
+                    resolved_dim,
+                    options_arc.max_chunk_size,
+                ).await?;
+                files_processed = 1;
+            }
+            Ok(None) => {
+                eprintln!("Skipping: file not processable");
+                files_skipped = 1;
+            }
+            Err(e) => {
+                eprintln!("File processing error: {}", e);
+            }
+        }
+
+        if state_changed {
+            state.touch_collection(&file_collection);
+            let _ = state.save(&root_path);
+        }
+
+        eprintln!(
+            "Ingestion Summary: Scanned {}, Processed {}, Skipped {}",
+            1, files_processed, files_skipped
+        );
+        return Ok(());
+    }
+
+    // Directory or glob - use walker with filters
     let builder = build_walker(&options);
     let pb = if OUTPUT.is_interactive {
         eprintln!("Scanning files...");

@@ -59,9 +59,13 @@ pub async fn handle_elements_command(matches: &ArgMatches) -> VecqResult<()> {
                 }
             }
         } else {
-            // List structural elements for the language
+            // List structural elements for the language.
+            // Prefer element_mappings (the queryable AST fields) and fall back to
+            // required_fields only when no mappings exist (e.g. bare metadata-only schemas).
             let mut elements: Vec<String> = schema.element_mappings.values().cloned().collect();
-            elements.extend(schema.required_fields.clone());
+            if elements.is_empty() {
+                elements.extend(schema.required_fields.clone());
+            }
             elements.sort();
             elements.dedup();
 
@@ -98,7 +102,9 @@ pub async fn handle_elements_command(matches: &ArgMatches) -> VecqResult<()> {
             let mut result = serde_json::Map::new();
             for schema in schemas {
                 let mut elements: Vec<String> = schema.element_mappings.values().cloned().collect();
-                elements.extend(schema.required_fields.clone());
+                if elements.is_empty() {
+                    elements.extend(schema.required_fields.clone());
+                }
                 elements.sort();
                 elements.dedup();
                 result.insert(

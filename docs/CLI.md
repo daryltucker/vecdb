@@ -80,11 +80,23 @@ Safely delete a collection.
 *   **Options**:
     *   `--yes`: Skip confirmation (Danger!).
 
+    *   `-c, --collection <NAME>`: Target collection.
+
+
+
 ### `history ingest [REPO_PATH]`
 Ingest a specific version of a repository (Time Travel).
 *   **Options**:
     *   `-r, --git-ref <REF>`: The SHA, branch name, or tag to ingest.
     *   `-c, --collection <NAME>`: Target collection.
+
+### `enableusages [PATHS]`
+Enable usage/reference extraction mode for source files.
+*   **Arguments**: `[PATHS]` (one or more files or directories to analyze).
+*   **Options**:
+    *   `-o, --output <FORMAT>`: Output format for each usage (json, yaml, table, ast; default: json).
+    *   `-f, --filter <TYPE>`: Filter usages by type (all, calls, references, assignments, methods; default: all).
+    *   `-F, --format <FORMAT>`: Output format for the analysis summary: json, yaml, table, or ast (default: json).
 
 ### `snapshot`
 Manage collection snapshots (backups).

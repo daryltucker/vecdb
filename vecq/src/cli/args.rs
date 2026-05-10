@@ -149,6 +149,12 @@ pub struct Args {
     #[arg(short = 'r', long = "raw-output")]
     pub raw_output: bool,
 
+    /// Treat JSON files as raw data (jq passthrough) instead of AST schema.
+    /// Use when querying data files with native jq syntax: `keys`, `to_entries`, `.field`, etc.
+    /// Without this flag, `.json` files are parsed into the unified AST (`.pairs[]`, `.objects[]`).
+    #[arg(long = "raw-json")]
+    pub raw_json: bool,
+
     /// Subcommands
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -254,6 +260,7 @@ pub struct ParseOptions {
     pub recursive: bool,
     pub max_depth: Option<usize>,
     pub enable_usages: bool,
+    pub raw_json: bool,
 }
 
 impl From<&Args> for ParseOptions {
@@ -265,6 +272,7 @@ impl From<&Args> for ParseOptions {
             recursive: args.recursive,
             max_depth: args.depth,
             enable_usages: args.enable_usages,
+            raw_json: args.raw_json,
         }
     }
 }

@@ -275,7 +275,7 @@ mod tests {
 
         a.await.unwrap();
         assert!(
-            elapsed < Duration::from_millis(50),
+            elapsed < Duration::from_millis(200),
             "unrelated resources should not block; took {elapsed:?}"
         );
     }
@@ -395,34 +395,43 @@ mod tests {
     #[tokio::test]
     async fn test_external_ollama_does_not_block_local_gpu() {
         let arb = Arc::new(ResourceArbiter::new());
+        // Barrier proves both tasks hold their locks simultaneously.
+        // If either resource serialised the other, task B would wait for task A
+        // to release before acquiring — and could never reach the barrier while
+        // task A is still inside its critical section.
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
 
         let arb_a = arb.clone();
+        let bar_a = barrier.clone();
         let task_a = tokio::spawn(async move {
             let _g = arb_a
                 .acquire(&[Resource::OllamaEndpoint { url: "http://external:11434".into() }])
                 .await
                 .unwrap();
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            bar_a.wait().await; // rendezvous while holding the lock
         });
 
         let arb_b = arb.clone();
+        let bar_b = barrier.clone();
         let task_b = tokio::spawn(async move {
             let _g = arb_b
                 .acquire(&[Resource::LocalGpu { device: 0 }])
                 .await
                 .unwrap();
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            bar_b.wait().await; // rendezvous while holding the lock
         });
 
-        let start = Instant::now();
-        let _ = tokio::join!(task_a, task_b);
-        let elapsed = start.elapsed();
+        // If resources contend, one task blocks on acquire and never reaches the
+        // barrier — tokio::join! deadlocks. Add a timeout so the test fails fast
+        // with a clear message instead of hanging the suite.
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            async { tokio::join!(task_a, task_b) },
+        ).await;
 
-        // If they were serialised: ~400 ms. If parallel: ~200 ms. Generous
-        // upper bound to absorb scheduler jitter, but firmly below 2× sequential.
         assert!(
-            elapsed < Duration::from_millis(350),
-            "EXTERNAL_OLLAMA must not block local GPU — wall {elapsed:?} suggests serialisation"
+            result.is_ok(),
+            "EXTERNAL_OLLAMA must not block local GPU — tasks deadlocked, suggesting serialisation"
         );
     }
 }

@@ -41,6 +41,18 @@ default_profile = "default"
 local_embedding_model = "bge-micro-v2"
 
 # Use GPU for local embeddings if available (Requires CUDA-enabled build)
+
+# ══════════════════════════════════════════════════════════
+# SERVER SETTINGS
+# ══════════════════════════════════════════════════════════
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `soft_idle_secs` | u64 | `600` | After this many seconds without use, release the embedder's loaded model. Set to 0 to disable soft eviction. |
+| `deep_idle_secs` | u64 | `3600` | After this many seconds without use, drop the cache entry and (in stdio mode) exit the subprocess. Set to 0 to disable deep eviction. Should be greater than `soft_idle_secs`. |
+| `idle_check_interval_secs` | u64 | `60` | How often the watchdog wakes up to evaluate idle entries. |
+| `idle_eviction_enabled` | bool | `true` | Master switch — if false, no watchdog is spawned. |
+
 local_use_gpu = true
 
 # ═══════════════════════════════════════════════════════════
@@ -119,6 +131,16 @@ chunk_size = 800
 | `local_use_gpu` | bool | `false` | **Global**: Use GPU for local embeddings if available. Requires `cuda` feature flag. |
 | `fastembed_cache_path` | string | `~/.config/vecdb/fastembed_cache` | Path for `local` embedder model cache |
 | `smart_routing_keys` | array | `["source_type", "language"]` | Keys to use for Smart Routing / Facet Auto-Detection. |
+| `server` | table | See below | **Global**: Server-side runtime tuning (only consulted by `vecdb-server`; CLI commands ignore it). |
+
+#### Server Options (`[server]`)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `soft_idle_secs` | u64 | `600` | After this many seconds without use, release the embedder's loaded model. Set to 0 to disable soft eviction. |
+| `deep_idle_secs` | u64 | `3600` | After this many seconds without use, drop the cache entry and (in stdio mode) exit the subprocess. Set to 0 to disable deep eviction. Should be greater than `soft_idle_secs`. |
+| `idle_check_interval_secs` | u64 | `60` | How often the watchdog wakes up to evaluate idle entries. |
+| `idle_eviction_enabled` | bool | `true` | Master switch — if false, no watchdog is spawned. |
 
 ### Profile Options (`[profiles.<name>]`)
 

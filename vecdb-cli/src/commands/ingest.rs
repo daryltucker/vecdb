@@ -169,6 +169,11 @@ pub async fn run(args: IngestArgs, config: &Config, profile_name: Option<&str>) 
                 println!("Found .vecdbrc at {} with {} route(s). Enabling per-file routing.",
                     rc_path.display(), rc.routes.len());
             }
+            // Print warning ONCE if any route differs from CLI collection
+            let has_mismatch = rc.routes.iter().any(|r| r.collection != collection);
+            if has_mismatch && OUTPUT.is_interactive {
+                eprintln!("Warning: .vecdbrc routes to different collection. Verify profile matches '-c {}'", collection);
+            }
             (Some(rc_path), Some(rc))
         }
         None => (None, None),
@@ -199,7 +204,8 @@ pub async fn run(args: IngestArgs, config: &Config, profile_name: Option<&str>) 
         excludes: args.excludes.clone(),
         dry_run: args.dry_run,
         metadata: if metadata.is_empty() { None } else { Some(metadata.clone()) },
-        path_rules: Vec::new(),
+        // ingest_with_options does NOT pull from Core; caller must supply rules explicitly.
+        path_rules: config.ingestion.path_rules.clone(),
         max_concurrent_requests: args.concurrency.unwrap_or(4),
         gpu_batch_size: args.gpu_concurrency.unwrap_or(2),
         quantization: profile.quantization.clone(),
