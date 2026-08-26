@@ -19,8 +19,15 @@ import subprocess
 import json
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib_envelope import search_results
+
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import bin_path
+
 # Setup
-VECDB_BIN = "./target/debug/vecdb"
+VECDB_BIN = bin_path("vecdb")
 TEST_DIR = "tests/run/tier2_facets"
 CONFIG_PATH = os.path.join(TEST_DIR, "config.toml")
 CONTAINER_NAME = "qdrant-test"
@@ -82,11 +89,17 @@ def setup():
     config_content = """
 smart_routing_keys = ["platform", "version", "language"]
 
+[backend.local]
+kind = "fastembed"
+
+[embedder.default]
+backend = "local"
+model = "all-minilm-l6-v2"
+
 [profiles.default]
+embedder = "default"
 qdrant_url = "http://localhost:6336"
-embedding_model = "nomic-embed-text"
 default_collection_name = "test_facets"
-embedder_type = "local"
     """
     
     with open(CONFIG_PATH, "w") as f:
@@ -112,7 +125,7 @@ def ingest_data():
 def run_search(query, smart_routing=False):
     cmd = [VECDB_BIN, "search", query, "--json"]
     if smart_routing:
-        cmd.extend(["--smart", "true"])
+        cmd.append("--smart")
         
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -122,7 +135,8 @@ def run_search(query, smart_routing=False):
     if result.stderr:
         print(f"DEBUG STDERR: {result.stderr}", file=sys.stderr)
         
-    return json.loads(result.stdout)
+    payload = json.loads(result.stdout)
+    return search_results(payload, context=f"query={query!r}"), payload["applied_filters"]
 
 def main():
     setup()
@@ -137,63 +151,63 @@ def main():
     time.sleep(1)
     
     print("\n--- Test 1: Generic Search (No Smart) ---")
-    results = run_search("script")
+    results, filters = run_search("script")
     print(f"Generic results: {len(results)}")
+    if filters:
+        print(f"FAIL: no qualifier was given, so no filter should be applied; got {filters}")
+        sys.exit(1)
     if len(results) < 2:
         print("FAIL: Expected 2 results for generic search")
         sys.exit(1)
         
-    print("\n--- Test 2: Smart Routing (platform=windows) ---")
-    # Query contains "windows" -> should trigger platform=windows
-    # "automation" is in win.txt. "infrastructure" is in linux.txt.
-    # Query: "windows automation"
-    results = run_search("windows automation", smart_routing=True)
-    print(f"Smart results count: {len(results)}")
-    
+    print("\n--- Test 2: Explicit qualifier (platform:windows) ---")
+    # Faceted search is driven by an explicit `key:value` qualifier. The bare
+    # word "windows" appearing in a query is prose, not an instruction — see
+    # BUG_SMART_ROUTING_NAKED_FACET_MATCH-2026-234.
+    results, filters = run_search("platform:windows automation", smart_routing=True)
+    print(f"Qualified results: {len(results)} filters={filters}")
+
+    if filters.get("platform") != "windows":
+        print(f"FAIL: expected platform=windows to be applied and reported, got {filters}")
+        sys.exit(1)
+
     if len(results) != 1:
         print(f"FAIL: Expected 1 result, got {len(results)}")
-        # Dump results
         for r in results:
             print(f"- {r['content'][:50]}...")
-        # Since run_search swallows stderr if returncode=0, we need to hack it or just trust we see it if we didn't capture?
-        # Wait, run_search sets capture_output=True. 
-        # We need to change run_search to return stderr or print it.
         sys.exit(1)
-        
+
     if "PowerShell" not in results[0]['content']:
         print("FAIL: Result content mismatch")
         sys.exit(1)
     print("PASS: Correctly filtered to Windows content")
 
-    print("\n--- Test 3: Regex Safety (win vs windows) ---")
-    # Query "win automation" 
-    # Facet value is "windows".
-    # Regex `\bwindows\b` should NOT match "win".
-    # So NO filter should be applied.
-    # Semantic search for "win automation" might match powershell doc (semantically similar).
-    # BUT if filter WAS applied (falsely), it would look for platform=windows?
-    # Wait.
-    # If "win" matched "windows" (old behavior), filter `platform=windows` WOULD be applied.
-    # Result: 1 match (win.txt).
-    # If "win" DOES NOT match "windows" (new behavior), NO filter is applied.
-    # Result: search for "win automation".
-    # Result: Both docs "automation" (win) and "cloud" (linux) are semantically distant from "win"?
-    # Actually, "win" is close to "windows". 
-    # This test is tricky to distinguish: "Filtered to Win" vs "Semantically Top Ranked Win".
-    
-    # Let's try "linux" facet.
-    # Query: "lin infrastructure".
-    # Old behavior: "lin" matches "linux". Filter `platform=linux`. Result: linux.txt.
-    # New behavior: "lin" != "linux". No filter. Search "lin infrastructure".
-    # "infrastructure" matches linux.txt heavily.
-    # "lin" might match?
-    
-    # Better verification: Check STDERR for "DynamicRouter: Detected" log?
-    # But vecdb output might be gated.
-    # We can check the presence of specific logs if we run in debug mode or check detection behavior.
-    
-    # For now, let's rely on functional correctness.
-    pass
+    print("\n--- Test 3: A bare facet value must not filter ---")
+    # The regression guard. Previously any bare word matching a facet value
+    # silently narrowed the search, so prose like "windows automation" returned
+    # a subset of the corpus with nothing saying why. Now only `key:value` does.
+    results, filters = run_search("windows automation", smart_routing=True)
+    print(f"Unqualified results: {len(results)} filters={filters}")
+
+    if filters:
+        print(f"FAIL: bare prose must not apply a filter; got {filters}")
+        sys.exit(1)
+
+    if len(results) < 2:
+        print(f"FAIL: unfiltered search should still see the whole corpus, got {len(results)}")
+        sys.exit(1)
+    print("PASS: Bare facet value left the query unfiltered")
+
+    print("\n--- Test 4: Unknown qualifier value is an error, not silence ---")
+    cmd = [VECDB_BIN, "search", "platform:solaris automation", "--json", "--smart"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        print("FAIL: an unknown facet value should fail loudly, not return an empty list")
+        sys.exit(1)
+    if "solaris" not in (result.stderr + result.stdout):
+        print(f"FAIL: the error should name the offending value; got: {result.stderr[:300]}")
+        sys.exit(1)
+    print("PASS: Unknown facet value rejected and named")
 
     print("\nALL TESTS PASSED")
 

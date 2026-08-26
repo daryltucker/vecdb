@@ -10,7 +10,7 @@
 //   - Must distinguish between different error categories (parse, query, I/O)
 //   - Must support error chaining to preserve root cause information
 //   - Must integrate with jq-rs error types for query compatibility
-//   
+//
 //   Implementation-discovered:
 //   - Requires thiserror for ergonomic error handling and Display derivation
 //   - Must support std::error::Error trait for error chaining
@@ -20,16 +20,16 @@
 // IMPLEMENTATION RULES:
 //   1. Use thiserror for all error types to ensure consistent Display formatting
 //      Rationale: Provides automatic Display implementation and error chaining
-//   
+//
 //   2. Include file path and line number for all parse errors
 //      Rationale: Users need to know exactly where parsing failed for debugging
-//   
+//
 //   3. Provide suggestion field for query errors when possible
 //      Rationale: Helps users fix invalid jq syntax with actionable guidance
-//   
+//
 //   4. Use #[from] attribute for automatic error conversion from dependencies
 //      Rationale: Reduces boilerplate and ensures proper error chaining
-//   
+//
 //   Critical:
 //   - DO NOT lose error context when converting between error types
 //   - DO NOT expose internal implementation details in error messages
@@ -37,7 +37,7 @@
 //
 // USAGE:
 //   use vecq::error::{VecqError, VecqResult};
-//   
+//
 //   // Parse error with location
 //   return Err(VecqError::ParseError {
 //       file: PathBuf::from("example.rs"),
@@ -45,7 +45,7 @@
 //       message: "Unexpected token".to_string(),
 //       source: Some(Box::new(syn_error)),
 //   });
-//   
+//
 //   // Query error with suggestion
 //   return Err(VecqError::QueryError {
 //       query: ".functions[".to_string(),
@@ -60,7 +60,7 @@
 //   3. Update error conversion From implementations if needed
 //   4. Add unit tests in tests/unit/error_tests.rs
 //   5. Update error handling documentation in README.md
-//   
+//
 //   When parser dependencies change:
 //   1. Update From implementations for new error types
 //   2. Test error message formatting with new dependency versions
@@ -99,7 +99,13 @@ pub enum VecqError {
     },
 
     /// Query error with jq syntax issues and suggestions
-    #[error("Query error: {message}")]
+    ///
+    /// The offending query is part of the message, not merely a field. It used
+    /// to be dropped by `Display`, so only the CLI — which re-assembled it by
+    /// hand in `cli/run.rs` — told the caller *which* query failed. Every other
+    /// consumer, the MCP server included, got a bare `Parse([(Term, "")])` with
+    /// nothing to attach it to.
+    #[error("Query error in '{query}': {message}")]
     QueryError {
         query: String,
         message: String,
@@ -199,10 +205,7 @@ impl VecqError {
 // Conversion from serde_json errors
 impl From<serde_json::Error> for VecqError {
     fn from(err: serde_json::Error) -> Self {
-        VecqError::json_error(
-            format!("JSON serialization failed: {}", err),
-            Some(err),
-        )
+        VecqError::json_error(format!("JSON serialization failed: {}", err), Some(err))
     }
 }
 
@@ -221,7 +224,12 @@ mod tests {
         );
 
         match error {
-            VecqError::ParseError { file, line, message, .. } => {
+            VecqError::ParseError {
+                file,
+                line,
+                message,
+                ..
+            } => {
                 assert_eq!(file, PathBuf::from("test.rs"));
                 assert_eq!(line, 42);
                 assert_eq!(message, "Syntax error");

@@ -82,7 +82,7 @@ Settings are stored in `~/.config/docsize/config.toml` (XDG Compliant).
 ### Custom Ollama URL
 If using a custom endpoint or proxy (e.g., edge proxy):
 ```toml
-ollama_url = "https://ollama-003.edge.nugit.net"
+ollama_url = "https://ollama.example.com"
 ```
 
 ### Prompt Template

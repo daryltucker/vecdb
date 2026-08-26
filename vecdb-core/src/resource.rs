@@ -73,12 +73,18 @@ impl Resource {
     /// `needs_file_lock()` is true. Located under `$XDG_RUNTIME_DIR/vecdb/locks/`
     /// (tmpfs, auto-cleared on logout) with a fallback to `~/.cache/vecdb/locks/`.
     fn lock_path(&self) -> Option<PathBuf> {
-        let Resource::LocalGpu { device } = self else { return None };
+        let Resource::LocalGpu { device } = self else {
+            return None;
+        };
         let base = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .or_else(dirs::cache_dir)
             .unwrap_or_else(|| PathBuf::from("/tmp"));
-        Some(base.join("vecdb").join("locks").join(format!("gpu.{device}.lock")))
+        Some(
+            base.join("vecdb")
+                .join("locks")
+                .join(format!("gpu.{device}.lock")),
+        )
     }
 
     /// Stable ordering key used to acquire multi-resource permit sets in a
@@ -236,8 +242,7 @@ async fn acquire_file_lock(resource: &Resource) -> Result<FileLockGuard> {
             .with_context(|| format!("open lock file {}", path.display()))?;
 
         // Exclusive blocking lock. Released on FD drop.
-        FileExt::lock_exclusive(&file)
-            .with_context(|| format!("flock {}", path.display()))?;
+        FileExt::lock_exclusive(&file).with_context(|| format!("flock {}", path.display()))?;
 
         Ok(FileLockGuard { file })
     })
@@ -259,13 +264,27 @@ mod tests {
         let arb_a = arb.clone();
         let a = tokio::spawn(async move {
             let _g = arb_a
-                .acquire(&[Resource::OllamaEndpoint { url: "remote".into() }])
+                .acquire(&[Resource::OllamaEndpoint {
+                    url: "remote".into(),
+                }])
                 .await
                 .unwrap();
             tokio::time::sleep(Duration::from_millis(150)).await;
         });
 
-        // ...and confirm an unrelated resource's acquire returns near-instantly.
+        // ...and confirm an unrelated resource's acquire does not wait for it.
+        //
+        // The property is "did not block", which is observable directly: if the
+        // acquire returned without waiting, the 150ms holder is necessarily
+        // still running. Asserting that instead of an absolute duration is what
+        // makes this deterministic.
+        //
+        // It used to assert `elapsed < 200ms`. That is a wall-clock measurement
+        // taken inside a gate that runs test binaries CONCURRENTLY, so it
+        // reported machine load as much as arbiter behaviour — the same reason
+        // `make test-perf` exists as a separate, serial target. Observed
+        // failing at 308ms under full-suite load on day 238 while passing 5/5
+        // in isolation on the same commit.
         let start = Instant::now();
         let _g = arb
             .acquire(&[Resource::LocalGpu { device: 99 }])
@@ -273,11 +292,24 @@ mod tests {
             .unwrap();
         let elapsed = start.elapsed();
 
-        a.await.unwrap();
         assert!(
-            elapsed < Duration::from_millis(200),
-            "unrelated resources should not block; took {elapsed:?}"
+            !a.is_finished(),
+            "acquiring an unrelated resource waited for the held one to be \
+             released (took {elapsed:?}) — the arbiter is serialising resources \
+             that share nothing"
         );
+
+        a.await.unwrap();
+
+        // The absolute bound is still worth having, but only where a clock is
+        // meaningful: serially, under `make test-perf`, like every other timing
+        // assertion in this repo.
+        if std::env::var("VECDB_PERF_ASSERT").is_ok() {
+            assert!(
+                elapsed < Duration::from_millis(200),
+                "unrelated resources should not block; took {elapsed:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -378,13 +410,10 @@ mod tests {
         // and must not deadlock against itself.
         let arb = Arc::new(ResourceArbiter::new());
         let r = Resource::LocalGpu { device: 0 };
-        let _g = tokio::time::timeout(
-            Duration::from_secs(1),
-            arb.acquire(&[r.clone(), r.clone()]),
-        )
-        .await
-        .expect("must not deadlock on duplicates")
-        .expect("must succeed");
+        let _g = tokio::time::timeout(Duration::from_secs(1), arb.acquire(&[r.clone(), r.clone()]))
+            .await
+            .expect("must not deadlock on duplicates")
+            .expect("must succeed");
     }
 
     /// Regression test for the user's reported bug.
@@ -405,7 +434,9 @@ mod tests {
         let bar_a = barrier.clone();
         let task_a = tokio::spawn(async move {
             let _g = arb_a
-                .acquire(&[Resource::OllamaEndpoint { url: "http://external:11434".into() }])
+                .acquire(&[Resource::OllamaEndpoint {
+                    url: "http://external:11434".into(),
+                }])
                 .await
                 .unwrap();
             bar_a.wait().await; // rendezvous while holding the lock
@@ -424,10 +455,10 @@ mod tests {
         // If resources contend, one task blocks on acquire and never reaches the
         // barrier — tokio::join! deadlocks. Add a timeout so the test fails fast
         // with a clear message instead of hanging the suite.
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            async { tokio::join!(task_a, task_b) },
-        ).await;
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(task_a, task_b)
+        })
+        .await;
 
         assert!(
             result.is_ok(),

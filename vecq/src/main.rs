@@ -90,7 +90,6 @@
 //
 // Last Verified: 2025-12-31
 
-
 use clap::FromArgMatches;
 use std::process;
 
@@ -102,7 +101,6 @@ mod man_cmd;
 ///
 /// Convert any structured document to queryable JSON and query with jq syntax.
 /// Supports Rust, Python, Markdown, C/C++, CUDA, Go, and Bash files.
-
 
 #[tokio::main]
 async fn main() {

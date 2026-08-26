@@ -3,9 +3,14 @@ import unittest
 import subprocess
 import os
 import json
+import urllib.request
 import time
 import tempfile
 import shutil
+
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import bin_path
 
 class Tier3ResourcesTest(unittest.TestCase):
     def setUp(self):
@@ -16,12 +21,17 @@ class Tier3ResourcesTest(unittest.TestCase):
         # ALL TESTS MUST USE TEST QDRANT — NEVER PRODUCTION (6333/6334)
 
         config_content = """
+[backend.local]
+kind = "fastembed"
+
+[embedder.default]
+backend = "local"
+model = "all-minilm-l6-v2"
+
 [profiles.default]
+embedder = "default"
 qdrant_url = "http://localhost:6336"
 collection_name = "tier3_resources_test"
-ollama_url = "http://localhost:11434"
-embedding_model = "nomic-embed-text"
-embedder_type = "local"
 accept_invalid_certs = true
 """
         with open(self.config_path, "w") as f:
@@ -33,7 +43,7 @@ accept_invalid_certs = true
         
         # Build
         subprocess.run(["cargo", "build", "-p", "vecdb-server"], check=True, capture_output=True)
-        self.server_bin = "./target/debug/vecdb-server"
+        self.server_bin = bin_path("vecdb-server")
         
         self.process = subprocess.Popen(
             [self.server_bin, "--stdio", "--allow-local-fs"],
@@ -102,14 +112,14 @@ accept_invalid_certs = true
             "name": "ingest_path",
             "arguments": {
                 "path": "README.md", # Assume valid path in repo
-                "collection": "tier3_res_test"
+                "collection": "test_tier3_res"
             }
         })
         
         # Now list again
         res = self._rpc("resources/list")
         resources = res["result"]["resources"]
-        target_uri = "vecdb://collections/tier3_res_test"
+        target_uri = "vecdb://collections/test_tier3_res"
         found = any(r["uri"] == target_uri for r in resources)
         self.assertTrue(found, "Newly ingested collection should appear in resources")
 
@@ -120,21 +130,85 @@ accept_invalid_certs = true
         self.assertEqual(len(contents), 1)
         self.assertEqual(contents[0]["mimeType"], "application/json")
         stats = json.loads(contents[0]["text"])
-        self.assertEqual(stats["name"], "tier3_res_test")
-        
+        self.assertEqual(stats["name"], "test_tier3_res")
+
+        # `is_compatible` used to be hardcoded `true`.
+        #
+        # This resource is what an agent reads to decide whether it may use a
+        # collection, so a constant `true` is not a missing feature — it is an
+        # answer that is wrong exactly when it matters. A collection we just
+        # ingested with this very embedder must report compatible AND report the
+        # model it was written with; a hardcoded value cannot do the second.
+        self.assertTrue(
+            stats.get("is_vecdb"),
+            f"a collection vecdb just wrote must be recognised as ours: {stats}",
+        )
+        self.assertTrue(
+            stats.get("is_compatible"),
+            f"a collection written by this embedder must be compatible with it: {stats}",
+        )
+        self.assertTrue(
+            stats.get("model"),
+            f"compatibility is a claim about a model, so name it: {stats}",
+        )
+
+
+        # The discriminating case: a collection that is NOT ours.
+        #
+        # Asserting only on a collection we just wrote cannot catch a hardcoded
+        # `true` — for that collection `true` is the correct answer. A bare
+        # collection with no genesis point is what "not a vecdb collection"
+        # means, and it must come back false on both counts.
+        foreign = "test_tier3_foreign"
+        http = os.environ.get("VECDB_TEST_QDRANT_HTTP_URL", "http://localhost:6335")
+        try:
+            urllib.request.urlopen(
+                urllib.request.Request(
+                    f"{http}/collections/{foreign}",
+                    data=json.dumps({"vectors": {"size": 384, "distance": "Cosine"}}).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="PUT",
+                ),
+                timeout=20,
+            )
+
+            res = self._rpc("resources/read", {"uri": f"vecdb://collections/{foreign}"})
+            self.assertNotIn("error", res)
+            stats = json.loads(res["result"]["contents"][0]["text"])
+
+            self.assertFalse(
+                stats.get("is_vecdb"),
+                f"a collection with no genesis point is not ours: {stats}",
+            )
+            self.assertFalse(
+                stats.get("is_compatible"),
+                "a foreign collection must NOT report compatible — this field is "
+                f"what an agent trusts before writing: {stats}",
+            )
+        finally:
+            try:
+                urllib.request.urlopen(
+                    urllib.request.Request(
+                        f"{http}/collections/{foreign}", method="DELETE"
+                    ),
+                    timeout=20,
+                )
+            except Exception:
+                pass
+
         # 4. Smart Search (Verify no regression/panic on smart arg)
         res = self._rpc("tools/call", {
             "name": "search_vectors",
             "arguments": {
                 "query": "anything",
-                "collection": "tier3_res_test",
+                "collection": "test_tier3_res",
                 "smart": True,
                 "json": True
             }
         })
         # This will fail logic-wise if 'docs' collection is missing or smart search fails, 
         # but we just want to ensure it doesn't PANIC or explode due to arg parsing.
-        # Smart search usually defaults to 'docs'. If we search 'tier3_res_test', 
+        # Smart search usually defaults to 'docs'. If we search 'test_tier3_res', 
         # using 'smart' might ignore collection? 
         # Code: if args.smart { core.search_smart(...) }
         # core.search_smart hardcodes "docs"? Or uses config?

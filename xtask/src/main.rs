@@ -24,6 +24,13 @@ enum Commands {
     Ci,
     /// Enforce architecture policies (Mirror Policy)
     Lint,
+    /// Regenerate the configuration reference in docs/CONFIG.md from the
+    /// config structs' own doc comments.
+    GenConfigDocs {
+        /// Report whether the file is stale instead of rewriting it.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -35,6 +42,7 @@ fn main() -> Result<()> {
         Commands::Test { coverage } => run_test(&sh, coverage)?,
         Commands::Ci => run_ci(&sh)?,
         Commands::Lint => run_lint(&sh)?,
+        Commands::GenConfigDocs { check } => gen_config_docs(check)?,
     }
 
     Ok(())
@@ -120,5 +128,53 @@ fn run_ci(sh: &Shell) -> Result<()> {
     cmd!(sh, "cargo nextest run --profile ci").run()?;
 
     println!("CI Pipeline Passed! 🚀");
+    Ok(())
+}
+
+/// Regenerate `docs/CONFIG.md`'s reference tables from `vecdb-core`'s config
+/// structs.
+///
+/// The reference is derived rather than written because the two used to drift
+/// silently: the compliance check only verified that a field name appeared in
+/// the file, so a wrong type, a wrong default, or a description contradicting
+/// the code all passed. `--check` is what the test suite runs.
+fn gen_config_docs(check: bool) -> Result<()> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("docs/CONFIG.md");
+
+    // A blank description is an undocumented field wearing a table row.
+    let missing = vecdb_core::config_docs::undocumented();
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "config fields have no doc comment, so their reference rows would be blank:\n  {}\n\n  \
+             Add a `///` comment in vecdb-core/src/config.rs — that comment IS the docs.",
+            missing.join("\n  ")
+        );
+    }
+
+    let existing = std::fs::read_to_string(&path)
+        .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
+    let updated = vecdb_core::config_docs::splice(&existing)?;
+
+    if check {
+        if existing != updated {
+            anyhow::bail!(
+                "docs/CONFIG.md is stale.\n\n  \
+                 The reference tables no longer match the config structs.\n  \
+                 Regenerate: cargo run -p xtask -- gen-config-docs"
+            );
+        }
+        println!("docs/CONFIG.md is up to date.");
+        return Ok(());
+    }
+
+    if existing == updated {
+        println!("docs/CONFIG.md already up to date.");
+    } else {
+        std::fs::write(&path, updated)?;
+        println!("Regenerated {}", path.display());
+    }
     Ok(())
 }

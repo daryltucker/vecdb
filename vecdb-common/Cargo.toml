@@ -6,6 +6,7 @@ license-file.workspace = true
 authors.workspace = true
 repository = "https://github.com/daryltucker/vecdb"
 description = "Shared utilities for vecdb ecosystem: output handling, common patterns"
+build = "build.rs"
 
 [dependencies]
 # Minimal dependencies - this crate should be lightweight

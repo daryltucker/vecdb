@@ -18,6 +18,10 @@ import json
 import tempfile
 import shutil
 
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import bin_path
+
 def log(msg):
     print(f"[Tier 3 MCP] {msg}")
 
@@ -44,13 +48,13 @@ def main():
         # 1. Build Server
         log("Building vecdb-server...")
         subprocess.run("cargo build -p vecdb-server", shell=True, check=True, cwd=project_root)
-        server_bin = os.path.join(project_root, "target", "debug", "vecdb-server")
+        server_bin = bin_path("vecdb-server")
         
         # 2. Build CLI & Init (to generate valid config/profile)
         # The server needs a valid profile to start.
         log("Initializing config...")
         subprocess.run("cargo build -p vecdb-cli", shell=True, check=True, cwd=project_root, stdout=subprocess.DEVNULL)
-        cli_bin = os.path.join(project_root, "target", "debug", "vecdb")
+        cli_bin = bin_path("vecdb")
         subprocess.run(f"{cli_bin} init", shell=True, check=True, env=env, stdout=subprocess.DEVNULL)
 
         # 3. Start Server Process

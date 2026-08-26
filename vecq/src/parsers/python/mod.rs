@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use rustpython_parser::{ast, Parse};
 use std::path::PathBuf;
 
-pub mod visitor;
 pub mod usage;
+pub mod visitor;
 
 /// Python parser that extracts structural elements from Python source code
 #[derive(Debug, Clone)]
@@ -43,13 +43,136 @@ impl PythonParser {
         }
     }
 
-    /// Helper to convert byte offset to line number (0-indexed to match core)
+    /// Convert a byte offset to a **1-indexed** line number.
+    ///
+    /// Delegates to the canonical implementation rather than reimplementing it.
+    /// This function used to be a byte-for-byte copy of
+    /// `vecdb_common::lines::line_number_from_offset` with the trailing `+ 1`
+    /// dropped, and its doc comment claimed "0-indexed to match core" — core
+    /// has always been 1-indexed. The result was that every Python element in
+    /// every collection reported a line one above the truth, so a consumer
+    /// editing `line_start..=line_end` destroyed the line before the function
+    /// and left its last line behind.
+    ///
+    /// Keep the delegation. A local copy is how the conventions diverged.
     pub fn byte_offset_to_line_number(&self, content: &str, offset: usize) -> usize {
-        content[..offset.min(content.len())]
-            .chars()
-            .filter(|&c| c == '\n')
-            .count()
+        vecdb_common::lines::line_number_from_offset(content, offset)
     }
+
+    /// Start offset of a definition **including** its decorators.
+    ///
+    /// `FunctionDef.range` opens at the `def` keyword, so a decorated function
+    /// reported a span that excluded its own decorators:
+    ///
+    /// ```text
+    /// 4  @functools.cache      <- outside the reported span
+    /// 5  def cached(x):        <- range.start()
+    /// ```
+    ///
+    /// A consumer replacing "this whole function" by span therefore left the
+    /// decorator stranded above the replacement, silently attaching it to
+    /// whatever landed there next. Decorators are part of the definition —
+    /// removing one changes what the function *is* — so the span covers them.
+    ///
+    /// The decorator expression's own range starts after the `@`, so the `@`
+    /// itself is recovered by scanning back from it.
+    pub fn decorated_start(
+        &self,
+        content: &str,
+        def_start: usize,
+        decorators: &[rustpython_parser::ast::Expr],
+    ) -> usize {
+        use rustpython_parser::ast::Ranged;
+        let Some(first) = decorators.first() else {
+            return def_start;
+        };
+        let expr_start = first.range().start().to_u32() as usize;
+        if expr_start > content.len() {
+            return def_start;
+        }
+        content[..expr_start]
+            .rfind('@')
+            .unwrap_or(def_start)
+            .min(def_start)
+    }
+
+    /// Render `def alpha(a: int, b) -> str` from the parts already extracted.
+    ///
+    /// `attributes.signature` was Rust-only: it is what anything keyed on a
+    /// symbol's shape reads, and Python returned `null` for it, so every such
+    /// query silently excluded Python. The pieces were all present — parameter
+    /// names, annotations, the return annotation — merely never assembled.
+    ///
+    /// `params` are the `{name, type?}` objects this parser already builds, so
+    /// the signature cannot drift from the structured attribute beside it.
+    pub fn python_signature(
+        prefix: &str,
+        name: &str,
+        params: &[serde_json::Value],
+        returns: Option<&str>,
+    ) -> String {
+        let rendered: Vec<String> = params
+            .iter()
+            .map(|p| {
+                let n = p.get("name").and_then(|v| v.as_str()).unwrap_or("_");
+                match p.get("type").and_then(|v| v.as_str()) {
+                    Some(t) => format!("{n}: {t}"),
+                    None => n.to_string(),
+                }
+            })
+            .collect();
+        let mut sig = format!("{prefix}{name}({})", rendered.join(", "));
+        if let Some(r) = returns {
+            sig.push_str(&format!(" -> {r}"));
+        }
+        sig
+    }
+
+    /// Python has no visibility keyword; it has a convention, and tooling that
+    /// ignores it is less useful than tooling that states it.
+    ///
+    /// `_name` and `__name` are private by universal convention. `__dunder__`
+    /// is emphatically NOT private — `__init__` is part of a class's public
+    /// surface — so it is classified public despite the leading underscores.
+    pub fn python_visibility(name: &str) -> &'static str {
+        if name.starts_with("__") && name.ends_with("__") {
+            "public"
+        } else if name.starts_with('_') {
+            "private"
+        } else {
+            "public"
+        }
+    }
+
+    /// The verbatim source text an AST node covers.
+    ///
+    /// Every element's `content` must be a real span of the file, because that
+    /// string is what the ingestion pipeline embeds. This used to be a
+    /// synthesised label — `format!("def {}(...)", name)` — which meant Python
+    /// bodies never reached the index at all, and, since chunk IDs are a hash of
+    /// the content, that a function could be edited without its chunk ID
+    /// changing, so re-ingest silently skipped it forever.
+    /// `tier1_language_fidelity.rs` is the gate that now forbids this.
+    ///
+    /// Offsets are clamped and walked back to char boundaries: `rustpython`
+    /// ranges are trustworthy, but a panic in a parser is a worse failure than a
+    /// slightly short span.
+    pub fn source_span(&self, content: &str, start: usize, end: usize) -> String {
+        let start = floor_char_boundary(content, start);
+        let end = floor_char_boundary(content, end.max(start));
+        content[start..end].to_string()
+    }
+}
+
+/// `str::floor_char_boundary` is still unstable, so spell it out.
+fn floor_char_boundary(s: &str, mut index: usize) -> usize {
+    if index >= s.len() {
+        return s.len();
+    }
+    while !s.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
 }
 
 impl Default for PythonParser {
@@ -81,13 +204,14 @@ impl Parser for PythonParser {
 
     async fn parse(&self, content: &str) -> VecqResult<ParsedDocument> {
         // Parse Python AST
-        let ast = ast::Suite::parse(content, "<string>")
-            .map_err(|e| VecqError::parse_error(
+        let ast = ast::Suite::parse(content, "<string>").map_err(|e| {
+            VecqError::parse_error(
                 PathBuf::from("<string>"),
                 0,
                 format!("Python parsing failed: {}", e),
                 None::<std::io::Error>,
-            ))?;
+            )
+        })?;
 
         let mut elements = Vec::new();
 
@@ -126,7 +250,9 @@ def greet(name: str) -> str:
 "#;
         let result = parser.parse(content).await.unwrap();
 
-        let functions: Vec<_> = result.elements.iter()
+        let functions: Vec<_> = result
+            .elements
+            .iter()
             .filter(|e| e.element_type == ElementType::Function)
             .collect();
 
@@ -149,10 +275,14 @@ class User:
 "#;
         let result = parser.parse(content).await.unwrap();
 
-        let classes: Vec<_> = result.elements.iter()
+        let classes: Vec<_> = result
+            .elements
+            .iter()
             .filter(|e| e.element_type == ElementType::Class)
             .collect();
-        let functions: Vec<_> = result.elements.iter()
+        let functions: Vec<_> = result
+            .elements
+            .iter()
             .filter(|e| e.element_type == ElementType::Function)
             .collect();
 
@@ -161,7 +291,9 @@ class User:
         assert_eq!(functions.len(), 0); // Class methods are children of the class, not top-level elements
 
         // Check that the class has methods as children
-        let method_count = classes[0].children.iter()
+        let method_count = classes[0]
+            .children
+            .iter()
             .filter(|c| c.element_type == ElementType::Function)
             .count();
         assert_eq!(method_count, 2); // __init__ and get_name
@@ -177,7 +309,9 @@ import json as j
 "#;
         let result = parser.parse(content).await.unwrap();
 
-        let imports: Vec<_> = result.elements.iter()
+        let imports: Vec<_> = result
+            .elements
+            .iter()
             .filter(|e| e.element_type == ElementType::Import)
             .collect();
 
@@ -194,7 +328,9 @@ PI = 3.14159
 "#;
         let result = parser.parse(content).await.unwrap();
 
-        let variables: Vec<_> = result.elements.iter()
+        let variables: Vec<_> = result
+            .elements
+            .iter()
             .filter(|e| e.element_type == ElementType::Variable)
             .collect();
 
@@ -263,10 +399,8 @@ def main():
         assert_eq!(assignments.len(), 3);
 
         // Check assignment names
-        let assignment_names: Vec<String> = assignments
-            .iter()
-            .filter_map(|e| e.name.clone())
-            .collect();
+        let assignment_names: Vec<String> =
+            assignments.iter().filter_map(|e| e.name.clone()).collect();
         assert!(assignment_names.contains(&"x".to_string()));
         assert!(assignment_names.contains(&"y".to_string()));
         assert!(assignment_names.contains(&"z".to_string()));

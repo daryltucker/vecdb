@@ -24,37 +24,97 @@ docsize "How do I install and use vecq?"
 
 ### 1. Installation
 
-> Optionally, add `docsize`.
+Two ways in. Both need `--git`: vecdb is **not published on crates.io**, so a
+bare `cargo install vecdb-cli` will not find it.
+
+#### Option A — `cargo binstall` (prebuilt, seconds)
+
+Downloads the binaries built by CI for your platform. **No compiler, no build.**
+This is the path for Raspberry Pi and anything else where compiling ONNX Runtime
+is measured in hours.
+
+```bash
+cargo binstall --git https://github.com/daryltucker/vecdb --locked -y vecdb-cli
+cargo binstall --git https://github.com/daryltucker/vecdb --locked -y vecdb-server
+cargo binstall --git https://github.com/daryltucker/vecdb --locked -y vecq
+```
+
+One command per crate: binstall rejects `--git` together with multiple package
+names (`You cannot use --git and specify multiple packages at the same time`).
+`--manifest-path` has the same restriction.
+
+Don't have it? `cargo install cargo-binstall`, or grab a prebuilt binstall from
+its own releases — same idea, one level up.
+
+Add `--force` to reinstall over an existing copy.
+
+Prebuilt binaries exist for:
+
+| platform | target |
+|---|---|
+| Linux x86-64 | `x86_64-unknown-linux-gnu` |
+| Linux ARM64 (Raspberry Pi 4/5, 64-bit OS) | `aarch64-unknown-linux-gnu` |
+| macOS Apple Silicon | `aarch64-apple-darwin` |
+| Windows x86-64 | `x86_64-pc-windows-msvc` |
+
+Anything else — 32-bit Raspberry Pi OS, musl, FreeBSD — has no artifact; use
+Option B.
+
+> **This will never quietly start compiling.** `disabled-strategies =
+> ["compile"]` is set, so if no prebuilt artifact matches your target binstall
+> errors out instead of silently falling back to a source build — which on an
+> ARM board is the difference between 30 seconds and several days, with nothing
+> on screen to tell you which one you got.
 >
-> ⚠️ **Important:** Always use `--locked` when installing from git. This pins
-> dependency versions (including the ONNX Runtime binary) to the workspace
-> `Cargo.lock`. Without `--locked`, cargo may resolve newer dependencies
-> that download incompatible prebuilt binaries.
+> To build from source deliberately, use Option B, or override:
+> `cargo binstall --strategies crate-meta-data,compile --git … vecdb-cli`
 
-**Option A: Install via Cargo**
+#### Option B — `cargo install` (from source)
+
 ```bash
-cargo install --git https://github.com/daryltucker/vecdb --locked vecdb-cli vecdb-server vecq docsize
+cargo install --git https://github.com/daryltucker/vecdb --locked vecdb-cli vecdb-server vecq
 ```
 
-**Option B: Install individual binaries**
+`cargo install` has no such restriction — all three in one command.
+
+> ⚠️ **Always use `--locked` when installing from git.** It pins dependency
+> versions (including the ONNX Runtime binary) to the workspace `Cargo.lock`.
+> Without it, cargo may resolve newer dependencies that download incompatible
+> prebuilt binaries.
+
+`docsize` is an example client rather than part of the core toolchain, so it is
+deliberately not in either block. Add it separately if you want it:
+`cargo install --git https://github.com/daryltucker/vecdb --locked docsize`
+
+#### Verify
+
 ```bash
-cargo install --git https://github.com/daryltucker/vecdb --locked vecdb-cli
-cargo install --git https://github.com/daryltucker/vecdb --locked vecdb-server
-cargo install --git https://github.com/daryltucker/vecdb --locked vecq
+vecdb --version
+vecdb-server --version
+vecq --version
 ```
+
+Prints `vecdb vX.Y.Z (git:<sha>)`. The revision is stamped at build time, so it
+names the commit the binary was actually built from — not whatever happens to be
+checked out.
 
 **Auto-completions for Cargo Installs**
 If you installed via `cargo install` or `cargo binstall`, you can generate shell completions manually:
+Bash:
+
 ```bash
-# Bash
 mkdir -p ~/.local/share/bash-completion/completions/
 vecdb completions bash > ~/.local/share/bash-completion/completions/vecdb
+```
 
-# Zsh
+Zsh:
+
+```bash
 mkdir -p ~/.zfunc
 vecdb completions zsh > ~/.zfunc/_vecdb
-# Then add to your ~/.zshrc: fpath=(~/.zfunc $fpath); autoload -Uz compinit; compinit
 ```
+
+Then add to `~/.zshrc`: `fpath=(~/.zfunc $fpath); autoload -Uz compinit; compinit`
 
 > See `install.sh` for more install options
 
@@ -111,7 +171,9 @@ downloaded as prebuilt shared libraries and dynamically loaded at runtime.
     [docs/internal/ORT_BINARY_DEPENDENCY.md](docs/internal/ORT_BINARY_DEPENDENCY.md).
 
 3.  **Configuration**:
-    *   Set `local_use_gpu = true` in `~/.config/vecdb/config.toml` (default).
+    *   Set `use_gpu = true` on the `[embedder.<name>]` you use, in
+        `~/.config/vecdb/config.toml`. It is a fastembed knob — Ollama's device
+        placement is the server's business, not vecdb's.
 
 > **Tip**: GPU is really not required, and you will still benefit from `vecdb` when using the CPU embeddings. However, this feature is here for those who want or need it.
 

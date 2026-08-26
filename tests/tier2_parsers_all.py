@@ -4,8 +4,20 @@ import os
 import sys
 import json
 
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import find_bin
+
 # Configuration
-VECQ_BINARY = "./target/release/vecq"
+# Prefer the release binary when one exists, but fall back to debug: the test
+# harness (tests/run_all.sh, T1.1) builds debug binaries only, so hard-coding
+# release meant this step could never pass on a clean tree — it failed on a
+# missing file rather than on anything about parsers.
+def _resolve_vecq():
+    return find_bin("vecq")
+
+
+VECQ_BINARY = _resolve_vecq()
 
 # Sample Code Snippets for every supported language
 SAMPLES = {
@@ -35,7 +47,7 @@ def test_all_parsers():
     
     # Ensure binary exists
     if not os.path.exists(VECQ_BINARY):
-        print(f"Error: {VECQ_BINARY} not found. Run 'cargo build --release --bin vecq' first.")
+        print(f"Error: {VECQ_BINARY} not found. Run 'cargo build --bin vecq' first.")
         sys.exit(1)
 
     failures = []

@@ -12,6 +12,10 @@ use vecq::detection::HybridDetector;
 mod common;
 use common::{MockBackend, MockEmbedder};
 
+/// A collection with no vecdb genesis point — i.e. one belonging to another
+/// tool. `list_collections` must list it and label it, never hide it.
+const FOREIGN_COLLECTION: &str = "test_mcp_foreign";
+
 struct MockParserFactory;
 impl ParserFactory for MockParserFactory {
     fn get_parser(
@@ -27,13 +31,9 @@ impl ParserFactory for MockParserFactory {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Build a single-Core registry for tests that only need the default profile.
-fn make_single_registry(
-    core: Arc<Core>,
-    config: &Config,
-    profile_name: &str,
-) -> Arc<CoreRegistry> {
-    let profile = config.get_profile(Some(profile_name)).unwrap();
-    let key = CoreKey::from_resolved(&profile, config);
+fn make_single_registry(core: Arc<Core>, config: &Config, profile_name: &str) -> Arc<CoreRegistry> {
+    let resolution = config.resolve(Some(profile_name), None).unwrap();
+    let key = CoreKey::from_resolution(&resolution);
     let mut cores = HashMap::new();
     cores.insert(key, core);
     Arc::new(CoreRegistry::from_map(cores, profile_name))
@@ -58,8 +58,8 @@ async fn test_mcp_full_lifecycle() {
             page_num: None,
             start_line: None,
             end_line: None,
-            char_start: 0,
-            char_end: 5,
+            byte_start: 0,
+            byte_end: 5,
         });
     }
 
@@ -82,8 +82,38 @@ async fn test_mcp_full_lifecycle() {
     ));
 
     let mut config = Config::default();
+
+    // `list_collections` does not use the injected MockBackend: it builds a real
+    // QdrantBackend per configured endpoint so it can enumerate collections the
+    // active profile knows nothing about. With `Config::default()` that endpoint
+    // is the *production* URL (6334), so this test was silently asking whether
+    // production Qdrant happened to be running on the machine — it passed when
+    // it was, and enumerated nothing when it was not.
+    let test_qdrant = std::env::var("VECDB_TEST_QDRANT_URL")
+        .unwrap_or_else(|_| "http://localhost:6336".to_string());
     if let Some(profile) = config.profiles.get_mut("default") {
-        profile.default_collection_name = Some("docs".to_string());
+        // `test_`-prefixed: a default named after a real collection ("docs")
+        // puts a production name in the test's assertions and in the instance.
+        profile.default_collection_name = Some(FOREIGN_COLLECTION.to_string());
+        profile.qdrant_url = test_qdrant.clone();
+    }
+
+    // Create the collection this test asserts on, rather than hoping one is
+    // left over from an earlier run. It previously depended on whatever the
+    // instance already contained, so it passed or failed based on test-ordering
+    // and leftovers — and it broke the moment the suite started resetting the
+    // instance (tests/tier0_reset_qdrant.py).
+    //
+    // Created bare, with no genesis point, which is precisely what "not a vecdb
+    // collection" means: that is the state `is_compatible: false` describes.
+    let raw = vecdb_core::backends::qdrant::QdrantBackend::new(&test_qdrant, None)
+        .expect("test Qdrant must be reachable");
+    {
+        use vecdb_core::backend::Backend;
+        let _ = raw.delete_collection(FOREIGN_COLLECTION).await;
+        raw.create_collection(FOREIGN_COLLECTION, 384, None)
+            .await
+            .expect("failed to create the foreign fixture collection");
     }
 
     let registry = make_single_registry(core, &config, "default");
@@ -117,7 +147,7 @@ async fn test_mcp_full_lifecycle() {
     let content = res["content"][0]["text"].as_str().unwrap();
     assert!(content.contains(r#""is_compatible": false"#));
     assert!(content.contains(r#""is_local": true"#));
-    assert!(content.contains("docs"));
+    assert!(content.contains(FOREIGN_COLLECTION));
 
     // 3. Embed
     let req = JsonRpcRequest {
@@ -145,7 +175,7 @@ async fn test_mcp_full_lifecycle() {
             "name": "search_vectors",
             "arguments": {
                 "query": "something",
-                "collection": "docs",
+                "collection": FOREIGN_COLLECTION,
                 "profile": "default",
                 "json": false,
                 "smart": false
@@ -158,14 +188,20 @@ async fn test_mcp_full_lifecycle() {
         .unwrap();
     let content = res["content"][0]["text"].as_str().unwrap();
     assert!(content.contains("0.99")); // Mock score
+
+    // Leave the instance as we found it.
+    {
+        use vecdb_core::backend::Backend;
+        let _ = raw.delete_collection(FOREIGN_COLLECTION).await;
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Test 2: Multi-profile dispatch — the core BUG 1 regression test.
 //
 // Server boots with "default" profile (dim=3 embedder, backend A).
-// "alt-col" is configured with "alternate" profile (dim=7 embedder, backend B).
-// Verifies that searching "alt-col" routes to backend B, not backend A.
+// "test_alt_col" is configured with "alternate" profile (dim=7 embedder, backend B).
+// Verifies that searching "test_alt_col" routes to backend B, not backend A.
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// A parameterized MockEmbedder for multi-profile tests.
@@ -191,6 +227,22 @@ impl vecdb_core::embedder::Embedder for DimMockEmbedder {
     fn model_name(&self) -> String {
         format!("dim-mock-{}", self.dim)
     }
+
+    async fn identity(&self) -> anyhow::Result<vecdb_core::types::ModelIdentity> {
+        // Shared sentinel: every test double is one embedding space, so the
+        // compatibility guard passes and these tests exercise what they are
+        // actually about. Guard behaviour has its own dedicated tests.
+        Ok(vecdb_core::types::ModelIdentity {
+            name: "mock-embedder".to_string(),
+            digest: Some("mock:test-double".to_string()),
+            architecture: Some("mock".to_string()),
+            family: Some("mock".to_string()),
+            parameter_size: Some("0".to_string()),
+            quantization_level: Some("none".to_string()),
+            embedding_length: None,
+            context_length: Some(8192),
+        })
+    }
 }
 
 #[tokio::test]
@@ -205,8 +257,8 @@ async fn test_mcp_multiprofile_dispatch() {
         page_num: None,
         start_line: None,
         end_line: None,
-        char_start: 0,
-        char_end: 14,
+        byte_start: 0,
+        byte_end: 14,
     }]));
     let storage_alternate = Arc::new(Mutex::new(vec![vecdb_core::types::Chunk {
         id: "id-alternate".to_string(),
@@ -217,8 +269,8 @@ async fn test_mcp_multiprofile_dispatch() {
         page_num: None,
         start_line: None,
         end_line: None,
-        char_start: 0,
-        char_end: 16,
+        byte_start: 0,
+        byte_end: 16,
     }]));
 
     let backend_default = Arc::new(MockBackend {
@@ -257,62 +309,61 @@ async fn test_mcp_multiprofile_dispatch() {
     // ── Build a config with two profiles and one collection ──────────────────
     let mut config = Config::default();
 
-    // "alternate" profile — note: embedder_type must be "mock" or something that
-    // produces a distinct CoreKey. The key field is embedding_model, so we just
-    // use a different model name to ensure a distinct key.
+    // A second embedder — a different model on the same backend, which is the
+    // case that must produce a distinct CoreKey.
+    config.embedder.insert(
+        "alternate".to_string(),
+        vecdb_core::config::EmbedderSpec {
+            backend: "local".to_string(),
+            model: "alternate-model".to_string(),
+            num_ctx: None,
+            batch_inputs: None,
+            batch_rows: None,
+            use_gpu: None,
+            dimension: None,
+        },
+    );
     config.profiles.insert(
         "alternate".to_string(),
         vecdb_core::config::Profile {
+            embedder: "alternate".to_string(),
             qdrant_url: "http://localhost:6334".to_string(),
-            default_collection_name: Some("alt-col".to_string()),
-            embedding_model: Some("alternate-model".to_string()),
-            accept_invalid_certs: false,
-            ollama_url: "http://localhost:11434".to_string(),
-            embedder_type: "mock".to_string(),
             qdrant_api_key: None,
-            ollama_api_key: None,
-            num_ctx: None,
-            gpu_batch_size: None,
+            default_collection_name: Some("test_alt_col".to_string()),
             quantization: None,
-            chunk_size: None,
-            max_chunk_size: None,
+            target_chunk_size: None,
+            max_chunk_bytes: None,
             chunk_overlap: None,
             resolved_profile_name: "alternate".to_string(),
         },
     );
 
-    // Map "alt-col" to the "alternate" profile.
     config.collections.insert(
-        "alt-col".to_string(),
+        "test_alt_col".to_string(),
         vecdb_core::config::CollectionConfig {
-            name: "alt-col".to_string(),
+            name: "test_alt_col".to_string(),
             description: None,
             profile: Some("alternate".to_string()),
+            embedder: None,
             qdrant_url: None,
-            embedder_type: None,
-            embedding_model: None,
-            num_ctx: None,
-            gpu_batch_size: None,
-            ollama_url: None,
-            chunk_size: None,
-            chunk_overlap: None,
-            max_chunk_size: None,
-            use_gpu: None,
             qdrant_api_key: None,
-            ollama_api_key: None,
+            target_chunk_size: None,
+            chunk_overlap: None,
+            max_chunk_bytes: None,
             quantization: None,
         },
     );
     if let Some(p) = config.profiles.get_mut("default") {
-        p.default_collection_name = Some("docs".to_string());
+        p.default_collection_name = Some(FOREIGN_COLLECTION.to_string());
     }
 
     // ── Pre-seed registry with both Cores ────────────────────────────────────
-    let default_profile = config.get_profile(Some("default")).unwrap();
-    let key_default = CoreKey::from_resolved(&default_profile, &config);
-
-    let alternate_profile = config.get_profile(Some("alternate")).unwrap();
-    let key_alternate = CoreKey::from_resolved(&alternate_profile, &config);
+    let key_default = CoreKey::from_resolution(&config.resolve(Some("default"), None).unwrap());
+    let key_alternate = CoreKey::from_resolution(&config.resolve(Some("alternate"), None).unwrap());
+    assert_ne!(
+        key_default, key_alternate,
+        "two embedders differing only in model must not share a Core"
+    );
 
     let mut cores = HashMap::new();
     cores.insert(key_default, core_default);
@@ -329,7 +380,7 @@ async fn test_mcp_multiprofile_dispatch() {
             "name": "search_vectors",
             "arguments": {
                 "query": "test",
-                "collection": "docs",
+                "collection": FOREIGN_COLLECTION,
                 "json": false,
                 "smart": false
             }
@@ -350,7 +401,7 @@ async fn test_mcp_multiprofile_dispatch() {
         "docs search must NOT return alternate backend results"
     );
 
-    // ── Test: searching "alt-col" routes to alternate backend (MARKER_ALTERNATE)
+    // ── Test: searching "test_alt_col" routes to alternate backend (MARKER_ALTERNATE)
     let req = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: "tools/call".to_string(),
@@ -358,7 +409,7 @@ async fn test_mcp_multiprofile_dispatch() {
             "name": "search_vectors",
             "arguments": {
                 "query": "test",
-                "collection": "alt-col",
+                "collection": "test_alt_col",
                 "json": false,
                 "smart": false
             }

@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// JSON-RPC 2.0 request structure
-#[derive(Debug, Deserialize)]
+///
+/// `Clone` so the HTTP transport can move a copy into the task that provides
+/// its panic boundary — see `server::dispatch_guarded`.
+#[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,

@@ -1,13 +1,16 @@
 // Main command execution logic for vecq CLI
 // Handles the core query processing and input/output flow
 
+use std::io::BufRead;
 use std::path::PathBuf;
 use tokio::fs;
-use std::io::BufRead;
-use vecq::{available_output_formats, supported_file_types, FormatOptions, JqQueryEngine, QueryEngine, VecqError, VecqResult};
 use vecdb_common::output::{OutputContext, OutputFormat};
+use vecq::{
+    available_output_formats, supported_file_types, FormatOptions, JqQueryEngine, QueryEngine,
+    VecqError, VecqResult,
+};
 
-use super::args::{Args, Commands, MapArgs, MapOutputFormat};
+use super::args::{Args, Commands, MapArgs, MapOutputFormat, ParseOptions};
 use super::output::{extract_json_from_input, process_json_value};
 
 /// Execute the main vecq command with the given arguments
@@ -100,9 +103,24 @@ pub async fn run_main_command(mut args: Args) -> VecqResult<()> {
     let mut handle = std::io::BufWriter::new(stdout.lock());
 
     if args.slurp {
+        // Slurp is a data operation, so it reads data.
+        //
+        // vecq has two readings of a `.json` file: the default AST/structural
+        // view (elements, pairs, metadata) and the raw document view behind
+        // `--raw-json`. Slurp means "collect the inputs into one array and
+        // query that", which is only coherent over documents — slurping the
+        // structural view yields an array of per-file schema wrappers, so `.[0]`
+        // is a metadata envelope rather than the first record, and NDJSON
+        // collapses to a single element instead of one per line.
+        //
+        // So `-s` implies `--raw-json`. Anyone wanting the structural view of
+        // several files already gets it by omitting `-s`.
+        let mut parse_options: ParseOptions = (&args).into();
+        parse_options.raw_json = true;
+
         let mut all_values = Vec::new();
         for input in resolved_inputs {
-            all_values.extend(extract_json_from_input(&input, &(&args).into()).await?);
+            all_values.extend(extract_json_from_input(&input, &parse_options).await?);
         }
         let slurp_value = serde_json::Value::Array(all_values);
         // Synchronous call (no await)
@@ -453,11 +471,17 @@ async fn handle_map_command(args: MapArgs) -> VecqResult<()> {
             println!("{}", overview.mermaid);
         }
         MapOutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&overview.graph).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&overview.graph).unwrap_or_default()
+            );
         }
         MapOutputFormat::Graph => {
             // Pruned architectural graph - same as JSON but already pruned by library
-            println!("{}", serde_json::to_string_pretty(&overview.graph).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&overview.graph).unwrap_or_default()
+            );
         }
         MapOutputFormat::Human => {
             println!("Project: {}", overview.project_root);

@@ -73,27 +73,39 @@ def test_config_loading():
         return False
 
 def test_qdrant_url():
-    """Test 2: Verify Qdrant URL points to test instance"""
+    """Test 2: Every profile's Qdrant URL points at the test instance.
+
+    Previously read a top-level `qdrant_url` key. That key was never part of the
+    Config schema — serde ignored it — so the test was validating dead config
+    while the values that actually get used went unchecked. Profiles are where
+    `qdrant_url` lives, so that is what gets verified.
+    """
     log("Test 2: Qdrant URL Validation")
-    
+
     try:
         config = load_config()
-        qdrant_url = config.get("qdrant_url")
-        
-        if not qdrant_url or not isinstance(qdrant_url, str):
-            log(f"FAIL: qdrant_url missing or invalid: {qdrant_url}", "FAIL")
+        profiles = config.get("profiles", {})
+
+        if not profiles:
+            log("FAIL: config defines no profiles", "FAIL")
             return False
-        
-        if "6335" not in qdrant_url and "6336" not in qdrant_url:
-            log(f"FAIL: Config uses production Qdrant! URL: {qdrant_url}", "FAIL")
-            log("       Expected: http://localhost:6335 or 6336 (test instance)", "FAIL")
-            return False
-        
-        log(f"PASS: Qdrant URL correct: {qdrant_url}", "PASS")
+
+        for name, profile in profiles.items():
+            url = profile.get("qdrant_url")
+            if not url or not isinstance(url, str):
+                log(f"FAIL: profiles.{name} has no qdrant_url", "FAIL")
+                return False
+            if "6335" not in url and "6336" not in url:
+                log(f"FAIL: profiles.{name} uses production Qdrant! URL: {url}", "FAIL")
+                log("       Expected: http://localhost:6335 or 6336 (test instance)", "FAIL")
+                return False
+            log(f"PASS: profiles.{name} -> {url}", "PASS")
+
         return True
     except Exception as e:
         log(f"FAIL: {e}", "FAIL")
         return False
+
 
 def test_all_profiles():
     """Test 3: Iterate and validate all profiles"""
@@ -109,20 +121,33 @@ def test_all_profiles():
         
         log(f"Found {len(profiles)} profiles to test")
         
-        required_fields = ["embedder_type", "embedding_model", "chunk_size"]
-        
+        # A profile names an embedder; the embedder names a backend and a model.
+        # Validating the whole chain here is the point — a dangling reference is
+        # the one config error the three-layer split makes possible, and it must
+        # not survive to first use.
+        embedders = config.get("embedder", {})
+        backends = config.get("backend", {})
+
         for profile_name, profile_data in profiles.items():
-            # Validate required fields
-            for field in required_fields:
-                if field not in profile_data or not profile_data[field]:
-                    log(f"FAIL: Profile '{profile_name}' missing field: {field}", "FAIL")
-                    return False
-            
-            # Log profile details
-            embedder = profile_data["embedder_type"]
-            model = profile_data["embedding_model"]
-            chunks = profile_data["chunk_size"]
-            log(f"  ✓ {profile_name}: {embedder}/{model} (chunks={chunks})")
+            embedder_name = profile_data.get("embedder")
+            if not embedder_name:
+                log(f"FAIL: Profile '{profile_name}' names no embedder", "FAIL")
+                return False
+            if embedder_name not in embedders:
+                log(f"FAIL: Profile '{profile_name}' -> unknown embedder '{embedder_name}'", "FAIL")
+                return False
+
+            embedder = embedders[embedder_name]
+            backend_name = embedder.get("backend")
+            if not backend_name or backend_name not in backends:
+                log(f"FAIL: embedder '{embedder_name}' -> unknown backend '{backend_name}'", "FAIL")
+                return False
+            if not embedder.get("model"):
+                log(f"FAIL: embedder '{embedder_name}' names no model", "FAIL")
+                return False
+
+            kind = backends[backend_name].get("kind")
+            log(f"  ✓ {profile_name}: {embedder_name} = {embedder['model']} on {backend_name} ({kind})")
         
         log(f"PASS: All {len(profiles)} profiles valid", "PASS")
         return True

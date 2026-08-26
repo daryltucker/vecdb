@@ -55,6 +55,20 @@ def check_config_env():
         log("Or use: make tests  (which enforces this automatically)", "FAIL")
         return None
 
+    # MUST be absolute.
+    #
+    # A relative VECDB_CONFIG is resolved against each process's own CWD, and
+    # `cargo test -p <crate>` runs test binaries with CWD at the CRATE root.
+    # "tests/fixtures/config.toml" therefore meant vecdb-cli/tests/fixtures/
+    # config.toml for every Rust tier-2 test — a different file, whose default
+    # collection was the unprefixed production name "docs". The gate cannot
+    # enforce "the ONE authorized config" while the path is ambiguous.
+    if not os.path.isabs(config_path):
+        log(f"VECDB_CONFIG = '{config_path}' is RELATIVE.", "FAIL")
+        log("It resolves differently per process CWD; cargo test runs at the crate root.", "FAIL")
+        log("Set it to an absolute path. `make tests` does this for you.", "FAIL")
+        return None
+
     # Normalize paths for comparison
     normalized = os.path.normpath(config_path)
     required = os.path.normpath(REQUIRED_CONFIG)
@@ -136,6 +150,65 @@ def check_test_files_for_hardcoded_prod():
     return True
 
 
+def check_collection_names_are_test_prefixed():
+    """
+    Every collection a test creates must be named `test_*`.
+
+    Two distinct failures this prevents:
+
+      1. A test that omits `-c` inherits the profile default. When that default
+         was named after a real collection ("docs"), the tests wrote to a
+         production *name*, and only the port kept them off production data.
+      2. Un-prefixed names are indistinguishable from real ones when reviewing
+         the instance, so nobody can safely purge leftovers — and leftovers are
+         how one run's state leaks into the next. `git_test`, `history_v1`,
+         `inc_test` and `tier1_lua` all accumulated this way.
+
+    Scans for collection names passed on the command line or in MCP arguments.
+    """
+    tests_dir = os.path.dirname(__file__)
+    # `--collection X`, `--collection=X`, `-c X`, and JSON `"collection": "X"`.
+    patterns = [
+        re.compile(r"--collection[= ]+[\"']?([A-Za-z0-9_\-]+)"),
+        re.compile(r"\"collection\"\s*:\s*\"([A-Za-z0-9_\-]+)\""),
+        # Assignment form. Added after `TEST_COLLECTION = "tier1_embedder_test"`
+        # slipped through a literal-only scan: the flag is built from the
+        # variable further down, so nothing matched at the call site.
+        re.compile(r"^\s*[A-Za-z_]*COLLECTION[A-Za-z_]*\s*=\s*\"([A-Za-z0-9_\-]+)\"", re.M),
+    ]
+    # Values that are not literal collection names.
+    placeholders = {"collection", "name", "None", "null"}
+
+    violations = []
+    for fname in sorted(os.listdir(tests_dir)):
+        if not fname.endswith(".py") or fname == os.path.basename(__file__):
+            continue
+        fpath = os.path.join(tests_dir, fname)
+        with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+            for lineno, line in enumerate(f, 1):
+                if line.strip().startswith("#"):
+                    continue
+                for pat in patterns:
+                    for name in pat.findall(line):
+                        # Interpolated names (f-strings, variables) resolve at
+                        # runtime; the literal check cannot judge them.
+                        if name in placeholders or "{" in name:
+                            continue
+                        if not name.startswith("test_"):
+                            violations.append(f"{fname}:{lineno}: collection '{name}'")
+
+    if violations:
+        log("Test collections must be named test_*:", "FAIL")
+        for v in violations:
+            log(f"  {v}", "FAIL")
+        log("Rename them. An un-prefixed collection cannot be safely purged and", "FAIL")
+        log("will leak state from one test run into the next.", "FAIL")
+        return False
+
+    log("All literal test collection names are test_-prefixed.", "PASS")
+    return True
+
+
 def check_rust_test_url():
     """Verify VECDB_TEST_QDRANT_URL is set to a test port for Rust integration tests."""
     url = os.environ.get("VECDB_TEST_QDRANT_URL", "")
@@ -170,6 +243,9 @@ def main():
         ok = False
 
     if not check_test_files_for_hardcoded_prod():
+        ok = False
+
+    if not check_collection_names_are_test_prefixed():
         ok = False
 
     if ok:

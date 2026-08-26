@@ -20,10 +20,7 @@ pub struct ArbitratedEmbedder {
 }
 
 impl ArbitratedEmbedder {
-    pub fn new(
-        inner: Arc<dyn Embedder + Send + Sync>,
-        arbiter: Arc<ResourceArbiter>,
-    ) -> Self {
+    pub fn new(inner: Arc<dyn Embedder + Send + Sync>, arbiter: Arc<ResourceArbiter>) -> Self {
         Self { inner, arbiter }
     }
 
@@ -73,6 +70,19 @@ impl Embedder for ArbitratedEmbedder {
 
     fn model_name(&self) -> String {
         self.inner.model_name()
+    }
+
+    /// Delegate, and do not arbitrate: identity is metadata (a cached struct
+    /// for local, a small HTTP call for Ollama), not an inference workload.
+    ///
+    /// This delegation is load-bearing. `Embedder::identity()` has a name-only
+    /// default, and the write guard treats a missing digest as "cannot
+    /// establish identity" and refuses. A decorator that forwards `embed` but
+    /// silently inherits that default therefore reports every model as
+    /// unidentifiable — including to itself — and blocks every ingest. Any
+    /// method added to `Embedder` must be forwarded here explicitly.
+    async fn identity(&self) -> Result<crate::types::ModelIdentity> {
+        self.inner.identity().await
     }
 
     fn release(&self) {

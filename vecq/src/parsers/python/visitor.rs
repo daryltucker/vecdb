@@ -22,6 +22,18 @@ impl super::PythonParser {
 
                 // Extract function name
                 attributes.insert("name".to_string(), json!(func_def.name.to_string()));
+                attributes.insert(
+                    "visibility".to_string(),
+                    json!(super::PythonParser::python_visibility(
+                        func_def.name.as_str()
+                    )),
+                );
+                attributes.insert(
+                    "is_public".to_string(),
+                    json!(
+                        super::PythonParser::python_visibility(func_def.name.as_str()) == "public"
+                    ),
+                );
 
                 // Extract parameters
                 let mut params = Vec::new();
@@ -59,6 +71,15 @@ impl super::PythonParser {
                     }
                 }
 
+                attributes.insert(
+                    "signature".to_string(),
+                    json!(super::PythonParser::python_signature(
+                        "def ",
+                        func_def.name.as_str(),
+                        &params,
+                        returns_str.as_deref()
+                    )),
+                );
                 attributes.insert("parameters".to_string(), json!(params));
                 if let Some(returns) = returns_str {
                     attributes.insert("return_type".to_string(), json!(returns));
@@ -68,10 +89,22 @@ impl super::PythonParser {
                 let element = DocumentElement::new(
                     ElementType::Function,
                     Some(func_def.name.to_string()),
-                    format!("def {}(...)", func_def.name),
+                    self.source_span(
+                        content,
+                        self.decorated_start(
+                            content,
+                            func_def.range.start().to_u32() as usize,
+                            &func_def.decorator_list,
+                        ),
+                        func_def.range.end().to_u32() as usize,
+                    ),
                     self.byte_offset_to_line_number(
                         content,
-                        func_def.range.start().to_u32() as usize,
+                        self.decorated_start(
+                            content,
+                            func_def.range.start().to_u32() as usize,
+                            &func_def.decorator_list,
+                        ),
                     ),
                     self.byte_offset_to_line_number(
                         content,
@@ -89,6 +122,19 @@ impl super::PythonParser {
 
                 // Extract function name
                 attributes.insert("name".to_string(), json!(async_func_def.name.to_string()));
+                attributes.insert(
+                    "visibility".to_string(),
+                    json!(super::PythonParser::python_visibility(
+                        async_func_def.name.as_str()
+                    )),
+                );
+                attributes.insert(
+                    "is_public".to_string(),
+                    json!(
+                        super::PythonParser::python_visibility(async_func_def.name.as_str())
+                            == "public"
+                    ),
+                );
 
                 // Extract parameters
                 let mut params = Vec::new();
@@ -100,6 +146,19 @@ impl super::PythonParser {
                     }
                     params.push(json!(param));
                 }
+                attributes.insert(
+                    "signature".to_string(),
+                    json!(super::PythonParser::python_signature(
+                        "async def ",
+                        async_func_def.name.as_str(),
+                        &params,
+                        async_func_def
+                            .returns
+                            .as_ref()
+                            .map(|r| self.ast_to_string(r))
+                            .as_deref()
+                    )),
+                );
                 attributes.insert("parameters".to_string(), json!(params));
 
                 // Extract return type annotation
@@ -133,10 +192,22 @@ impl super::PythonParser {
                 let element = DocumentElement::new(
                     ElementType::Function,
                     Some(async_func_def.name.to_string()),
-                    format!("async def {}(...)", async_func_def.name),
+                    self.source_span(
+                        content,
+                        self.decorated_start(
+                            content,
+                            async_func_def.range.start().to_u32() as usize,
+                            &async_func_def.decorator_list,
+                        ),
+                        async_func_def.range.end().to_u32() as usize,
+                    ),
                     self.byte_offset_to_line_number(
                         content,
-                        async_func_def.range.start().to_u32() as usize,
+                        self.decorated_start(
+                            content,
+                            async_func_def.range.start().to_u32() as usize,
+                            &async_func_def.decorator_list,
+                        ),
                     ),
                     self.byte_offset_to_line_number(
                         content,
@@ -169,6 +240,22 @@ impl super::PythonParser {
 
                 // Extract class name
                 attributes.insert("name".to_string(), json!(class_def.name.to_string()));
+                attributes.insert(
+                    "signature".to_string(),
+                    json!(format!("class {}", class_def.name)),
+                );
+                attributes.insert(
+                    "visibility".to_string(),
+                    json!(super::PythonParser::python_visibility(
+                        class_def.name.as_str()
+                    )),
+                );
+                attributes.insert(
+                    "is_public".to_string(),
+                    json!(
+                        super::PythonParser::python_visibility(class_def.name.as_str()) == "public"
+                    ),
+                );
 
                 // Extract base classes
                 let bases: Vec<String> = class_def
@@ -201,10 +288,22 @@ impl super::PythonParser {
                 let element = DocumentElement::new(
                     ElementType::Class,
                     Some(class_def.name.to_string()),
-                    format!("class {}(...)", class_def.name),
+                    self.source_span(
+                        content,
+                        self.decorated_start(
+                            content,
+                            class_def.range.start().to_u32() as usize,
+                            &class_def.decorator_list,
+                        ),
+                        class_def.range.end().to_u32() as usize,
+                    ),
                     self.byte_offset_to_line_number(
                         content,
-                        class_def.range.start().to_u32() as usize,
+                        self.decorated_start(
+                            content,
+                            class_def.range.start().to_u32() as usize,
+                            &class_def.decorator_list,
+                        ),
                     ),
                     self.byte_offset_to_line_number(
                         content,
@@ -246,7 +345,11 @@ impl super::PythonParser {
                         let element = DocumentElement::new(
                             ElementType::Import,
                             Some(alias.asname.as_ref().unwrap_or(&alias.name).to_string()),
-                            format!("import {}", alias.name),
+                            self.source_span(
+                                content,
+                                import_stmt.range.start().to_u32() as usize,
+                                import_stmt.range.end().to_u32() as usize,
+                            ),
                             self.byte_offset_to_line_number(
                                 content,
                                 import_stmt.range.start().to_u32() as usize,
@@ -286,7 +389,11 @@ impl super::PythonParser {
                         let element = DocumentElement::new(
                             ElementType::Import,
                             Some(alias.asname.as_ref().unwrap_or(&alias.name).to_string()),
-                            format!("from {} import {}", module, alias.name),
+                            self.source_span(
+                                content,
+                                import_from.range.start().to_u32() as usize,
+                                import_from.range.end().to_u32() as usize,
+                            ),
                             self.byte_offset_to_line_number(
                                 content,
                                 import_from.range.start().to_u32() as usize,
@@ -333,7 +440,11 @@ impl super::PythonParser {
                         let element = DocumentElement::new(
                             ElementType::Variable,
                             Some(name.id.to_string()),
-                            format!("{} = ...", name.id),
+                            self.source_span(
+                                content,
+                                assign.range.start().to_u32() as usize,
+                                assign.range.end().to_u32() as usize,
+                            ),
                             self.byte_offset_to_line_number(
                                 content,
                                 assign.range.start().to_u32() as usize,
@@ -366,10 +477,10 @@ impl super::PythonParser {
                     let element = DocumentElement::new(
                         ElementType::Variable,
                         Some(name.id.to_string()),
-                        format!(
-                            "{}: {} = ...",
-                            name.id,
-                            self.ast_to_string(&ann_assign.annotation)
+                        self.source_span(
+                            content,
+                            ann_assign.range.start().to_u32() as usize,
+                            ann_assign.range.end().to_u32() as usize,
                         ),
                         self.byte_offset_to_line_number(
                             content,

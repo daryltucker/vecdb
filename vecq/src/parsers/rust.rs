@@ -378,6 +378,15 @@ impl RustParser {
                         "signature".to_string(),
                         serde_json::Value::String(self.extract_signature(&child, source)),
                     );
+                    // Uniform across every language; `visibility` stays the
+                    // language's own word ("pub", "pub(crate)", "private"),
+                    // which is genuinely more informative for Rust but is not
+                    // comparable across languages. Anything portable should
+                    // read this instead.
+                    rust_attr.other.insert(
+                        "is_public".to_string(),
+                        serde_json::Value::Bool(rust_attr.visibility.starts_with("pub")),
+                    );
 
                     if !pending_comments.is_empty() {
                         rust_attr.other.insert(
@@ -481,9 +490,14 @@ impl RustParser {
                         child.end_position().row + 1,
                     );
 
+                    let visibility = self.extract_visibility(&child, source);
+                    element.attributes.insert_generic(
+                        "is_public".to_string(),
+                        serde_json::Value::Bool(visibility.starts_with("pub")),
+                    );
                     element.attributes.insert_generic(
                         "visibility".to_string(),
-                        serde_json::Value::String(self.extract_visibility(&child, source)),
+                        serde_json::Value::String(visibility),
                     );
 
                     if !pending_comments.is_empty() {
@@ -650,7 +664,7 @@ fn main() {
             .iter()
             .filter(|e| e.element_type == ElementType::FunctionCall)
             .collect();
-        assert!(function_calls.len() >= 1); // At least greet
+        assert!(!function_calls.is_empty()); // At least greet
 
         // Check function call names
         let function_names: Vec<String> = function_calls

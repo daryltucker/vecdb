@@ -19,9 +19,14 @@ ONNX v1.23.2
 ```bash
 $ cat ~/.config/vecdb/config.toml
 ...
-local_use_gpu = true
-concurrency=1
-gpu_concurrency=1
+[backend.local]
+kind = "fastembed"
+
+[embedder.micro]
+backend = "local"
+model = "all-minilm-l6-v2"
+use_gpu = true          # fastembed only
+batch_rows = 1          # ONNX rows per inference
 ...
 
 ```

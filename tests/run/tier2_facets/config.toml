@@ -1,9 +1,15 @@
 
 smart_routing_keys = ["platform", "version", "language"]
 
+[backend.local]
+kind = "fastembed"
+
+[embedder.default]
+backend = "local"
+model = "all-minilm-l6-v2"
+
 [profiles.default]
+embedder = "default"
 qdrant_url = "http://localhost:6336"
-embedding_model = "nomic-embed-text"
 default_collection_name = "test_facets"
-embedder_type = "local"
     

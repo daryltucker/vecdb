@@ -5,6 +5,10 @@ import subprocess
 import os
 import time
 
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import bin_path
+
 try:
     import tomllib  # Python 3.11+
 except ImportError:
@@ -18,7 +22,7 @@ except ImportError:
 # Purpose: Functional test of the vecdb-mcp server
 # Scope: Initialization -> Ingestion (local) -> Search (semantic)
 
-SERVER_BIN = "target/debug/vecdb-server"
+SERVER_BIN = bin_path("vecdb-server")
 LUA_FIXTURE_PATH = "tests/fixtures/external/tiny_tier1"
 
 def log(msg, color=None):
@@ -123,7 +127,7 @@ def run_tier1_test():
             "name": "ingest_path",
             "arguments": {
                 "path": lua_path,
-                "collection": "tier1_lua",
+                "collection": "test_tier1_lua",
                 "ignore_vectorignore": True
             }
         }, 3)
@@ -160,7 +164,7 @@ def run_tier1_test():
             "name": "search_vectors",
             "arguments": {
                 "query": "bananas",
-                "collection": "tier1_lua",
+                "collection": "test_tier1_lua",
                 "json": True,
                 "smart": False
             }
@@ -171,8 +175,32 @@ def run_tier1_test():
             return False
             
         content_json = resp['result']['content'][0]['text']
-        results = json.loads(content_json)
-        
+        payload = json.loads(content_json)
+
+        # search_vectors returns an envelope, not a bare list:
+        #   {collection, query, limit, min_score, applied_filters,
+        #    result_count, results[]}
+        # Assert the shape explicitly. Calling len() on the envelope itself
+        # counts its KEYS, which is a positive number regardless of whether any
+        # documents matched — a test that cannot fail is worse than no test.
+        if not isinstance(payload, dict):
+            log(f"FAIL: expected a search envelope object, got {type(payload).__name__}")
+            return False
+
+        for field in ("collection", "query", "result_count", "results"):
+            if field not in payload:
+                log(f"FAIL: search envelope missing '{field}': {sorted(payload)}")
+                return False
+
+        results = payload["results"]
+        if not isinstance(results, list):
+            log(f"FAIL: 'results' must be a list, got {type(results).__name__}")
+            return False
+
+        if payload["result_count"] != len(results):
+            log(f"FAIL: result_count={payload['result_count']} but {len(results)} results returned")
+            return False
+
         if len(results) > 0:
             log(f"SUCCESS: Found {len(results)} matches.")
             # SearchResult has 'metadata', not 'payload'

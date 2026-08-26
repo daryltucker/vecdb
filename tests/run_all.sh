@@ -10,8 +10,10 @@
 #
 # AUTHORITY:
 #   - Makefile `test` target delegates to this script.
-#   - docs/planning/TESTING.md §4 defines tier semantics.
-#   - docs/planning/V1_AUDIT.md §8 defines the full manifest.
+#   - CLAUDE.md "Testing" summarises the tier semantics and the hard rules.
+#   - THIS FILE is the full manifest. (Earlier revisions deferred to
+#     docs/planning/TESTING.md and docs/planning/V1_AUDIT.md; neither exists in
+#     this repo. Planning docs live in ~/Projects/docs/vecdb/planning/.)
 #
 # USAGE:
 #   ./tests/run_all.sh           # Run everything
@@ -37,13 +39,21 @@ cd "$PROJECT_ROOT"
 # Any test that ignores VECDB_CONFIG or hardcodes production ports
 # will be caught by tier0_qdrant_isolation.py (T0.0) and block the run.
 # ═══════════════════════════════════════════════════════════════════
-readonly TEST_CONFIG="tests/fixtures/config.toml"
+readonly TEST_CONFIG_REL="tests/fixtures/config.toml"
 
-if [ ! -f "$TEST_CONFIG" ]; then
-    echo "FATAL: Test config not found at $TEST_CONFIG" >&2
+if [ ! -f "$TEST_CONFIG_REL" ]; then
+    echo "FATAL: Test config not found at $TEST_CONFIG_REL" >&2
     echo "       Run from project root: ./tests/run_all.sh" >&2
     exit 1
 fi
+
+# ABSOLUTE, deliberately. A relative VECDB_CONFIG is resolved against each
+# process's own CWD, and `cargo test -p <crate>` runs its test binaries with
+# CWD at the CRATE root — so "tests/fixtures/config.toml" silently meant
+# vecdb-cli/tests/fixtures/config.toml for every Rust tier-2 test. That file
+# was a stale pre-three-layer config whose default collection was "docs", an
+# unprefixed production name. The tests were not using the fixture they named.
+readonly TEST_CONFIG="$(cd "$(dirname "$TEST_CONFIG_REL")" && pwd)/$(basename "$TEST_CONFIG_REL")"
 
 # Force — overwrite any caller-provided VECDB_CONFIG.
 export VECDB_CONFIG="$TEST_CONFIG"
@@ -107,6 +117,17 @@ log "━━━ TIER 0: Infrastructure ━━━"
 # This is a hard gate — if it fails, Qdrant-touching tests are blocked.
 count; run_test "T0.0" python3 tests/tier0_qdrant_isolation.py; passed
 
+# T0.05 runs immediately after the isolation gate and before any test that
+# writes to Qdrant. It empties the test instance so a green run cannot be
+# inherited from a previous one. Ordering matters: the isolation gate proves we
+# are pointed at the test instance, and only then is a full wipe safe.
+count; run_test "T0.05" python3 tests/tier0_reset_qdrant.py; passed
+
+# T0.06 is a source scan, so it runs before anything is built or started: a
+# hardcoded target path makes every later tier report "binary not found" for a
+# perfectly good build, which is a confusing way to learn about it.
+count; run_test "T0.06" python3 tests/tier0_target_dir_isolation.py; passed
+
 count; run_test "T0.1" bash ./tests/fixtures/init.sh; passed
 count; run_test "T0.2" python3 tests/tier1_qdrant.py; passed
 
@@ -137,6 +158,8 @@ count; run_test "T1.13" python3 tests/tier1_asm_deduplication.py; passed
 count; run_test "T1.14" python3 tests/tier1_asm_sequencing.py; passed
 count; run_test "T1.15" python3 tests/tier1_asm_state_diff.py; passed
 count; run_test "T1.16" python3 tests/tier1_vecdbrc_warning.py; passed
+count; run_test "T1.17" python3 tests/tier1_oversize_policy.py; passed
+count; run_test "T1.18" python3 tests/tier1_dry_run.py; passed
 
 # ══════════════════════════════════════════
 # TIER 1.5: RUST UNIT TESTS (cargo test)
@@ -168,8 +191,15 @@ count; run_test "T2.3" cargo test -p vecdb-server --tests -- --nocapture; passed
 
 # Python integration tests
 count; run_test "T2.4" python3 tests/tier2_cli_compliance.py; passed
-count; run_test "T2.5" python3 tests/tier2_config_compliance.py; passed
+# T2.5 verifies docs/CONFIG.md is regenerated, not merely non-empty.
+# It replaced tests/tier2_config_compliance.py, which only checked that each
+# field name appeared somewhere in the file — a wrong type, a wrong default, or
+# a description contradicting the code all passed. Both of those happened.
+count; run_test "T2.5" cargo run -q -p xtask -- gen-config-docs --check; passed
 count; run_test "T2.6" python3 tests/tier2_facets.py; passed
+count; run_test "T2.6b" python3 tests/tier2_vecdbrc_routing.py; passed
+count; run_test "T2.7b" python3 tests/tier2_stale_chunk_purge.py; passed
+count; run_test "T2.7c" python3 tests/tier2_dry_run_no_state.py; passed
 count; run_test "T2.7" python3 tests/tier2_path_parsing.py; passed
 count; run_test "T2.8" python3 tests/tier2_parsers_all.py; passed
 count; run_test "T2.9" python3 tests/tier2_compile.py; passed

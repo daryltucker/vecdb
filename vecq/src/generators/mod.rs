@@ -1,7 +1,7 @@
+pub mod json;
 pub mod rust;
 pub mod toml;
-pub mod json;
 
+pub use json::JsonGenerator;
 pub use rust::RustGenerator;
 pub use toml::TomlGenerator;
-pub use json::JsonGenerator;

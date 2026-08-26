@@ -48,8 +48,7 @@ impl Backend for DummyBackend {
         &self,
         _collection: &str,
         _vector: &[f32],
-        _limit: u64,
-        _filter: Option<serde_json::Value>,
+        _p: vecdb_core::backend::SearchParams,
     ) -> anyhow::Result<Vec<vecdb_core::types::SearchResult>> {
         Ok(vec![])
     }
@@ -86,6 +85,8 @@ impl Backend for DummyBackend {
             vector_count: None,
             vector_size: None,
             quantization: None,
+            vectors_on_disk: None,
+            payload_on_disk: None,
         })
     }
     async fn points_exists(
@@ -94,6 +95,15 @@ impl Backend for DummyBackend {
         _ids: Vec<String>,
     ) -> anyhow::Result<Vec<String>> {
         Ok(vec![])
+    }
+
+    async fn delete_stale_points(
+        &self,
+        _c: &str,
+        _d: &str,
+        _k: &[String],
+    ) -> anyhow::Result<usize> {
+        Ok(0)
     }
     async fn health_check(&self) -> anyhow::Result<()> {
         Ok(())
@@ -113,6 +123,38 @@ impl Backend for DummyBackend {
     }
     async fn list_tasks(&self) -> anyhow::Result<Vec<vecdb_core::types::TaskInfo>> {
         Ok(vec![])
+    }
+
+    async fn write_genesis(
+        &self,
+        _c: &str,
+        _m: &vecdb_core::types::GenesisMetadata,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn read_genesis(&self, _c: &str) -> anyhow::Result<vecdb_core::types::CollectionGenesis> {
+        // Mirror MockEmbedder::identity so the space guard sees a matching
+        // contract. `present: false` would (correctly) make every ingest here
+        // fail as "not created by vecdb".
+        Ok(vecdb_core::types::CollectionGenesis {
+            collection_id: Some("mock-collection".to_string()),
+            model: vecdb_core::types::ModelIdentity {
+                name: "mock-embedder".to_string(),
+                digest: Some("mock:test-double".to_string()),
+                architecture: Some("mock".to_string()),
+                family: Some("mock".to_string()),
+                parameter_size: Some("0".to_string()),
+                quantization_level: Some("none".to_string()),
+                embedding_length: None,
+                context_length: Some(8192),
+            },
+            dimension: None,
+            distance: Some("Cosine".to_string()),
+            created_at: None,
+            vecdb_version: Some("test".to_string()),
+            vecdb_revision: None,
+            chunking: None,
+        })
     }
 }
 
@@ -138,6 +180,41 @@ impl Embedder for DummyEmbedder {
     fn model_name(&self) -> String {
         "dummy".to_string()
     }
+
+    async fn identity(&self) -> anyhow::Result<vecdb_core::types::ModelIdentity> {
+        // Shared sentinel: every test double is one embedding space, so the
+        // compatibility guard passes and these tests exercise what they are
+        // actually about. Guard behaviour has its own dedicated tests.
+        Ok(vecdb_core::types::ModelIdentity {
+            name: "mock-embedder".to_string(),
+            digest: Some("mock:test-double".to_string()),
+            architecture: Some("mock".to_string()),
+            family: Some("mock".to_string()),
+            parameter_size: Some("0".to_string()),
+            quantization_level: Some("none".to_string()),
+            embedding_length: None,
+            context_length: Some(8192),
+        })
+    }
+}
+
+/// Whether wall-clock performance assertions should be enforced.
+///
+/// These tests always run — they exercise the full ingestion path and still
+/// catch panics, regressions in behaviour, and hangs. What is conditional is
+/// the *timing* assertion.
+///
+/// `tests/run_all.sh` runs the crates' test binaries concurrently, and cargo
+/// runs tests within a binary in parallel on top of that. A 44-byte fixture
+/// that ingests in ~580 ms alone was measured at 10.6 s under that load. The
+/// assertion was therefore not reporting ingestion speed, it was reporting how
+/// busy the machine happened to be, and a gate that fails for reasons unrelated
+/// to the change under test teaches people to re-run it until it passes.
+///
+/// Enforced when `VECDB_PERF_ASSERT=1` (see `make test-perf`, which runs these
+/// serially).
+fn perf_assertions_enabled() -> bool {
+    std::env::var("VECDB_PERF_ASSERT").as_deref() == Ok("1")
 }
 
 #[tokio::test]
@@ -171,26 +248,29 @@ async fn test_fixture_ingestion_performance() {
             let options = IngestionOptions {
                 path: path.to_str().unwrap().to_string(),
                 collection: "perf_test".to_string(),
-                chunk_size: 512,
-                max_chunk_size: Some(1000),
+                target_chunk_size: 512,
+                max_chunk_bytes: Some(1000),
+                on_oversize: Default::default(),
+                route_chunking: Default::default(),
                 chunk_overlap: 50,
                 respect_gitignore: false,
                 ignore_vectorignore: false,
-    vecdbrc_routes: None,
-    vecdbrc_root: None,
+                vecdbrc_routes: None,
+                vecdbrc_root: None,
                 strategy: "recursive".to_string(),
-                tokenizer: "char".to_string(),
+                tokenizer: "bytes".to_string(),
                 git_ref: None,
                 extensions: None,
                 excludes: None,
                 dry_run: false,
-        file_allowlist: None,
-        project_root: None,
+                file_allowlist: None,
+                project_root: None,
                 metadata: None,
                 path_rules: vec![],
                 max_concurrent_requests: 1,
                 gpu_batch_size: 10,
                 quantization: None,
+                allow_quantization_delta: false,
             };
 
             print!("Testing {:<30} ... ", path.display());
@@ -210,7 +290,7 @@ async fn test_fixture_ingestion_performance() {
             );
 
             assert!(
-                duration < Duration::from_secs(10),
+                !perf_assertions_enabled() || duration < Duration::from_secs(10),
                 "Ingestion of {:?} took too long: {:?}",
                 path,
                 duration
@@ -238,15 +318,17 @@ async fn test_large_generic_text_performance() {
     let options = IngestionOptions {
         path: file_path.to_str().unwrap().to_string(),
         collection: "perf_test_large".to_string(),
-        chunk_size: 512,
-        max_chunk_size: Some(1000),
+        target_chunk_size: 512,
+        max_chunk_bytes: Some(1000),
+        on_oversize: Default::default(),
+        route_chunking: Default::default(),
         chunk_overlap: 50,
         respect_gitignore: false,
         ignore_vectorignore: false,
-    vecdbrc_routes: None,
-    vecdbrc_root: None,
+        vecdbrc_routes: None,
+        vecdbrc_root: None,
         strategy: "recursive".to_string(),
-        tokenizer: "char".to_string(),
+        tokenizer: "bytes".to_string(),
         git_ref: None,
         extensions: None,
         excludes: None,
@@ -258,6 +340,7 @@ async fn test_large_generic_text_performance() {
         max_concurrent_requests: 1,
         gpu_batch_size: 10,
         quantization: None,
+        allow_quantization_delta: false,
     };
 
     println!("Testing 15MB generic text ingestion...");
@@ -269,8 +352,10 @@ async fn test_large_generic_text_performance() {
     println!("15MB ingested in {:?}", duration);
 
     // User wants "instantly" and < 10s.
+    // Same reasoning as `perf_assertions_enabled` above: the work always runs,
+    // the clock is only judged when timing is what is being tested.
     assert!(
-        duration < Duration::from_secs(45),
+        !perf_assertions_enabled() || duration < Duration::from_secs(45),
         "Ingestion of 15MB took too long: {:?}",
         duration
     );

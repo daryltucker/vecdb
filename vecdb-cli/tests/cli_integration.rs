@@ -38,7 +38,7 @@ fn test_fresh_install_journey() {
     let data_dir = temp_dir.path().join("data");
 
     // Override XDG paths and VECDB_CONFIG to enforce isolation
-    // CRITICAL: Force VECDB_CONFIG to point to our isolated temp path 
+    // CRITICAL: Force VECDB_CONFIG to point to our isolated temp path
     // to prevent pollution from the test runner (e.g. run_all.sh)
     let envs = vec![
         ("XDG_CONFIG_HOME", config_dir.to_str().unwrap()),

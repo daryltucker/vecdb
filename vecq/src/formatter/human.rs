@@ -1,6 +1,6 @@
+use super::{FormatOptions, OutputFormatter};
 use crate::error::VecqResult;
 use serde_json::Value;
-use super::{OutputFormatter, FormatOptions};
 use std::fmt::Write;
 
 /// Human-readable output formatter
@@ -25,7 +25,8 @@ impl HumanFormatter {
                         columns.sort(); // Consistent column order
 
                         // Calculate column widths
-                        let mut widths: std::collections::HashMap<&String, usize> = std::collections::HashMap::new();
+                        let mut widths: std::collections::HashMap<&String, usize> =
+                            std::collections::HashMap::new();
                         for col in &columns {
                             widths.insert(*col, col.len());
                         }
@@ -33,7 +34,8 @@ impl HumanFormatter {
                         for element in elements {
                             if let Value::Object(obj) = element {
                                 for col in &columns {
-                                    let val = obj.get(*col)
+                                    let val = obj
+                                        .get(*col)
                                         .map(|v| self.format_value_compact(v))
                                         .unwrap_or_default();
                                     let width = widths.get_mut(*col).unwrap();
@@ -44,7 +46,8 @@ impl HumanFormatter {
 
                         // Apply max width constraint if any
                         if let Some(max_w) = options.max_width {
-                            let total_w: usize = widths.values().sum::<usize>() + (columns.len() - 1) * 3;
+                            let total_w: usize =
+                                widths.values().sum::<usize>() + (columns.len() - 1) * 3;
                             if total_w > max_w {
                                 // Simple proportional scaling could be done here, but for now we just cap
                             }
@@ -62,7 +65,11 @@ impl HumanFormatter {
 
                         // Separator
                         for (i, col) in columns.iter().enumerate() {
-                            output.push_str(&self.colorize(&"-".repeat(widths[*col]), "line", options));
+                            output.push_str(&self.colorize(
+                                &"-".repeat(widths[*col]),
+                                "line",
+                                options,
+                            ));
                             if i < columns.len() - 1 {
                                 output.push_str(&self.colorize("-+-", "line", options));
                             }
@@ -73,7 +80,8 @@ impl HumanFormatter {
                         for element in elements {
                             if let Value::Object(obj) = element {
                                 for (i, col) in columns.iter().enumerate() {
-                                    let val = obj.get(*col)
+                                    let val = obj
+                                        .get(*col)
                                         .map(|v| self.format_value_compact(v))
                                         .unwrap_or_default();
                                     let padded = format!("{:width$}", val, width = widths[*col]);
@@ -88,7 +96,16 @@ impl HumanFormatter {
                     } else {
                         // Array of primitives
                         for element in elements {
-                            writeln!(output, "{}", self.colorize(&self.format_value_compact(element), "value", options)).unwrap();
+                            writeln!(
+                                output,
+                                "{}",
+                                self.colorize(
+                                    &self.format_value_compact(element),
+                                    "value",
+                                    options
+                                )
+                            )
+                            .unwrap();
                         }
                     }
                 }
@@ -97,7 +114,7 @@ impl HumanFormatter {
                 // Single object as key-value pairs
                 let mut keys: Vec<&String> = obj.keys().collect();
                 keys.sort();
-                
+
                 let max_key_len = keys.iter().map(|k| k.len()).max().unwrap_or(0);
 
                 for key in keys {
@@ -105,13 +122,22 @@ impl HumanFormatter {
                     let padded_key = format!("{:width$}", key, width = max_key_len);
                     output.push_str(&self.colorize(&padded_key, "key", options));
                     output.push_str(&self.colorize(": ", "line", options));
-                    output.push_str(&self.colorize(&self.format_value_compact(value), "value", options));
+                    output.push_str(&self.colorize(
+                        &self.format_value_compact(value),
+                        "value",
+                        options,
+                    ));
                     output.push('\n');
                 }
             }
             _ => {
                 // Primitive value
-                writeln!(output, "{}", self.colorize(&self.format_value_compact(data), "value", options)).unwrap();
+                writeln!(
+                    output,
+                    "{}",
+                    self.colorize(&self.format_value_compact(data), "value", options)
+                )
+                .unwrap();
             }
         }
 
@@ -127,10 +153,13 @@ impl HumanFormatter {
             Value::Null => "null".to_string(),
             Value::Array(arr) => {
                 if arr.len() <= 3 {
-                    format!("[{}]", arr.iter()
-                        .map(|v| self.format_value_compact(v))
-                        .collect::<Vec<_>>()
-                        .join(", "))
+                    format!(
+                        "[{}]",
+                        arr.iter()
+                            .map(|v| self.format_value_compact(v))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
                 } else {
                     format!("[{} items]", arr.len())
                 }
@@ -183,11 +212,11 @@ mod tests {
             { "name": "main", "type": "function" },
             { "name": "helper", "type": "function" }
         ]);
-        
+
         let mut options = FormatOptions::human_readable();
-        options.color_output = false; 
+        options.color_output = false;
         let result = formatter.format(&data, &options).unwrap();
-        
+
         // Should contain table-like structure
         assert!(result.contains("name"));
         assert!(result.contains("main"));
@@ -202,11 +231,11 @@ mod tests {
             "type": "function",
             "line_start": 42
         });
-        
+
         let mut options = FormatOptions::human_readable();
         options.color_output = false;
         let result = formatter.format(&data, &options).unwrap();
-        
+
         assert!(result.contains("name"));
         assert!(result.contains("test_func"));
         assert!(result.contains("42"));

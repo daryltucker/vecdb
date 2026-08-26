@@ -37,3 +37,7 @@
 !xtask/
 !Makefile
 !Dockerfile
+
+# Machine-specific: build output is redirected to /data (see .cargo/config.toml).
+# Absolute paths, so this must not be committed.
+.cargo/

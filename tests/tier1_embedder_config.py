@@ -19,10 +19,17 @@ import os
 import tempfile
 import shutil
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib_envelope import search_results
+
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import bin_path
+
 # Test configuration — use test Qdrant instance (port 6336), never production (6334)
 QDRANT_URL = os.environ.get("VECDB_TEST_QDRANT_URL", "http://localhost:6336")
-TEST_COLLECTION = "tier1_embedder_test"
-VECDB_CLI = "./target/debug/vecdb"
+TEST_COLLECTION = "test_tier1_embedder"
+VECDB_CLI = bin_path("vecdb")
 
 def log(msg):
     print(f"[TEST] {msg}")
@@ -71,18 +78,43 @@ def create_test_config(tmpdir, embedder_type="local"):
     """Write a test config file into tmpdir. Returns the config file path.
     Uses VECDB_CONFIG env var — never mutates ~/.config/vecdb/config.toml.
     """
+    # Three layers, so the two embedder kinds cannot share a knob even here:
+    # a fastembed embedder has no url and no num_ctx, and an ollama one has no
+    # use_gpu. Which block is live is decided by `backend`, not by a string
+    # compared at construction time.
+    if embedder_type == "ollama":
+        embedder_block = """
+[backend.test_backend]
+kind = "ollama"
+url = "http://localhost:11434"
+
+[embedder.test_embedder]
+backend = "test_backend"
+model = "nomic-embed-text"
+num_ctx = 4096
+batch_inputs = 8
+"""
+    else:
+        embedder_block = """
+[backend.test_backend]
+kind = "fastembed"
+
+[embedder.test_embedder]
+backend = "test_backend"
+model = "BAAI/bge-small-en-v1.5"
+batch_rows = 2
+"""
+
     config_content = f"""
 default_profile = "test"
-
+{embedder_block}
 [profiles.test]
+embedder = "test_embedder"
 qdrant_url = "{QDRANT_URL}"
 default_collection_name = "{TEST_COLLECTION}"
-embedder_type = "{embedder_type}"
-ollama_url = "http://localhost:11434"
-embedding_model = "nomic-embed-text"
 
 [ingestion]
-chunk_size = 256
+target_chunk_size = 256
 """
     config_path = os.path.join(tmpdir, "config.toml")
     with open(config_path, 'w') as f:
@@ -141,7 +173,8 @@ def test_local_embedder():
 
         if result.stdout:
             try:
-                results = json.loads(result.stdout)
+                results = search_results(json.loads(result.stdout),
+                                         context="vecdb search --json")
                 if len(results) > 0:
                     log(f"✓ Search returned {len(results)} results")
                     log(f"  Top result score: {results[0].get('score', 'N/A')}")

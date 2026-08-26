@@ -11,7 +11,7 @@
 //   - Must support async parsing for large files
 //   - Must handle malformed input gracefully without crashing
 //   - Must preserve all structural information and line numbers
-//   
+//
 //   Implementation-discovered:
 //   - Requires Send + Sync for multi-threaded processing
 //   - Must return Result type for error handling
@@ -21,19 +21,19 @@
 // IMPLEMENTATION RULES:
 //   1. All parsers must implement the Parser trait with consistent error handling
 //      Rationale: Enables uniform error reporting and recovery across all file types
-//   
+//
 //   2. parse() method must never panic, always return Result
 //      Rationale: Malformed files should not crash vecq, must degrade gracefully
-//   
+//
 //   3. file_extensions() must return all supported extensions for the language
 //      Rationale: Used by file type detection for accurate parser selection
-//   
+//
 //   4. Parsers must preserve exact line numbers for all structural elements
 //      Rationale: Required for grep compatibility and source location tracking
-//   
+//
 //   5. Use ParsedDocument as the universal output format
 //      Rationale: Enables consistent JSON conversion regardless of source language
-//   
+//
 //   Critical:
 //   - DO NOT change Parser trait interface without migration plan for all parsers
 //   - DO NOT allow parsers to panic on malformed input
@@ -42,24 +42,24 @@
 // USAGE:
 //   use vecq::parser::{Parser, ParserRegistry};
 //   use vecq::types::{FileType, ParsedDocument};
-//   
+//
 //   // Implement parser for new language
 //   struct MyLanguageParser;
-//   
+//
 //   impl Parser for MyLanguageParser {
 //       fn parse(&self, content: &str) -> VecqResult<ParsedDocument> {
 //           // Parse content and return structured document
 //       }
-//       
+//
 //       fn file_extensions(&self) -> &[&str] {
 //           &["mylang", "ml"]
 //       }
-//       
+//
 //       fn language_name(&self) -> &str {
 //           "MyLanguage"
 //       }
 //   }
-//   
+//
 //   // Register and use parser
 //   let mut registry = ParserRegistry::new();
 //   registry.register(FileType::Unknown, Box::new(MyLanguageParser));
@@ -72,7 +72,7 @@
 //   4. Add parser to ParserRegistry in src/detection.rs
 //   5. Add unit tests in tests/unit/parsers/
 //   6. Add property tests for new language in tests/property/
-//   
+//
 //   When modifying Parser trait:
 //   1. Update ALL existing parser implementations
 //   2. Update ParserRegistry to handle new trait methods
@@ -106,25 +106,25 @@ use std::collections::HashMap;
 #[async_trait]
 pub trait Parser: Send + Sync {
     /// Parse content and return structured document representation
-    /// 
+    ///
     /// This method must handle malformed input gracefully and never panic.
     /// It should extract as much structural information as possible even
     /// from partially valid files.
     async fn parse(&self, content: &str) -> VecqResult<ParsedDocument>;
 
     /// Get file extensions supported by this parser
-    /// 
+    ///
     /// Used by file type detection to select the appropriate parser.
     /// Should include all common extensions for the language.
     fn file_extensions(&self) -> &[&str];
 
     /// Get human-readable language name
-    /// 
+    ///
     /// Used for error messages and user-facing output.
     fn language_name(&self) -> &str;
 
     /// Get parser capabilities and features
-    /// 
+    ///
     /// Optional method to describe what language features this parser supports.
     /// Used for documentation and feature detection.
     fn capabilities(&self) -> ParserCapabilities {
@@ -132,7 +132,7 @@ pub trait Parser: Send + Sync {
     }
 
     /// Validate content before parsing (optional optimization)
-    /// 
+    ///
     /// Quick validation to check if content is likely parseable.
     /// Should be fast and conservative (false positives OK, false negatives not).
     fn can_parse(&self, content: &str) -> bool {
@@ -141,7 +141,7 @@ pub trait Parser: Send + Sync {
     }
 
     /// Get parser configuration options
-    /// 
+    ///
     /// Returns configuration that affects parsing behavior.
     /// Used for caching and parser selection optimization.
     fn config(&self) -> ParserConfig {
@@ -205,13 +205,13 @@ impl ParserRegistry {
     /// Create a new parser registry with all available parsers
     pub fn with_default_parsers() -> VecqResult<Self> {
         let mut registry = Self::new();
-        
+
         // Register all available parsers
         for file_type in crate::parsers::available_parsers() {
             let parser = crate::parsers::create_parser(file_type)?;
             registry.register(file_type, parser);
         }
-        
+
         Ok(registry)
     }
 
@@ -250,7 +250,8 @@ pub mod utils {
         content[..offset.min(content.len())]
             .chars()
             .filter(|&c| c == '\n')
-            .count() + 1
+            .count()
+            + 1
     }
 
     /// Fast line counter using pre-calculated offsets
@@ -293,7 +294,7 @@ pub mod utils {
             .take(1024) // Check first 1KB
             .filter(|&&b| b < 32 && b != b'\n' && b != b'\r' && b != b'\t')
             .count();
-        
+
         non_printable as f64 / content.len().min(1024) as f64 > 0.3
     }
 }
@@ -339,7 +340,7 @@ mod tests {
     #[tokio::test]
     async fn test_parser_registry() {
         let mut registry = ParserRegistry::new();
-        
+
         let mock_parser = MockParser {
             language: "Mock".to_string(),
             extensions: vec!["mock"],
@@ -374,7 +375,7 @@ mod tests {
     #[test]
     fn test_parser_utils() {
         let content = "line 1\nline 2\nline 3\n";
-        
+
         assert_eq!(utils::line_number_from_offset(content, 0), 1);
         assert_eq!(utils::line_number_from_offset(content, 7), 2);
         assert_eq!(utils::line_number_from_offset(content, 14), 3);

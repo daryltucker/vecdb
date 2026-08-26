@@ -9,6 +9,7 @@ use clap::Parser;
 
 use std::sync::Arc;
 use vecdb_core::config::Config;
+use vecdb_core::parsers::vecq_adapter::VecqParserFactory;
 use vecdb_core::Core;
 use vecdb_server::core_registry::{
     start_watchdog, CoreFactory, CoreKey, CoreRegistry, EvictionMode,
@@ -17,8 +18,6 @@ use vecdb_server::rpc::{
     handle_request,
     types::{JsonRpcError, JsonRpcRequest, JsonRpcResponse},
 };
-mod vecq_adapter;
-use crate::vecq_adapter::VecqParserFactory;
 use vecq::detection::HybridDetector;
 
 #[derive(Parser)]
@@ -57,15 +56,9 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     if args.version {
         let version = env!("CARGO_PKG_VERSION");
-        // Try to get git hash at runtime
-        let git_hash = std::process::Command::new("git")
-            .args(["rev-parse", "--short", "HEAD"])
-            .current_dir("/home/daryl/Projects/NRG/vecdb-mcp")
-            .output()
-            .ok()
-            .and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).trim().to_string()) } else { None })
-            .unwrap_or_else(|| "unknown".to_string());
-        
+        // Stamped at build time — see vecdb-common/build.rs.
+        let git_hash = vecdb_common::revision();
+
         println!("vecdb-server {} (git:{})", version, git_hash);
         // Also show key config paths
         if let Ok(config_path) = Config::get_path() {
@@ -94,66 +87,47 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("Initializing with profile: {}", target_profile);
     }
 
-    let profile = config
-        .get_profile(Some(&target_profile))
+    let resolution = config
+        .resolve(Some(&target_profile), None)
         .unwrap_or_else(|e| {
-            eprintln!("Error loading profile '{}': {}", target_profile, e);
+            eprintln!("Error resolving profile '{}': {}", target_profile, e);
             std::process::exit(1);
         });
-
-    // Use global local_embedding_model for local embedders, profile.embedding_model for others
-    let embedding_model = config.resolve_embedding_model(profile);
 
     // Prepare shared services
     let file_detector = Arc::new(HybridDetector::new());
     let parser_factory = Arc::new(VecqParserFactory);
 
     // Don't eagerly load GPU at boot. The server creates a boot Core for the default
-    // profile (which may use local GPU embedding). If this server only serves requests 
-    // for remote-Ollama collections, that GPU memory sits unused and blocks other 
+    // profile (which may use local GPU embedding). If this server only serves requests
+    // for remote-Ollama collections, that GPU memory sits unused and blocks other
     // processes from using the GPU.
     // VECDB_SKIP_PROBE defers embedder initialization to the first actual embed() call,
     // so GPU is only loaded when a request needs local embedding.
     // If no local-embed requests ever arrive, GPU stays free for other processes.
     std::env::set_var("VECDB_SKIP_PROBE", "1");
 
-    let boot_core_instance = Core::new(
-        &profile.qdrant_url,
-        &profile.ollama_url,
-        &embedding_model,
-        profile.accept_invalid_certs,
-        &profile.embedder_type,
-        Some(config.fastembed_cache_path.clone()),
-        config.resolve_local_use_gpu(profile.default_collection_name.as_deref()),
-        profile.qdrant_api_key.clone(),
-        profile.ollama_api_key.clone(),
-        config.smart_routing_keys.clone(),
-        config.ingestion.path_rules.clone(),
-        config.ingestion.max_concurrent_requests,
-        config.resolve_gpu_batch_size(profile, profile.default_collection_name.as_deref()),
-        profile.num_ctx,
+    // One set of services, shared by the boot Core and every Core the factory
+    // builds later — so they cannot drift apart.
+    let services = vecdb_core::CoreServices::from_config(
+        &config,
         file_detector.clone(),
         parser_factory.clone(),
-    )
-    .await
-    .unwrap_or_else(|e| {
-        eprintln!("Failed to initialize Core: {}", e);
-        std::process::exit(1);
-    });
+    );
+
+    let boot_core_instance = Core::new(&resolution, services.clone())
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to initialize Core: {}", e);
+            std::process::exit(1);
+        });
 
     let boot_core = Arc::new(boot_core_instance);
-    let boot_key = CoreKey::from_resolved(profile, &config);
+    let boot_key = CoreKey::from_resolution(&resolution);
 
     // Build the factory for lazy Core creation when a request arrives for a
     // collection that uses a different profile than the boot profile.
-    let factory = CoreFactory {
-        fastembed_cache_path: config.fastembed_cache_path.clone(),
-        smart_routing_keys: config.smart_routing_keys.clone(),
-        path_rules: config.ingestion.path_rules.clone(),
-        max_concurrent_requests: config.ingestion.max_concurrent_requests,
-        file_detector: file_detector.clone(),
-        parser_factory: parser_factory.clone(),
-    };
+    let factory = CoreFactory { services };
 
     let registry = Arc::new(CoreRegistry::new(
         boot_core,

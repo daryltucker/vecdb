@@ -4,12 +4,12 @@
  *   Used as a safety fallback when smart chunkers produce oversized chunks.
  *
  * REQUIREMENTS:
- *   - MUST respect max_chunk_size absolutely
+ *   - MUST respect max_chunk_bytes absolutely
  *   - Should split at newlines when possible (avoid mid-line splits)
  *   - Fast and simple (no complex logic)
  *
  * USAGE:
- *   Called by RecursiveChunker and CodeChunker when they produce chunks > max_size
+ *   Called by RecursiveChunker when it produces chunks > max_size
  */
 
 use crate::chunking::{ChunkParams, ChunkResult, Chunker};
@@ -17,13 +17,19 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 /// Simple chunker that forcefully splits text at size boundaries.
-/// Guarantees no chunk exceeds max_chunk_size.
-pub struct SimpleChunker;
+/// Guarantees no chunk exceeds max_chunk_bytes.
+pub struct FixedWidthChunker;
 
 #[async_trait]
-impl Chunker for SimpleChunker {
+impl Chunker for FixedWidthChunker {
     async fn chunk(&self, text: &str, params: &ChunkParams) -> Result<Vec<ChunkResult>> {
-        let max_size = params.max_chunk_size.unwrap_or(6000);
+        // One derivation, shared with config and the pipeline. This was a
+        // hardcoded 6000 — below the 6144 real profiles configure, so the
+        // "ceiling" fired on every full-size chunk. It survived an earlier sweep
+        // because it lives in the chunker rather than the ingestion path.
+        let max_size = params
+            .max_chunk_bytes
+            .unwrap_or_else(|| crate::config::default_max_chunk_bytes(params.target_chunk_size));
         let mut chunks = Vec::new();
         let mut start = 0;
 
@@ -42,7 +48,7 @@ impl Chunker for SimpleChunker {
 
                 // Safety: If max_size is smaller than a single multi-byte char,
                 // we might end up with end == start. We must advance by at least one char
-                // to avoid infinite loops, even if it violates max_chunk_size slightly.
+                // to avoid infinite loops, even if it violates max_chunk_bytes slightly.
                 if end == start {
                     if let Some(next_char_boundary) =
                         text[start..].char_indices().nth(1).map(|(i, _)| start + i)
@@ -91,13 +97,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_simple_chunker_enforces_max_size() {
-        let chunker = SimpleChunker;
+        let chunker = FixedWidthChunker;
         let text = "a".repeat(10000); // 10KB of 'a'
         let params = ChunkParams {
-            chunk_size: 512,
-            max_chunk_size: Some(1000),
+            target_chunk_size: 512,
+            max_chunk_bytes: Some(1000),
             chunk_overlap: 0,
-            tokenizer: "char".to_string(),
+            tokenizer: "bytes".to_string(),
             file_extension: None,
         };
 
@@ -116,13 +122,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_simple_chunker_splits_at_newlines() {
-        let chunker = SimpleChunker;
+        let chunker = FixedWidthChunker;
         let text = "Line 1\n".repeat(100); // 700 chars with newlines
         let params = ChunkParams {
-            chunk_size: 512,
-            max_chunk_size: Some(50),
+            target_chunk_size: 512,
+            max_chunk_bytes: Some(50),
             chunk_overlap: 0,
-            tokenizer: "char".to_string(),
+            tokenizer: "bytes".to_string(),
             file_extension: None,
         };
 

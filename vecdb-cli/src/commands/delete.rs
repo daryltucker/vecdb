@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use vecdb_core::config::Config;
 use vecq::detection::HybridDetector;
 
-use crate::vecq_adapter::VecqParserFactory;
+use vecdb_core::parsers::vecq_adapter::VecqParserFactory;
 
 #[derive(Args, Debug)]
 pub struct DeleteArgs {
@@ -40,48 +40,27 @@ pub async fn run(args: DeleteArgs, config: &Config) -> anyhow::Result<()> {
         anyhow::bail!("Cannot specify both a collection name and --all");
     }
 
-    // Resolve profile to get the right Qdrant endpoint
-    let default_profile = config.get_profile(None)?;
-    let qdrant_url: &String;
-    let ollama_url: &String;
-
+    // Delete only needs a Qdrant endpoint. It never embeds, so the embedder in
+    // the resolution is constructed but unused — `--url` bypasses config
+    // entirely, which is the point of the flag.
+    let mut resolution = config.resolve(args.profile.as_deref(), None)?;
     if let Some(ref url) = args.url {
-        // Explicit URL override - use default profile other fields
-        qdrant_url = url;
-        ollama_url = &default_profile.ollama_url;
-    } else if let Some(ref profile_name) = args.profile {
-        // Profile-based endpoint
-        let profile = config.get_profile(Some(profile_name))?;
-        qdrant_url = &profile.qdrant_url;
-        ollama_url = &profile.ollama_url;
-    } else {
-        // Use default profile
-        qdrant_url = &default_profile.qdrant_url;
-        ollama_url = &default_profile.ollama_url;
+        resolution.qdrant_url = url.clone();
+    }
+
+    // Delete never searches and never embeds, so routing keys and path rules
+    // are empty rather than inherited.
+    let services = vecdb_core::CoreServices {
+        smart_routing_keys: vec![],
+        path_rules: vec![],
+        max_concurrent_requests: 4,
+        fastembed_cache_path: Some(config.fastembed_cache_path.clone()),
+        allow_embed_truncation: false,
+        file_detector: std::sync::Arc::new(HybridDetector::new()),
+        parser_factory: std::sync::Arc::new(VecqParserFactory),
     };
 
-    // Create Core for the resolved endpoint
-    let embedder_type = config.get_profile(None)?.embedder_type.clone();
-    let embedder_model = config.resolve_embedding_model(&default_profile);
-    let core = vecdb_core::Core::new(
-        qdrant_url,
-        ollama_url,
-        &embedder_model,
-        false, // accept_invalid_certs
-        &embedder_type,
-        None, // cache path
-        config.resolve_local_use_gpu(None),
-        None, // qdrant_api_key
-        None, // ollama_api_key
-        vec![], // smart_routing_keys
-        vec![], // path_rules
-        4,   // max_concurrent_requests
-        16,   // gpu_batch_size
-        None,  // num_ctx
-        std::sync::Arc::new(HybridDetector::new()),
-        std::sync::Arc::new(VecqParserFactory),
-    )
-    .await?;
+    let core = vecdb_core::Core::new(&resolution, services).await?;
 
     let collections = if args.all {
         let cols = core.list_collections().await?;

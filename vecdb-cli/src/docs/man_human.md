@@ -54,9 +54,18 @@
 ## CONFIGURATION
     Config file: `~/.config/vecdb/config.toml`
 
-    **embedder_type** (in profiles):
-    - `local` (default): Built-in ONNX embeddings. No external services needed.
-    - `ollama`: Uses Ollama API. Requires Ollama running + model pulled.
+    Three layers: a profile names an embedder, an embedder names a backend.
+
+    **[backend.<name>]** — where a model runs:
+    - `kind = "fastembed"`: Built-in ONNX. No external services needed.
+    - `kind = "ollama"`: Ollama API. Requires Ollama running + model pulled.
+
+    **[embedder.<name>]** — which model, and how it is tuned (`model`,
+    `num_ctx`, `batch_inputs`/`batch_rows`). One backend can serve several.
+
+    **[profiles.<name>]** — which embedder, and which Qdrant to write to.
+
+    Run `vecdb config show` to see the effective values and where each came from.
 
 ## EXAMPLES
     Ingest current directory:

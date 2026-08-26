@@ -80,7 +80,8 @@ cargo build --release --features cuda
 ### Enabling at Runtime
 Once built with CUDA support, enable it in your `config.toml`:
 ```toml
-local_use_gpu = true
+[embedder.<name>]
+use_gpu = true          # fastembed backends only
 ```
 
 ## Development Environment

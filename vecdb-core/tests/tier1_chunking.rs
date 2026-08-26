@@ -1,11 +1,13 @@
 /*
  * PURPOSE:
  *   Unit tests for chunking strategies.
- *   Verifies RecursiveChunker and CodeChunker work correctly.
+ *   Verifies RecursiveChunker and the Factory work correctly.
  *
  * REQUIREMENTS:
  *   - RecursiveChunker splits text by token/char boundaries
- *   - CodeChunker preserves code structure where possible
+ *
+ * NOT TESTED HERE: preserving code structure. That is the parser's job, not a
+ * chunker's — see vecq/tests/tier1_language_fidelity.rs.
  *   - Factory returns correct chunker for strategy name
  *   - Chunks respect size limits (approximately)
  *
@@ -13,7 +15,7 @@
  *       Actual chunk sizes may vary slightly due to boundary adjustments.
  */
 
-use vecdb_core::chunking::{ChunkParams, Chunker, CodeChunker, Factory, RecursiveChunker};
+use vecdb_core::chunking::{ChunkParams, Chunker, Factory, RecursiveChunker};
 
 // ═══════════════════════════════════════════════════════════
 // FACTORY TESTS
@@ -50,11 +52,11 @@ fn test_factory_returns_chunker_for_semantic() {
 
 fn char_params(size: usize) -> ChunkParams {
     ChunkParams {
-        chunk_size: size,
+        target_chunk_size: size,
         chunk_overlap: 0,
-        tokenizer: "char".to_string(),
+        tokenizer: "bytes".to_string(),
         file_extension: None,
-        max_chunk_size: None,
+        max_chunk_bytes: None,
     }
 }
 
@@ -87,7 +89,7 @@ async fn test_recursive_char_splits_long_text() {
         "Long text should be split into multiple chunks"
     );
 
-    // Each chunk should be <= chunk_size (approximately)
+    // Each chunk should be <= target_chunk_size (approximately)
     for chunk in &chunks {
         assert!(
             chunk.content.len() <= 110,
@@ -140,11 +142,11 @@ async fn test_recursive_char_handles_empty_text() {
 
 fn token_params(size: usize) -> ChunkParams {
     ChunkParams {
-        chunk_size: size,
+        target_chunk_size: size,
         chunk_overlap: 0,
         tokenizer: "cl100k_base".to_string(),
         file_extension: None,
-        max_chunk_size: None,
+        max_chunk_bytes: None,
     }
 }
 
@@ -194,112 +196,27 @@ async fn test_recursive_token_splits_at_word_boundaries() {
     }
 }
 
+// The `CODE CHUNKER` section's `code_params()` helper was removed here: its
+// last caller left with the tests that moved to `tier1_chunk_units.rs`, leaving
+// an orphan that `cargo clippy --all-targets` reports as dead code. Rebuild it
+// there if those tests need it again rather than keeping an uncalled copy.
+
 // ═══════════════════════════════════════════════════════════
-// CODE CHUNKER
+// CODE STRUCTURE — moved, not dropped
 // ═══════════════════════════════════════════════════════════
-
-fn code_params(size: usize, ext: &str) -> ChunkParams {
-    ChunkParams {
-        chunk_size: size,
-        chunk_overlap: 0,
-        tokenizer: "char".to_string(),
-        file_extension: Some(ext.to_string()),
-        max_chunk_size: None,
-    }
-}
-
-#[tokio::test]
-async fn test_code_chunker_rust_preserves_functions() {
-    let chunker = CodeChunker;
-    let code = r#"
-fn hello() {
-    println!("Hello");
-}
-
-fn world() {
-    println!("World");
-}
-"#;
-    let params = code_params(500, "rs");
-
-    let chunks = chunker.chunk(code, &params).await.expect("Chunking failed");
-
-    // With small functions and big chunk size, may be 2 chunks (one per function)
-    // or could be combined. Main test is that it doesn't crash.
-    assert!(!chunks.is_empty(), "Should produce chunks from Rust code");
-}
-
-#[tokio::test]
-async fn test_code_chunker_python_preserves_functions() {
-    let chunker = CodeChunker;
-    let code = r#"
-def hello():
-    print("Hello")
-
-def world():
-    print("World")
-"#;
-    let params = code_params(500, "py");
-
-    let chunks = chunker.chunk(code, &params).await.expect("Chunking failed");
-    assert!(!chunks.is_empty(), "Should produce chunks from Python code");
-}
-
-#[tokio::test]
-async fn test_code_chunker_splits_large_function() {
-    let chunker = CodeChunker;
-    // Create a large function that exceeds chunk size
-    let large_body = "    x = 1;\n".repeat(50);
-    let code = format!("fn big_function() {{\n{}}}\n", large_body);
-    let params = code_params(100, "rs");
-
-    let chunks = chunker
-        .chunk(&code, &params)
-        .await
-        .expect("Chunking failed");
-
-    // Large function should be split into multiple chunks
-    assert!(chunks.len() >= 1, "Should produce at least one chunk");
-}
-
-#[tokio::test]
-async fn test_code_chunker_falls_back_for_unknown_extension() {
-    let chunker = CodeChunker;
-    let text = "Some random text that isn't code for a .xyz file type";
-    let params = code_params(100, "xyz");
-
-    let chunks = chunker.chunk(text, &params).await.expect("Chunking failed");
-
-    // Should fall back to recursive chunker without error
-    assert!(
-        !chunks.is_empty(),
-        "Should fall back to recursive for unknown extension"
-    );
-}
-
-#[tokio::test]
-async fn test_code_chunker_markdown() {
-    let chunker = CodeChunker;
-    let markdown = r#"
-# Header 1
-
-Some paragraph text here.
-
-## Header 2
-
-More content with **bold** and *italic*.
-
-- List item 1
-- List item 2
-"#;
-    let params = code_params(500, "md");
-
-    let chunks = chunker
-        .chunk(markdown, &params)
-        .await
-        .expect("Chunking failed");
-    assert!(!chunks.is_empty(), "Should handle markdown");
-}
+//
+// Five CodeChunker tests were here (Rust, Python, large-function splitting,
+// unknown-extension fallback, markdown). CodeChunker is gone: it was reachable
+// only via `strategy = "code_aware"`, and a chunker never sees a source file —
+// `processor.rs` uses the parser's AST elements when a parser exists, and vecq
+// claims every type except Unknown.
+//
+// The property those tests cared about — code structure survives chunking — is
+// real and still holds, but it comes from vecq emitting one element per
+// function, not from any chunker. It is covered by
+// vecq/tests/tier1_language_fidelity.rs, which is strictly stronger: it asserts
+// the element content appears verbatim in the source, which is what these
+// asserted only indirectly by checking the chunk list was non-empty.
 
 // ═══════════════════════════════════════════════════════════
 // EDGE CASES
@@ -316,7 +233,7 @@ async fn test_chunker_with_unicode() {
         .await
         .expect("Chunking failed");
 
-    assert!(chunks.len() >= 1, "Should handle unicode text");
+    assert!(!chunks.is_empty(), "Should handle unicode text");
     // Verify no panic or corruption
     // Verify no panic or corruption
     for chunk in &chunks {
@@ -350,5 +267,5 @@ async fn test_chunker_single_very_long_word() {
         .expect("Chunking failed");
 
     // Should still split, even if awkwardly
-    assert!(chunks.len() >= 1, "Should handle long word");
+    assert!(!chunks.is_empty(), "Should handle long word");
 }

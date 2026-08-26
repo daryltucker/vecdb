@@ -1,6 +1,9 @@
 #![allow(clippy::result_large_err)]
 use crate::core_registry::CoreRegistry;
-use crate::rpc::{handle_request, types::{JsonRpcRequest, JsonRpcResponse}};
+use crate::rpc::{
+    handle_request,
+    types::{JsonRpcError, JsonRpcRequest, JsonRpcResponse},
+};
 use axum::{
     extract::State,
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
@@ -35,22 +38,35 @@ pub struct AppState {
     sessions: Arc<RwLock<HashMap<String, McpSession>>>,
 }
 
-pub async fn run_http_server(
-    registry: Arc<CoreRegistry>,
-    config: Arc<Config>,
-    allow_local_fs: bool,
-    target_profile: String,
-    port: u16,
-) -> anyhow::Result<()> {
-    let state = AppState {
-        registry,
-        config,
-        allow_local_fs,
-        target_profile,
-        sessions: Arc::new(RwLock::new(HashMap::new())),
-    };
+impl AppState {
+    /// `sessions` is private, so this is the only way to build one outside this
+    /// module. Tests need it: without a constructor the router could not be
+    /// exercised at all, which is why the HTTP panic boundary went untested.
+    pub fn new(
+        registry: Arc<CoreRegistry>,
+        config: Arc<Config>,
+        allow_local_fs: bool,
+        target_profile: String,
+    ) -> Self {
+        Self {
+            registry,
+            config,
+            allow_local_fs,
+            target_profile,
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+}
 
-    let app = Router::new()
+/// Build the router without binding a socket.
+///
+/// Split out of `run_http_server` so the HTTP surface can be driven in-process
+/// by `tower::ServiceExt::oneshot`. `run_http_server` binds a real port, so a
+/// test that wanted to assert what a handler returns previously had to start a
+/// server and talk to it over TCP — which nothing did, and so the `catch_unwind`
+/// boundary in the RPC layer had no test at all.
+pub fn build_router(state: AppState) -> Router {
+    Router::new()
         // Legacy sync endpoint — kept for existing curl / script consumers.
         .route("/", post(rpc_handler))
         // MCP 2025-11-25 Streamable HTTP — single endpoint, three methods.
@@ -61,7 +77,18 @@ pub async fn run_http_server(
                 .delete(mcp_delete_handler),
         )
         .layer(tower_http::trace::TraceLayer::new_for_http())
-        .with_state(state);
+        .with_state(state)
+}
+
+pub async fn run_http_server(
+    registry: Arc<CoreRegistry>,
+    config: Arc<Config>,
+    allow_local_fs: bool,
+    target_profile: String,
+    port: u16,
+) -> anyhow::Result<()> {
+    let state = AppState::new(registry, config, allow_local_fs, target_profile);
+    let app = build_router(state);
 
     // Spec (2025-11-25): servers SHOULD bind to 127.0.0.1, not 0.0.0.0.
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
@@ -124,20 +151,67 @@ fn validate_protocol_version(headers: &HeaderMap) -> Result<(), axum::response::
 // Legacy POST / — unchanged from v1.0.0, kept for curl / script consumers
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Run one JSON-RPC dispatch behind a panic boundary.
+///
+/// The stdio transport in `main.rs` has always had one: it spawns the dispatch
+/// and turns `JoinError::is_panic` into a JSON-RPC error. **The HTTP transport
+/// had none.** A panicking tool handler unwound into axum, which drops the
+/// connection — so an HTTP client got no reply at all, while a stdio client
+/// asking the identical question got a clean `-32000`. Two transports, two
+/// behaviours, for the same bug.
+///
+/// The error is byte-identical to the stdio one on purpose: same code, same
+/// `Internal error (panic): {msg}` prefix, and the original payload preserved
+/// so the response is diagnostic rather than a generic failure.
+///
+/// The HTTP status stays **200**. A JSON-RPC error is a successful transport
+/// carrying an application-level failure, which is how every other error on
+/// this path is already returned; a 500 would tell a JSON-RPC client to stop
+/// parsing the body that holds the actual answer.
+async fn dispatch_guarded(
+    state: &AppState,
+    req: &JsonRpcRequest,
+) -> Result<serde_json::Value, JsonRpcError> {
+    let registry = state.registry.clone();
+    let config = state.config.clone();
+    let allow_local_fs = state.allow_local_fs;
+    let target_profile = state.target_profile.clone();
+    let req = req.clone();
+
+    let handle = tokio::task::spawn(async move {
+        handle_request(&registry, &config, &req, allow_local_fs, &target_profile).await
+    });
+
+    match handle.await {
+        Ok(result) => result,
+        Err(e) if e.is_panic() => {
+            let msg = e
+                .into_panic()
+                .downcast::<String>()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|_| "unknown panic".to_string());
+            eprintln!("[vecdb-mcp] PANIC in tool handler: {msg}");
+            Err(JsonRpcError {
+                code: -32000,
+                message: format!("Internal error (panic): {msg}"),
+                data: None,
+            })
+        }
+        // Task cancelled — the server is shutting down mid-request.
+        Err(_) => Err(JsonRpcError {
+            code: -32603,
+            message: "Request cancelled".to_string(),
+            data: None,
+        }),
+    }
+}
+
 async fn rpc_handler(
     State(state): State<AppState>,
     Json(req): Json<JsonRpcRequest>,
 ) -> Json<JsonRpcResponse> {
     let id = req.id.clone().unwrap_or(serde_json::Value::Null);
-    match handle_request(
-        &state.registry,
-        &state.config,
-        &req,
-        state.allow_local_fs,
-        &state.target_profile,
-    )
-    .await
-    {
+    match dispatch_guarded(&state, &req).await {
         Ok(res) => Json(JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             id,
@@ -178,14 +252,12 @@ async fn mcp_post_handler(
     if !is_initialize {
         match headers.get(HDR_SESSION_ID) {
             None => {
-                return (StatusCode::BAD_REQUEST, "MCP-Session-Id header required")
-                    .into_response();
+                return (StatusCode::BAD_REQUEST, "MCP-Session-Id header required").into_response();
             }
             Some(sid) => {
                 let sid_str = sid.to_str().unwrap_or("");
                 if !state.sessions.read().await.contains_key(sid_str) {
-                    return (StatusCode::NOT_FOUND, "Session not found or expired")
-                        .into_response();
+                    return (StatusCode::NOT_FOUND, "Session not found or expired").into_response();
                 }
             }
         }
@@ -201,14 +273,7 @@ async fn mcp_post_handler(
     // Per spec: server may return application/json OR text/event-stream.
     // We always return application/json; clients MUST support both (spec §POST).
     let id = req.id.clone().unwrap_or(serde_json::Value::Null);
-    let result = handle_request(
-        &state.registry,
-        &state.config,
-        &req,
-        state.allow_local_fs,
-        &state.target_profile,
-    )
-    .await;
+    let result = dispatch_guarded(&state, &req).await;
 
     let body = match result {
         Ok(res) => JsonRpcResponse {
@@ -253,9 +318,11 @@ async fn mcp_post_handler(
 // GET /mcp — server-initiated SSE stream
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Server-initiated streaming is not implemented in v1.0.1.
-/// Per spec (2025-11-25 §GET): server MUST return text/event-stream OR 405.
-/// We return 405; all MCP clients that need this will fall back gracefully.
+/// Server-initiated streaming is deliberately not offered.
+///
+/// Per spec (2025-11-25 §GET) a server MUST return either `text/event-stream`
+/// or 405, so 405 is a conforming answer rather than a gap: vecdb has no
+/// server-initiated events to push. Clients that support streaming fall back.
 async fn mcp_get_handler() -> StatusCode {
     StatusCode::METHOD_NOT_ALLOWED
 }

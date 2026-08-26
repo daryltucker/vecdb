@@ -12,7 +12,8 @@ fn test_jq_stdlib_keys() {
 
     let assert = cmd
         .arg("--raw-json")
-        .arg("-q").arg("keys | sort")
+        .arg("-q")
+        .arg("keys | sort")
         .arg(temp.path())
         .assert();
 
@@ -28,7 +29,8 @@ fn test_jq_stdlib_length() {
 
     let assert = cmd
         .arg("--raw-json")
-        .arg("-q").arg("length")
+        .arg("-q")
+        .arg("length")
         .arg(temp.path())
         .assert();
 

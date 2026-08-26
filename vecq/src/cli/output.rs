@@ -3,7 +3,10 @@
 
 use std::path::Path;
 use tokio::fs;
-use vecq::{detect_file_type, parse_file_with_options, FileType, FormatOptions, JqQueryEngine, JsonConverter, QueryEngine, UnifiedJsonConverter, VecqError, VecqResult};
+use vecq::{
+    detect_file_type, parse_file_with_options, FileType, FormatOptions, JqQueryEngine,
+    JsonConverter, QueryEngine, UnifiedJsonConverter, VecqError, VecqResult,
+};
 
 use super::args::ParseOptions;
 
@@ -150,9 +153,11 @@ async fn parse_content_to_json(
                 for item in deserializer.into_iter::<serde_json::Value>() {
                     match item {
                         Ok(val) => vals.push(val),
-                        Err(_) => return Err(VecqError::UnsupportedFileType {
-                            file_type: "Unknown (failed JSON heuristic)".to_string(),
-                        }),
+                        Err(_) => {
+                            return Err(VecqError::UnsupportedFileType {
+                                file_type: "Unknown (failed JSON heuristic)".to_string(),
+                            })
+                        }
                     }
                 }
                 return Ok(vals);
@@ -169,7 +174,12 @@ async fn parse_content_to_json(
             for item in deserializer.into_iter::<serde_json::Value>() {
                 match item {
                     Ok(val) => vals.push(val),
-                    Err(e) => return Err(VecqError::json_error("Invalid JSON input".to_string(), Some(e))),
+                    Err(e) => {
+                        return Err(VecqError::json_error(
+                            "Invalid JSON input".to_string(),
+                            Some(e),
+                        ))
+                    }
                 }
             }
             return Ok(vals);
@@ -205,7 +215,6 @@ fn inject_file_path_recursive(value: &mut serde_json::Value, path: &str) {
                         "path".to_string(),
                         serde_json::Value::String(path.to_string()),
                     );
-
                 }
             }
 

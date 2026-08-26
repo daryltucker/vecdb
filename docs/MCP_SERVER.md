@@ -123,9 +123,20 @@ The server exposes machine-readable resources for agents:
 ## 6. Profile & Collection Management
 
 ### Configuration
-The MCP server loads **one** embedding model at startup.
-1.  **Local Embedder**: If using `embedder_type="local"`, the model used is determined by the global `local_embedding_model` in `config.toml`.
-2.  **Ollama**: If using `embedder_type="ollama"`, the server connects to an external Ollama instance.
+The server boots one Core for its default profile, and builds further Cores on
+demand — a request for a collection whose profile resolves to a different
+embedder or Qdrant gets its own, cached by embedder+backend identity.
+
+The embedder comes from the profile's `embedder`, which names an `[embedder.*]`,
+which names a `[backend.*]`:
+
+1.  **`kind = "fastembed"`** — the model is loaded in-process from
+    `fastembed_cache_path`. Requires the `local-embed` build feature.
+2.  **`kind = "ollama"`** — the server calls the backend's `url`. `num_ctx` on
+    the embedder sets the effective context ceiling and is sent verbatim.
+
+`vecdb config show -c <collection>` prints what any of this resolves to, and
+which layer each value came from.
 
 ### Switching Contexts
 Agents can pass a `profile` argument to tools to resolve collections from other profiles, provided the vector dimensions are compatible. The `list_collections` tool returns an `is_compatible` flag to help agents avoid errors.

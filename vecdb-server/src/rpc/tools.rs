@@ -34,12 +34,32 @@ pub async fn handle_tools_call(
     })?;
 
     match name {
-        "search_vectors" => handle_search_vectors(registry, config, params, active_profile_name).await,
+        "search_vectors" => {
+            handle_search_vectors(registry, config, params, active_profile_name).await
+        }
         "delete_collection" => handle_delete_collection(registry, config, params).await,
         "list_collections" => handle_list_collections(registry, config, active_profile_name).await,
         "embed" => handle_embed(registry, config, params).await,
-        "ingest_path" => handle_ingest_path(registry, config, params, allow_local_fs, active_profile_name).await,
-        "ingest_history" => handle_ingest_history(registry, config, params, allow_local_fs, active_profile_name).await,
+        "ingest_path" => {
+            handle_ingest_path(
+                registry,
+                config,
+                params,
+                allow_local_fs,
+                active_profile_name,
+            )
+            .await
+        }
+        "ingest_history" => {
+            handle_ingest_history(
+                registry,
+                config,
+                params,
+                allow_local_fs,
+                active_profile_name,
+            )
+            .await
+        }
         "code_query" => handle_code_query(params, allow_local_fs).await,
         "project_overview" => handle_project_overview(params, allow_local_fs).await,
         "get_job_status" => handle_get_job_status(registry, config, params).await,
@@ -63,12 +83,11 @@ async fn handle_search_vectors(
     active_profile_name: &str,
 ) -> Result<Value, JsonRpcError> {
     let args_val = &params["arguments"];
-    let args: SearchArgs =
-        serde_json::from_value(args_val.clone()).map_err(|e| JsonRpcError {
-            code: -32602,
-            message: format!("Invalid arguments for search: {}", e),
-            data: None,
-        })?;
+    let args: SearchArgs = serde_json::from_value(args_val.clone()).map_err(|e| JsonRpcError {
+        code: -32602,
+        message: format!("Invalid arguments for search: {}", e),
+        data: None,
+    })?;
 
     // Resolve the user's current profile context for finding the default collection name.
     // This uses active_profile_name as fallback (the user's current session context).
@@ -102,18 +121,25 @@ async fn handle_search_vectors(
         .await
         .map_err(|e| JsonRpcError {
             code: -32000,
-            message: format!("Failed to resolve embedder for collection '{}': {}", collection, e),
+            message: format!(
+                "Failed to resolve embedder for collection '{}': {}",
+                collection, e
+            ),
             data: None,
         })?;
 
-    // Handle smart routing: default to false if not specified
-    let use_smart = args.smart.unwrap_or(false);
+    // Resolved once, shared with the CLI path. `min_score` rides along inside
+    // the params so Qdrant applies it during traversal; the previous code
+    // retained on the client after a fixed limit of 10, which turned a score
+    // threshold into an unannounced reduction in result count.
+    let params = args.to_search_params();
 
-    // Perform search (smart or regular)
-    let mut results = if use_smart {
-        core.search_smart(&collection, &args.query, 10).await
+    let (results, applied_filters) = if args.use_smart() {
+        core.search_smart(&collection, &args.query, params).await
     } else {
-        core.search(&collection, &args.query, 10, None).await
+        core.search(&collection, &args.query, params)
+            .await
+            .map(|r| (r, serde_json::Map::new()))
     }
     .map_err(|e| JsonRpcError {
         code: -32000,
@@ -121,17 +147,24 @@ async fn handle_search_vectors(
         data: None,
     })?;
 
-    // Apply min_score threshold filtering if specified
-    if let Some(threshold) = args.min_score {
-        let threshold_f32 = threshold as f32;
-        results.retain(|r| r.score >= threshold_f32);
-    }
+    // Report the retrieval parameters back alongside the hits. A model cannot
+    // reason about whether to broaden its search unless it can see that the
+    // result set was capped, thresholded, or scoped.
+    let payload = json!({
+        "collection": collection,
+        "query": args.query,
+        "limit": args.limit.unwrap_or(vecdb_core::config::DEFAULT_SEARCH_LIMIT),
+        "min_score": args.min_score,
+        "applied_filters": applied_filters,
+        "result_count": results.len(),
+        "results": results,
+    });
 
     Ok(json!({
         "content": [
             {
                 "type": "text",
-                "text": serde_json::to_string(&results).map_err(|e| JsonRpcError {
+                "text": serde_json::to_string(&payload).map_err(|e| JsonRpcError {
                     code: -32603,
                     message: format!("Serialization error: {}", e),
                     data: None,
@@ -143,29 +176,30 @@ async fn handle_search_vectors(
 
 /// Handle delete_collection tool.
 ///
-/// Uses the boot Core's backend. Collections on remote Qdrant instances cannot be
-/// deleted via this path (BackendRegistry is required — future work).
+/// Resolves the collection's own Core, so a collection on a Qdrant other than the
+/// boot instance is deleted from the instance it actually lives on. Falls back to
+/// the boot Core only when that resolution fails (e.g. its embedder is
+/// unreachable) — deletion needs a backend, not a working embedder.
 async fn handle_delete_collection(
     registry: &Arc<CoreRegistry>,
     config: &Arc<Config>,
     params: &Value,
 ) -> Result<Value, JsonRpcError> {
     let args_val = &params["arguments"];
-    let args: Value =
-        serde_json::from_value(args_val.clone()).map_err(|e| JsonRpcError {
+    let args: Value = serde_json::from_value(args_val.clone()).map_err(|e| JsonRpcError {
+        code: -32602,
+        message: format!("Invalid arguments for delete_collection: {}", e),
+        data: None,
+    })?;
+
+    let collection = args
+        .get("collection")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| JsonRpcError {
             code: -32602,
-            message: format!("Invalid arguments for delete_collection: {}", e),
+            message: "collection argument is required".into(),
             data: None,
         })?;
-
-    let collection =
-        args.get("collection")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| JsonRpcError {
-                code: -32602,
-                message: "collection argument is required".into(),
-                data: None,
-            })?;
     let confirmation = args
         .get("confirmation_code")
         .and_then(|v| v.as_str())
@@ -186,11 +220,17 @@ async fn handle_delete_collection(
 
     // Attempt to use the collection-specific Core (correct backend for remote Qdrant).
     // Fall back to boot Core if the collection's profile can't be resolved (e.g., Ollama down).
-    let core = match registry.get_for_collection(config, Some(collection), None).await {
+    let core = match registry
+        .get_for_collection(config, Some(collection), None)
+        .await
+    {
         Ok(core) => core,
         Err(_) => registry.boot_core(config).await.map_err(|e| JsonRpcError {
             code: -32000,
-            message: format!("Failed to resolve backend for collection '{}': {}", collection, e),
+            message: format!(
+                "Failed to resolve backend for collection '{}': {}",
+                collection, e
+            ),
             data: None,
         })?,
     };
@@ -264,7 +304,8 @@ async fn handle_list_collections(
         };
 
         for name in collection_names {
-            let info: Option<vecdb_core::types::CollectionInfo> = backend.get_collection_info(&name).await.ok();
+            let info: Option<vecdb_core::types::CollectionInfo> =
+                backend.get_collection_info(&name).await.ok();
             let (count, dim) = info
                 .map(|i| (i.vector_count, i.vector_size))
                 .unwrap_or((None, None));
@@ -320,12 +361,11 @@ async fn handle_embed(
     params: &Value,
 ) -> Result<Value, JsonRpcError> {
     let args_val = &params["arguments"];
-    let args: EmbedArgs =
-        serde_json::from_value(args_val.clone()).map_err(|e| JsonRpcError {
-            code: -32602,
-            message: format!("Invalid arguments for embed: {}", e),
-            data: None,
-        })?;
+    let args: EmbedArgs = serde_json::from_value(args_val.clone()).map_err(|e| JsonRpcError {
+        code: -32602,
+        message: format!("Invalid arguments for embed: {}", e),
+        data: None,
+    })?;
 
     let core = registry.boot_core(config).await.map_err(|e| JsonRpcError {
         code: -32000,
@@ -383,22 +423,22 @@ async fn handle_ingest_path(
     // Resolve using the collection's own profile (not the boot default).
     // Pass args.profile as the explicit override (or None to let collection config win).
     let context_profile_name = args.profile.as_deref().unwrap_or(active_profile_name);
-    let profile = config
-        .resolve_profile(args.profile.as_deref(), args.collection.as_deref())
-        .or_else(|_| config.resolve_profile(Some(context_profile_name), args.collection.as_deref()))
+    let resolution = config
+        .resolve(args.profile.as_deref(), args.collection.as_deref())
+        .or_else(|_| config.resolve(Some(context_profile_name), args.collection.as_deref()))
         .map_err(|e| JsonRpcError {
             code: -32000,
             message: format!("Profile resolution failed: {}", e),
             data: None,
         })?;
 
-    let max_chunk_size = config.resolve_max_chunk_size(&profile, args.collection.as_deref());
-    let chunk_overlap = config.resolve_chunk_overlap(&profile, args.collection.as_deref());
+    let max_chunk_bytes = Some(resolution.max_chunk_bytes.value);
+    let chunk_overlap = resolution.chunk_overlap.value;
 
     let collection = args
         .collection
         .as_deref()
-        .or(profile.default_collection_name.as_deref())
+        .or(resolution.collection.as_deref())
         .ok_or_else(|| JsonRpcError {
             code: -32602,
             message: "collection is required: provide it in the request or configure a collection with this profile".into(),
@@ -413,16 +453,18 @@ async fn handle_ingest_path(
         .await
         .map_err(|e| JsonRpcError {
             code: -32000,
-            message: format!("Failed to resolve embedder for collection '{}': {}", collection, e),
+            message: format!(
+                "Failed to resolve embedder for collection '{}': {}",
+                collection, e
+            ),
             data: None,
         })?;
 
     core.ingest(
         &args.path,
         &collection,
-        true,
         None,
-        max_chunk_size,
+        max_chunk_bytes,
         Some(chunk_overlap),
         None,
         None,
@@ -430,7 +472,7 @@ async fn handle_ingest_path(
         None,
         args.concurrency,
         args.gpu_concurrency,
-        profile.quantization.clone(),
+        resolution.quantization.clone(),
         None,
         args.ignore_vectorignore,
     )
@@ -468,8 +510,7 @@ async fn handle_ingest_history(
         })?;
 
     // Simple security check
-    let is_remote =
-        args.repo_path.starts_with("http") || args.repo_path.starts_with("git@");
+    let is_remote = args.repo_path.starts_with("http") || args.repo_path.starts_with("git@");
     if !is_remote && !allow_local_fs {
         return Err(JsonRpcError {
             code: -32000,
@@ -479,9 +520,9 @@ async fn handle_ingest_history(
     }
 
     let context_profile_name = args.profile.as_deref().unwrap_or(active_profile_name);
-    let profile = config
-        .resolve_profile(args.profile.as_deref(), args.collection.as_deref())
-        .or_else(|_| config.resolve_profile(Some(context_profile_name), args.collection.as_deref()))
+    let resolution = config
+        .resolve(args.profile.as_deref(), args.collection.as_deref())
+        .or_else(|_| config.resolve(Some(context_profile_name), args.collection.as_deref()))
         .map_err(|e| JsonRpcError {
             code: -32000,
             message: format!("Profile resolution failed: {}", e),
@@ -491,7 +532,7 @@ async fn handle_ingest_history(
     let collection = args
         .collection
         .as_deref()
-        .or(profile.default_collection_name.as_deref())
+        .or(resolution.collection.as_deref())
         .ok_or_else(|| JsonRpcError {
             code: -32602,
             message: "collection is required: provide it in the request or configure a collection with this profile".into(),
@@ -506,7 +547,10 @@ async fn handle_ingest_history(
         .await
         .map_err(|e| JsonRpcError {
             code: -32000,
-            message: format!("Failed to resolve embedder for collection '{}': {}", collection, e),
+            message: format!(
+                "Failed to resolve embedder for collection '{}': {}",
+                collection, e
+            ),
             data: None,
         })?;
 
@@ -515,7 +559,7 @@ async fn handle_ingest_history(
         &args.git_ref,
         &collection,
         512,
-        profile.quantization.clone(),
+        resolution.quantization.clone(),
         None,
     )
     .await
@@ -536,10 +580,7 @@ async fn handle_ingest_history(
 }
 
 /// Handle code_query tool
-async fn handle_code_query(
-    params: &Value,
-    allow_local_fs: bool,
-) -> Result<Value, JsonRpcError> {
+async fn handle_code_query(params: &Value, allow_local_fs: bool) -> Result<Value, JsonRpcError> {
     let args_val = &params["arguments"];
     let args: VecqToolArgs =
         serde_json::from_value(args_val.clone()).map_err(|e| JsonRpcError {
@@ -551,7 +592,9 @@ async fn handle_code_query(
     if args.source.as_deref().unwrap_or("local") == "local" && !allow_local_fs {
         return Err(JsonRpcError {
             code: -32000,
-            message: "Security Error: Local filesystem access is disabled. Cannot query local files.".into(),
+            message:
+                "Security Error: Local filesystem access is disabled. Cannot query local files."
+                    .into(),
             data: None,
         });
     }
@@ -573,14 +616,13 @@ async fn handle_code_query(
             data: None,
         })?;
 
-        let parsed =
-            vecq::parse_file(&content, file_type)
-                .await
-                .map_err(|e| JsonRpcError {
-                    code: -32000,
-                    message: format!("Parse error: {}", e),
-                    data: None,
-                })?;
+        let parsed = vecq::parse_file(&content, file_type)
+            .await
+            .map_err(|e| JsonRpcError {
+                code: -32000,
+                message: format!("Parse error: {}", e),
+                data: None,
+            })?;
 
         let json = vecq::convert_to_json(parsed).map_err(|e| JsonRpcError {
             code: -32000,
@@ -597,9 +639,11 @@ async fn handle_code_query(
             Err(e) => {
                 return Err(JsonRpcError {
                     code: -32000,
-                    message: format!("Query error: {}", e),
+                    // `e` already names itself and the offending query;
+                    // prefixing would render "Query error: Query error in ...".
+                    message: e.to_string(),
                     data: None,
-                })
+                });
             }
         }
     } else {
@@ -680,10 +724,7 @@ async fn handle_project_overview(
 
     let summary = format!(
         "Project: {}\nFiles analyzed: {}\nFiles skipped: {}\n\n{}",
-        overview.project_root,
-        overview.files_analyzed,
-        overview.files_skipped,
-        overview.mermaid
+        overview.project_root, overview.files_analyzed, overview.files_skipped, overview.mermaid
     );
 
     Ok(json!({
@@ -728,19 +769,25 @@ async fn handle_get_job_status(
         .as_ref()
         .and_then(|r| r.load().ok())
         .unwrap_or_default();
-    let remote_tasks = core.list_tasks().await.unwrap_or_default();
+    // Distinguish "none in flight" from "the backend cannot tell us".
+    let (remote_tasks, remote_tasks_error) = match core.list_tasks().await {
+        Ok(t) => (t, None),
+        Err(e) => (Vec::new(), Some(e.to_string())),
+    };
 
     if let Some(target_id) = args.id {
         let job = local_jobs.into_iter().find(|j| j.id == target_id);
         Ok(json!({
             "id": target_id,
             "local_job": job,
-            "remote_tasks": remote_tasks.into_iter().filter(|t| t.id == target_id).collect::<Vec<_>>()
+            "remote_tasks": remote_tasks.into_iter().filter(|t| t.id == target_id).collect::<Vec<_>>(),
+            "remote_tasks_error": remote_tasks_error
         }))
     } else {
         Ok(json!({
             "local_jobs": local_jobs,
-            "remote_tasks": remote_tasks
+            "remote_tasks": remote_tasks,
+            "remote_tasks_error": remote_tasks_error
         }))
     }
 }

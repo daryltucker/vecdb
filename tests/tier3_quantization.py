@@ -7,8 +7,12 @@ import time
 import json
 import urllib.request
 
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import bin_path
+
 # Setup
-BINARY = "./target/debug/vecdb"
+BINARY = bin_path("vecdb")
 TEMP_HOME = "./out/test_quantization_home"
 # ALL TESTS MUST USE TEST QDRANT — NEVER PRODUCTION (6333/6334)
 # VECDB_TEST_QDRANT_HTTP_URL is the HTTP REST port (6335). vecdb itself uses gRPC (6336).

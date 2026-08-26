@@ -10,6 +10,17 @@ fn test_collection_cleanup_logic() {
     fs::create_dir(&data_dir).unwrap();
     fs::write(data_dir.join("file1.txt"), "Hello World").unwrap();
 
+    // Clean up first (Safety). Step 4 re-creates this collection and nothing
+    // drops it afterwards, so a green run leaves it behind. A later run whose
+    // embedder resolves to a different model then fails the space guard on the
+    // *leftover* collection, which looks like a guard bug and is not one.
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("vecdb"));
+    cmd.arg("delete")
+        .arg("test_cleanup_A")
+        .arg("--yes")
+        .assert()
+        .success();
+
     // 2. First Ingest (Collection A)
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("vecdb"));
     cmd.arg("ingest")
@@ -57,4 +68,13 @@ fn test_collection_cleanup_logic() {
         state_content, state_content_new,
         "State file should have changed (new ID)"
     );
+
+    // 6. Leave the instance as we found it. Step 4's collection is still live;
+    // without this the test pollutes every subsequent run.
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("vecdb"));
+    cmd.arg("delete")
+        .arg("test_cleanup_A")
+        .arg("--yes")
+        .assert()
+        .success();
 }

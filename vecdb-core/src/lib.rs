@@ -23,6 +23,7 @@ pub mod backend;
 pub mod backends;
 pub mod chunking;
 pub mod config;
+pub mod config_docs;
 pub mod embedder;
 pub mod embedders;
 pub mod git;
@@ -61,7 +62,9 @@ use std::sync::OnceLock;
 /// An arbiter local to each Core would defeat the purpose.
 fn process_arbiter() -> Arc<ResourceArbiter> {
     static ARBITER: OnceLock<Arc<ResourceArbiter>> = OnceLock::new();
-    ARBITER.get_or_init(|| Arc::new(ResourceArbiter::new())).clone()
+    ARBITER
+        .get_or_init(|| Arc::new(ResourceArbiter::new()))
+        .clone()
 }
 use types::SearchResult;
 use vecdb_common::FileTypeDetector;
@@ -80,86 +83,117 @@ pub struct Core {
     gpu_batch_size: usize,
 }
 
-impl Core {
-    /// Create a new Core instance with Qdrant backend and configurable embedder.
-    ///
-    /// # Arguments
-    /// * `embedder_type` - "local" for fastembed (no external deps) or "ollama" for Ollama API
-    #[allow(clippy::too_many_arguments)]
-    pub async fn new(
-        qdrant_url: &str,
-        ollama_url: &str,
-        model: &str,
-        accept_invalid_certs: bool,
-        embedder_type: &str,
-        fastembed_cache_path: Option<std::path::PathBuf>,
-        use_gpu: bool,
-        // API Keys
-        qdrant_api_key: Option<String>,
-        ollama_api_key: Option<String>,
-        // Routing
-        smart_routing_keys: Vec<String>,
-        path_rules: Vec<crate::config::PathRule>,
-        max_concurrent_requests: usize,
-        gpu_batch_size: usize,
-        num_ctx: Option<usize>,
-        // Dependency Injection
+/// Process-wide services a Core needs, independent of which model it uses.
+///
+/// Separate from `Resolution` because these do not vary per profile or
+/// collection — they are the same for every Core in the process. Keeping them
+/// apart is what lets `Core::new` take two arguments instead of seventeen.
+#[derive(Clone)]
+pub struct CoreServices {
+    pub smart_routing_keys: Vec<String>,
+    pub path_rules: Vec<crate::config::PathRule>,
+    pub max_concurrent_requests: usize,
+    pub fastembed_cache_path: Option<std::path::PathBuf>,
+    /// Permit the embedder to silently cut oversized chunks. Off in every normal
+    /// path; see `IngestionConfig::allow_embed_truncation`.
+    pub allow_embed_truncation: bool,
+    pub file_detector: Arc<dyn FileTypeDetector>,
+    pub parser_factory: Arc<dyn ParserFactory>,
+}
+
+impl CoreServices {
+    /// Build from a `Config` plus the injected parser/detector.
+    pub fn from_config(
+        config: &crate::config::Config,
         file_detector: Arc<dyn FileTypeDetector>,
         parser_factory: Arc<dyn ParserFactory>,
-    ) -> Result<Self> {
-        let backend = QdrantBackend::new(qdrant_url, qdrant_api_key)?;
+    ) -> Self {
+        Self {
+            smart_routing_keys: config.smart_routing_keys.clone(),
+            path_rules: config.ingestion.path_rules.clone(),
+            max_concurrent_requests: config.ingestion.max_concurrent_requests,
+            fastembed_cache_path: Some(config.fastembed_cache_path.clone()),
+            allow_embed_truncation: config.ingestion.allow_embed_truncation,
+            file_detector,
+            parser_factory,
+        }
+    }
+}
 
-        let embedder: Arc<dyn Embedder + Send + Sync> = match embedder_type {
+impl Core {
+    /// Build a Core from a fully-resolved configuration.
+    ///
+    /// Takes a `Resolution` rather than a list of positional arguments. The old
+    /// signature had grown to seventeen, which is how `gpu_batch_size` came to
+    /// mean two different things depending on which embedder was constructed
+    /// three arguments earlier — the call site could not see the coupling.
+    /// Here the backend decides which knobs apply, and the ones that do not are
+    /// not in scope.
+    pub async fn new(
+        resolution: &crate::config::Resolution,
+        services: CoreServices,
+    ) -> Result<Self> {
+        use crate::config::BackendKind;
+
+        let CoreServices {
+            smart_routing_keys,
+            path_rules,
+            max_concurrent_requests,
+            fastembed_cache_path,
+            allow_embed_truncation,
+            file_detector,
+            parser_factory,
+        } = services;
+
+        let backend =
+            QdrantBackend::new(&resolution.qdrant_url, resolution.qdrant_api_key.clone())?;
+
+        let model = resolution.embedder.model.as_str();
+        let gpu_batch_size = resolution.batch.value;
+
+        let embedder: Arc<dyn Embedder + Send + Sync> = match resolution.backend.kind {
             #[cfg(feature = "local-embed")]
-            "local" | "fastembed" => {
+            BackendKind::Fastembed => {
                 if output::OUTPUT.is_interactive {
-                    eprintln!("Using local embedder (fastembed: {}) [GPU: {}]", model, use_gpu);
+                    eprintln!(
+                        "Using local embedder '{}' (fastembed: {model}) [GPU: {}]",
+                        resolution.embedder_name, resolution.use_gpu.value
+                    );
                 }
                 Arc::new(embedders::LocalEmbedder::new(
                     model,
                     fastembed_cache_path,
-                    use_gpu,
+                    resolution.use_gpu.value,
                 )?)
             }
-            "ollama" => {
-                if output::OUTPUT.is_interactive {
-                    eprintln!(
-                        "Using Ollama embedder at {} with model {}",
-                        ollama_url, model
-                    );
-                }
-                Arc::new(OllamaEmbedder::new(
-                    ollama_url.to_string(),
-                    model.to_string(),
-                    accept_invalid_certs,
-                    ollama_api_key,
-                    num_ctx,
-                ))
-            }
             #[cfg(not(feature = "local-embed"))]
-            "local" => {
-                anyhow::bail!("Local embedder not available. Compile with 'local-embed' feature or use embedder_type = 'ollama'")
+            BackendKind::Fastembed => {
+                anyhow::bail!(
+                    "backend '{}' is kind = \"fastembed\", but this build has no local \
+                     embedder. Rebuild with the 'local-embed' feature, or point the \
+                     embedder at an ollama backend.",
+                    resolution.backend_name
+                )
             }
-            "mock" => {
-                if output::OUTPUT.is_interactive {
-                    eprintln!("Using Mock Embedder (Deterministic)");
-                }
-                Arc::new(embedders::MockEmbedder::new(384)) // Default dim
-            }
-            _ => {
+            BackendKind::Ollama => {
                 if output::OUTPUT.is_interactive {
                     eprintln!(
-                        "Unknown embedder type '{}', falling back to Ollama",
-                        embedder_type
+                        "Using embedder '{}' ({model}) on backend '{}' at {}",
+                        resolution.embedder_name,
+                        resolution.backend_name,
+                        resolution.ollama_url()
                     );
                 }
-                Arc::new(OllamaEmbedder::new(
-                    ollama_url.to_string(),
-                    model.to_string(),
-                    accept_invalid_certs,
-                    ollama_api_key,
-                    num_ctx,
-                ))
+                Arc::new(
+                    OllamaEmbedder::new(
+                        resolution.ollama_url().to_string(),
+                        model.to_string(),
+                        resolution.backend.accept_invalid_certs,
+                        resolution.backend.api_key.clone(),
+                        Some(resolution.num_ctx.value),
+                    )
+                    .with_truncation(allow_embed_truncation),
+                )
             }
         };
 
@@ -167,9 +201,8 @@ impl Core {
         // through the process-wide ResourceArbiter. Different embedders with
         // different required_resources() will not block each other; same-resource
         // calls serialise correctly (see resource.rs).
-        let embedder: Arc<dyn Embedder + Send + Sync> = Arc::new(
-            ArbitratedEmbedder::new(embedder, process_arbiter()),
-        );
+        let embedder: Arc<dyn Embedder + Send + Sync> =
+            Arc::new(ArbitratedEmbedder::new(embedder, process_arbiter()));
 
         // Upfront Connection Validation: If the user explicitly asks for Ollama or Local,
         // we strictly prove it's alive AND that the specific model can be loaded into memory.
@@ -231,22 +264,79 @@ impl Core {
         &self,
         collection: &str,
         query: &str,
-        limit: u64,
-        filter: Option<serde_json::Value>,
+        params: crate::backend::SearchParams,
     ) -> Result<Vec<SearchResult>> {
-        // Automatically resolve collection dimension for self-healing (Matryoshka support)
+        // Reads are permissive by design. `Compatible` (same architecture and
+        // parameter size, different quantization) passes with a note, because a
+        // quantization delta costs a little precision on one ranking and
+        // nothing afterwards. Only `Incompatible` is refused — searching a
+        // collection with the wrong model returns confident nonsense, which is
+        // worse than an error.
+        let genesis = self.backend.read_genesis(collection).await?;
+
+        // Ownership is checked even though reads are otherwise permissive.
+        // Permissiveness is about tolerating a quantization delta within a
+        // known model; it is not licence to embed a text query against someone
+        // else's audio vectors. When the dimensions happen to coincide — MERT
+        // is 1024/Cosine and so is qwen3-embedding:0.6b — that search succeeds
+        // and returns confident nonsense, which is the worst possible outcome.
+        if !genesis.is_vecdb() {
+            anyhow::bail!(
+                "'{collection}' is not a vecdb collection.\n\
+                 \n\
+                 It exists on this Qdrant but carries no vecdb marker, so its \n\
+                 vectors came from a model vecdb knows nothing about. Searching \n\
+                 it would return scores that look valid and mean nothing.\n\
+                 \n\
+                 run `vecdb list` to see which collections are vecdb's."
+            );
+        }
+
+        {
+            let identity = self.embedder.identity().await?;
+            let dim = self.embedder.dimension().await? as u64;
+            let report = crate::types::compare_spaces(
+                &genesis.model,
+                genesis.dimension,
+                &identity,
+                Some(dim),
+            );
+
+            if !report.permits_read() {
+                anyhow::bail!(
+                    "cannot search '{collection}': {}\n\
+                     \n\
+                     \x20 collection: {}\n\
+                     \x20 this machine: {}\n\
+                     {}",
+                    report.reason,
+                    genesis.model.describe(),
+                    identity.describe(),
+                    report
+                        .suggestion
+                        .as_ref()
+                        .map(|s| format!("\n  fix: {s}"))
+                        .unwrap_or_default(),
+                );
+            }
+
+            if let Some(w) = report.warning() {
+                if output::OUTPUT.is_interactive {
+                    eprintln!("note: {w}");
+                }
+            }
+        }
+
+        // Resolve the collection's dimension so an MRL-capable model truncates
+        // its query vector to match (see the Matryoshka note in the tier RFC).
         let target_dim = match self.backend.get_collection_info(collection).await {
             Ok(info) => info.vector_size.map(|s| s as usize),
             Err(_) => None,
         };
 
-        // Embed the query with the target dimension
         let vector = self.embedder.embed(query, target_dim).await?;
 
-        // Search
-        self.backend
-            .search(collection, &vector, limit, filter)
-            .await
+        self.backend.search(collection, &vector, params).await
     }
 
     /// Ingest a file or directory with per-file .vecdbrc routing.
@@ -260,9 +350,8 @@ impl Core {
         collection: &str,
         routes: Vec<crate::vecdbrc::Route>,
         vecdbrc_root: std::path::PathBuf,
-        recursive: bool,
-        chunk_size: Option<usize>,
-        max_chunk_size: Option<usize>,
+        target_chunk_size: Option<usize>,
+        max_chunk_bytes: Option<usize>,
         chunk_overlap: Option<usize>,
         extensions: Option<Vec<String>>,
         excludes: Option<Vec<String>>,
@@ -279,10 +368,16 @@ impl Core {
             collection: collection.to_string(),
             vecdbrc_routes: Some(routes),
             vecdbrc_root: Some(vecdbrc_root),
-            chunk_size: chunk_size.unwrap_or(config::DEFAULT_CHUNK_SIZE),
-            max_chunk_size,
+            target_chunk_size: target_chunk_size.unwrap_or(config::DEFAULT_TARGET_CHUNK_SIZE),
+            max_chunk_bytes,
+            on_oversize: Default::default(),
+            route_chunking: Default::default(),
             chunk_overlap: chunk_overlap.unwrap_or(50),
-            respect_gitignore: recursive,
+            // `.gitignore` is never consulted unless the operator asks for it on
+            // the command line. It is a build-artifact list, not an indexing
+            // policy, and the two disagree constantly. `.vectorignore` is the
+            // knob that governs indexing.
+            respect_gitignore: false,
             ignore_vectorignore,
             strategy: "recursive".to_string(),
             tokenizer: "cl100k_base".to_string(),
@@ -294,10 +389,10 @@ impl Core {
             file_allowlist: None,
             project_root: None,
             path_rules: self.path_rules.clone(),
-            max_concurrent_requests: concurrency
-                .unwrap_or(self.max_concurrent_requests),
+            max_concurrent_requests: concurrency.unwrap_or(self.max_concurrent_requests),
             gpu_batch_size: gpu_concurrency.unwrap_or(self.gpu_batch_size),
             quantization,
+            allow_quantization_delta: false,
         };
 
         ingestion::ingest_path(
@@ -317,9 +412,8 @@ impl Core {
         &self,
         path: &str,
         collection: &str,
-        recursive: bool,
-        chunk_size: Option<usize>,
-        max_chunk_size: Option<usize>,
+        target_chunk_size: Option<usize>,
+        max_chunk_bytes: Option<usize>,
         chunk_overlap: Option<usize>,
         extensions: Option<Vec<String>>,
         excludes: Option<Vec<String>>,
@@ -331,37 +425,32 @@ impl Core {
         target_dim: Option<usize>,
         ignore_vectorignore: bool,
     ) -> Result<()> {
-        // DIMENSION SAFETY GUARD: Before ingesting, verify the embedder dimension
-        // is compatible with any existing collection. This prevents silently mixing
-        // vectors of different dimensions, which produces garbage search results.
-        if let Ok(info) = self.backend.get_collection_info(collection).await {
-            if let Some(stored_dim) = info.vector_size {
-                let embedder_dim = self.embedder.dimension().await? as u64;
-                let effective_dim = target_dim.map(|d| d as u64).unwrap_or(embedder_dim);
-
-                if effective_dim != stored_dim && info.vector_count.unwrap_or(0) > 0 {
-                    return Err(anyhow::anyhow!(
-                        "Dimension mismatch: embedder produces {}-dim vectors (effective: {}-dim) \
-                         but collection '{}' already contains {} vectors at {}-dim. \
-                         To fix: either (1) delete the collection and re-ingest, \
-                         or (2) change your local_embedding_model in config.toml to match.",
-                        embedder_dim, effective_dim, collection,
-                        info.vector_count.unwrap_or(0), stored_dim
-                    ));
-                }
-            }
-        }
-        // Guard passed (or collection doesn't exist yet — it will be created at correct dim)
+        // The write guard lives in `ingestion::ensure_write_target`, which every
+        // ingestion path funnels through. It compares the full embedding space
+        // — model, digest, architecture, parameter size, dimension — and checks
+        // collection ownership before it says anything about compatibility.
+        //
+        // A dimension-only check used to sit here as well. It was strictly
+        // weaker on identity (two unrelated models sharing a dimension passed
+        // it) and actively harmful when it did fire on a collection that was
+        // never ours, since it advised deleting it. Its one real contribution
+        // was comparing the *effective* dimension, i.e. honouring `target_dim`;
+        // `ensure_write_target` now takes `target_dim` directly, so that check
+        // moved rather than disappeared.
 
         let options = IngestionOptions {
             path: path.to_string(),
             collection: collection.to_string(),
             vecdbrc_routes: None,
             vecdbrc_root: None,
-            chunk_size: chunk_size.unwrap_or(config::DEFAULT_CHUNK_SIZE),
-            max_chunk_size,
+            target_chunk_size: target_chunk_size.unwrap_or(config::DEFAULT_TARGET_CHUNK_SIZE),
+            max_chunk_bytes,
+            on_oversize: Default::default(),
+            route_chunking: Default::default(),
             chunk_overlap: chunk_overlap.unwrap_or(50),
-            respect_gitignore: recursive,
+            // See `ingest_routed`: never inferred, only ever set explicitly by
+            // the operator on the CLI.
+            respect_gitignore: false,
             ignore_vectorignore,
             strategy: "recursive".to_string(),
             tokenizer: "cl100k_base".to_string(),
@@ -373,10 +462,10 @@ impl Core {
             file_allowlist: None,
             project_root: None,
             path_rules: self.path_rules.clone(),
-            max_concurrent_requests: concurrency
-                .unwrap_or(self.max_concurrent_requests),
+            max_concurrent_requests: concurrency.unwrap_or(self.max_concurrent_requests),
             gpu_batch_size: gpu_concurrency.unwrap_or(self.gpu_batch_size),
             quantization,
+            allow_quantization_delta: false,
         };
 
         ingestion::ingest_path(
@@ -404,23 +493,8 @@ impl Core {
         options: IngestionOptions,
         target_dim: Option<usize>,
     ) -> Result<()> {
-        // Dimension safety guard (same as ingest)
-        if let Ok(info) = self.backend.get_collection_info(&options.collection).await {
-            if let Some(stored_dim) = info.vector_size {
-                let embedder_dim = self.embedder.dimension().await? as u64;
-                let effective_dim = target_dim.map(|d| d as u64).unwrap_or(embedder_dim);
-                if effective_dim != stored_dim && info.vector_count.unwrap_or(0) > 0 {
-                    return Err(anyhow::anyhow!(
-                        "Dimension mismatch: embedder produces {}-dim vectors (effective: {}-dim) \
-                         but collection '{}' already contains {} vectors at {}-dim. \
-                         To fix: either (1) delete the collection and re-ingest, \
-                         or (2) change your local_embedding_model in config.toml to match.",
-                        embedder_dim, effective_dim, options.collection,
-                        info.vector_count.unwrap_or(0), stored_dim
-                    ));
-                }
-            }
-        }
+        // No guard here: `ingestion::ingest_path` calls `ensure_write_target`,
+        // which owns the ownership and embedding-space checks for every path.
         ingestion::ingest_path(
             &self.backend,
             &self.embedder,
@@ -432,50 +506,56 @@ impl Core {
         .await
     }
 
-/// Smart search that routes to specific collections or applies filters based on metadata facets.
-/// Uses DynamicRouter with a built-in timeout to prevent hanging on complex facet queries.
-pub async fn search_smart(
-    &self,
-    collection: &str,
-    query: &str,
-    limit: u64,
-) -> Result<Vec<SearchResult>> {
-    // Use DynamicRouter to detect version/theme facets
-    // NOW monitoring keys defined in Config (defaults: version, language, source_type)
-    let router = DynamicRouter::new(self.backend.clone(), self.smart_routing_keys.clone());
+    /// Search with `key:value` facet qualifiers parsed out of the query.
+    ///
+    /// Returns the applied filters alongside the results. Callers are expected to
+    /// surface them: a search that was silently narrowed is indistinguishable from
+    /// a corpus that is genuinely thin, and that ambiguity is what makes an
+    /// unreported filter expensive to debug.
+    ///
+    /// A malformed or unknown qualifier is an error, not a fallback. Falling back
+    /// to an unfiltered search would answer a different question than the one
+    /// asked, which is worse than answering none.
+    pub async fn search_smart(
+        &self,
+        collection: &str,
+        query: &str,
+        params: crate::backend::SearchParams,
+    ) -> Result<(
+        Vec<SearchResult>,
+        serde_json::Map<String, serde_json::Value>,
+    )> {
+        let router = DynamicRouter::new(self.backend.clone(), self.smart_routing_keys.clone());
 
-    // Apply timeout to smart routing: if it takes > 5s, fall back to plain search
-    let (detected_filters, clean_query) = match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        router.route(collection, query)
-    ).await {
-        Ok(Ok(result)) => result,
-        _ => {
-            // Timeout or error - fall back to plain search
-            if output::OUTPUT.is_interactive {
-                eprintln!("Smart Route: Timeout on facet detection, falling back to plain search");
-            }
-            (serde_json::Map::new(), query.to_string())
-        }
-    };
+        // Validating a qualifier costs one metadata scan per key, and only when a
+        // qualifier is actually present. The timeout bounds a pathological
+        // collection; it does not paper over a bad query, which fails fast above.
+        let routed = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            router.route(collection, query),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "facet validation timed out after 5s on collection '{}'. \
+             Re-run without facet qualifiers to search unfiltered.",
+                collection
+            )
+        })??;
 
-    let filter = if !detected_filters.is_empty() {
-        Some(serde_json::Value::Object(detected_filters))
-    } else {
-        None
-    };
-
-    if let Some(f) = &filter {
-        if output::OUTPUT.is_interactive {
+        if output::OUTPUT.is_interactive && !routed.filters.is_empty() {
             eprintln!(
-                "Smart Route: Applying filter {:?} to query '{}'",
-                f, clean_query
+                "smart: filtering on {} — searching for '{}'",
+                serde_json::Value::Object(routed.filters.clone()),
+                routed.query
             );
         }
-    }
 
-    self.search(collection, &clean_query, limit, filter).await
-}
+        let params = params.with_filter(routed.filter());
+        let results = self.search(collection, &routed.query, params).await?;
+
+        Ok((results, routed.filters))
+    }
 
     #[allow(clippy::too_many_arguments)]
     /// Ingest raw content directly (Push Interface)
@@ -484,8 +564,8 @@ pub async fn search_smart(
         content: &str,
         metadata: std::collections::HashMap<String, serde_json::Value>,
         collection: &str,
-        chunk_size: Option<usize>,
-        max_chunk_size: Option<usize>,
+        target_chunk_size: Option<usize>,
+        max_chunk_bytes: Option<usize>,
         chunk_overlap: Option<usize>,
         quantization: Option<config::QuantizationType>,
         target_dim: Option<usize>,
@@ -507,8 +587,8 @@ pub async fn search_smart(
             content,
             metadata,
             collection,
-            chunk_size,
-            max_chunk_size,
+            target_chunk_size,
+            max_chunk_bytes,
             chunk_overlap,
             quantization,
             target_dim,
@@ -527,7 +607,7 @@ pub async fn search_smart(
         path: &str,
         git_ref: &str,
         collection: &str,
-        chunk_size: usize,
+        target_chunk_size: usize,
         quantization: Option<config::QuantizationType>,
         target_dim: Option<usize>,
     ) -> Result<()> {
@@ -540,7 +620,7 @@ pub async fn search_smart(
             path,
             git_ref,
             collection,
-            chunk_size,
+            target_chunk_size,
             quantization,
             target_dim,
         )
@@ -548,6 +628,29 @@ pub async fn search_smart(
     }
 
     /// List all available collections with metadata
+    /// List collections together with what each one declares about itself.
+    ///
+    /// Every collection on the backend is returned, including those vecdb did
+    /// not create. Hiding them would be worse than useless: a Qdrant instance is
+    /// shared infrastructure, and a name that is "missing" from `vecdb list` but
+    /// rejects `create_collection` is a confusing bug report waiting to happen.
+    /// They are labelled, not filtered.
+    pub async fn list_collections_with_genesis(
+        &self,
+    ) -> Result<Vec<(types::CollectionInfo, types::CollectionGenesis)>> {
+        let infos = self.list_collections().await?;
+        let mut out = Vec::with_capacity(infos.len());
+        for info in infos {
+            let genesis = self
+                .backend
+                .read_genesis(&info.name)
+                .await
+                .unwrap_or_default();
+            out.push((info, genesis));
+        }
+        Ok(out)
+    }
+
     pub async fn list_collections(&self) -> Result<Vec<types::CollectionInfo>> {
         let names = self.backend.list_collections().await?;
         let mut infos = Vec::new();

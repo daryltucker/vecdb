@@ -5,12 +5,12 @@ use text_splitter::{Characters, ChunkConfig, TextSplitter};
 use tiktoken_rs::cl100k_base;
 
 pub mod simple;
-pub use simple::SimpleChunker;
+pub use simple::FixedWidthChunker;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkParams {
-    pub chunk_size: usize,
-    pub max_chunk_size: Option<usize>, // Hard limit for chunk size
+    pub target_chunk_size: usize,
+    pub max_chunk_bytes: Option<usize>, // Hard limit for chunk size
     pub chunk_overlap: usize,
     pub tokenizer: String, // "char", "cl100k_base"
     pub file_extension: Option<String>,
@@ -39,41 +39,49 @@ pub struct RecursiveChunker;
 #[async_trait]
 impl Chunker for RecursiveChunker {
     async fn chunk(&self, text: &str, params: &ChunkParams) -> Result<Vec<ChunkResult>> {
-        let chunk_size = params.chunk_size;
+        let target_chunk_size = params.target_chunk_size;
 
         let indices: Vec<(usize, &str)> = if params.tokenizer == "cl100k_base" {
             if let Some(tokenizer) = TOKENIZER_CACHE.as_ref() {
                 let sizer = tokenizer.clone();
-                let config = ChunkConfig::new(chunk_size)
+                let config = ChunkConfig::new(target_chunk_size)
                     .with_sizer(sizer)
                     .with_trim(true);
                 let splitter = TextSplitter::new(config);
                 splitter.chunk_indices(text).collect()
             } else {
-                let config = ChunkConfig::new(chunk_size)
+                let config = ChunkConfig::new(target_chunk_size)
                     .with_sizer(Characters)
                     .with_trim(true);
                 let splitter = TextSplitter::new(config);
                 splitter.chunk_indices(text).collect()
             }
-        } else if params.tokenizer == "char" {
-            // Optimized char-based chunking without text_splitter for performance
+        } else if params.tokenizer == "bytes" {
+            // Byte-window slicing, with the window nudged back to the nearest
+            // UTF-8 boundary so the output is always valid.
+            //
+            // Formerly spelled "char", which it never was: `target_chunk_size` is added
+            // to a byte offset here. On ASCII the two coincide; on anything else
+            // the window is shorter in characters than the number suggests.
+            // Faster than the text_splitter path, which is why it exists.
             let mut indices = Vec::new();
             let mut start = 0;
-            let step = chunk_size.saturating_sub(params.chunk_overlap);
+            let step = target_chunk_size.saturating_sub(params.chunk_overlap);
             if step == 0 {
-                // Avoid infinite loop if overlap >= chunk_size
+                // Avoid infinite loop if overlap >= target_chunk_size
                 indices.push((0, text));
             } else {
                 while start < text.len() {
-                    let mut end = (start + chunk_size).min(text.len());
+                    let mut end = (start + target_chunk_size).min(text.len());
                     // Ensure we split at a valid char boundary
                     while end > start && !text.is_char_boundary(end) {
                         end -= 1;
                     }
                     // If end == start, advance to next char
                     if end == start && end < text.len() {
-                        if let Some(next_boundary) = text[end..].char_indices().next().map(|(i, _)| end + i) {
+                        if let Some(next_boundary) =
+                            text[end..].char_indices().next().map(|(i, _)| end + i)
+                        {
                             end = next_boundary;
                         } else {
                             end = text.len();
@@ -92,7 +100,7 @@ impl Chunker for RecursiveChunker {
             }
             indices
         } else {
-            let config = ChunkConfig::new(chunk_size)
+            let config = ChunkConfig::new(target_chunk_size)
                 .with_sizer(Characters)
                 .with_trim(true);
             let splitter = TextSplitter::new(config);
@@ -118,10 +126,10 @@ impl Chunker for RecursiveChunker {
             })
             .collect();
 
-        // ENFORCE MAX SIZE - use SimpleChunker as fallback for oversized chunks
-        if let Some(max) = params.max_chunk_size {
+        // ENFORCE MAX SIZE - use FixedWidthChunker as fallback for oversized chunks
+        if let Some(max) = params.max_chunk_bytes {
             let mut safe_chunks = Vec::new();
-            let fallback = SimpleChunker;
+            let fallback = FixedWidthChunker;
 
             for chunk in chunks {
                 if chunk.content.len() <= max {
@@ -129,12 +137,12 @@ impl Chunker for RecursiveChunker {
                 } else {
                     // Chunk exceeds max, split it forcefully
                     if crate::output::OUTPUT.is_interactive {
-                        eprintln!("RecursiveChunker: Chunk size {} exceeds max {}, splitting with SimpleChunker", 
+                        eprintln!("RecursiveChunker: Chunk size {} exceeds max {}, splitting with FixedWidthChunker", 
                                  chunk.content.len(), max);
                     }
                     // Note: This sub-chunking loses precise line tracking relative to original file for the split parts
                     // but maintain offset approximate.
-                    // Ideally SimpleChunker also returns ChunkResult.
+                    // Ideally FixedWidthChunker also returns ChunkResult.
                     let sub_chunks = fallback.chunk(&chunk.content, params).await?;
                     // Adjust offsets for sub-chunks
                     for mut sub in sub_chunks {
@@ -156,95 +164,49 @@ impl Chunker for RecursiveChunker {
     }
 }
 
-pub struct CodeChunker;
-
-#[async_trait]
-impl Chunker for CodeChunker {
-    async fn chunk(&self, text: &str, params: &ChunkParams) -> Result<Vec<ChunkResult>> {
-        // Structural splitting by double newlines and indent level 0
-        let mut chunks = Vec::new();
-        let lines: Vec<&str> = text.lines().collect();
-
-        let mut current_chunk = String::new();
-        let mut current_start_offset = 0;
-        let mut current_start_line = 1;
-
-        let mut offset = 0;
-        for (i, line) in lines.iter().enumerate() {
-            let line_len_with_nl = line.len() + 1; // Approximate newline
-
-            // Heuristic: Split if line starts with non-whitespace and we have enough content
-            let is_top_level = !line.starts_with(|c: char| c.is_whitespace()) && !line.is_empty();
-            let should_split = is_top_level && current_chunk.len() >= params.chunk_size;
-
-            if should_split && !current_chunk.is_empty() {
-                chunks.push(ChunkResult {
-                    content: current_chunk.trim_end().to_string(),
-                    offset_bytes: current_start_offset,
-                    line_start: Some(current_start_line),
-                    line_end: Some(i), // i is 0-indexed, so current line is i+1, previous line is i
-                });
-                current_chunk = String::new();
-                current_start_offset = offset;
-                current_start_line = i + 1;
-            }
-
-            current_chunk.push_str(line);
-            current_chunk.push('\n');
-            offset += line_len_with_nl;
-        }
-
-        if !current_chunk.is_empty() {
-            chunks.push(ChunkResult {
-                content: current_chunk.trim_end().to_string(),
-                offset_bytes: current_start_offset,
-                line_start: Some(current_start_line),
-                line_end: Some(lines.len()),
-            });
-        }
-
-        // If chunks are still too large, use RecursiveChunker on them
-        let mut refined_chunks = Vec::new();
-        for chunk in chunks {
-            if chunk.content.len() > params.max_chunk_size.unwrap_or(params.chunk_size * 2) {
-                let sub_chunks = RecursiveChunker.chunk(&chunk.content, params).await?;
-                for mut sub in sub_chunks {
-                    sub.offset_bytes += chunk.offset_bytes;
-                    sub.line_start =
-                        Some(chunk.line_start.unwrap_or(1) + sub.line_start.unwrap_or(1) - 1);
-                    sub.line_end =
-                        Some(chunk.line_start.unwrap_or(1) + sub.line_end.unwrap_or(1) - 1);
-                    refined_chunks.push(sub);
-                }
-            } else {
-                refined_chunks.push(chunk);
-            }
-        }
-
-        Ok(refined_chunks)
-    }
-}
+// `CodeChunker` was here, reachable only via `strategy = "code_aware"`.
+//
+// It could not do its job, by construction. `processor.rs` uses a *parser's*
+// chunks when one exists for the file type, and only falls back to a chunker
+// when none does; `VecqParserFactory` claims every type except `Unknown`. So a
+// chunker never sees a source file, and `code_aware` could only ever apply to
+// files with no recognised type — where AST-aware splitting is meaningless.
+//
+// AST-aware chunking is real and is what vecdb does: it happens in the parser
+// path, per vecq element, automatically and for every supported language. It
+// was never this chunker's doing.
+//
+// It also carried a unit bug — comparing `current_chunk.len()` (bytes) against
+// `target_chunk_size` (tokens under the default `cl100k_base`), so a config
+// asking for 512-token chunks got roughly a fifth of that. Unreachable, so it
+// never mattered; deleted rather than fixed, because fixing it would have
+// implied the strategy worked.
+//
+// `Config::load` now rejects `strategy = "code_aware"` with an explanation
+// rather than silently selecting a chunker that does nothing.
 
 pub struct Factory;
 
 impl Factory {
     pub fn get(strategy: &str, file_type: vecdb_common::FileType) -> Box<dyn Chunker> {
         // ENFORCED RULE: For types with "Simple" capability (e.g. Unknown/Lua),
-        // we FORCE SimpleChunker if strategy is recursive/semantic to avoid
+        // we FORCE FixedWidthChunker if strategy is recursive/semantic to avoid
         // performance hangs on files that don't benefit from sentence-level splitting.
         if matches!(
             file_type.capability(),
             vecdb_common::ParsingCapability::Simple
         ) && (strategy == "recursive" || strategy == "semantic")
         {
-            return Box::new(SimpleChunker);
+            return Box::new(FixedWidthChunker);
         }
 
         match strategy {
-            "code_aware" => Box::new(CodeChunker),
-            "semantic" => Box::new(RecursiveChunker),
-            "recursive" => Box::new(RecursiveChunker),
-            "simple" => Box::new(SimpleChunker),
+            "semantic" | "recursive" => Box::new(RecursiveChunker),
+            "simple" => Box::new(FixedWidthChunker),
+            // Unreachable in practice: `Config::load` rejects any other value,
+            // including the retired "code_aware". Kept as a total function so a
+            // caller constructing a strategy string by hand degrades to the
+            // default rather than panicking mid-ingest.
             _ => Box::new(RecursiveChunker),
         }
     }
@@ -269,10 +231,10 @@ mod tests {
 
     #[test]
     fn test_factory_fallback_logic() {
-        // Rule: Unknown + semantic/recursive -> SimpleChunker
+        // Rule: Unknown + semantic/recursive -> FixedWidthChunker
         let _chunker_unk = Factory::get("semantic", FileType::Unknown);
 
-        // Rule: Text (Simple) + semantic -> SimpleChunker
+        // Rule: Text (Simple) + semantic -> FixedWidthChunker
         let _chunker_txt = Factory::get("semantic", FileType::Text);
 
         // Let's verify it doesn't break known types
@@ -282,8 +244,8 @@ mod tests {
 
     #[test]
     fn test_all_strategies_resolved() {
-        let types = vec![FileType::Rust, FileType::Unknown, FileType::Text];
-        let strategies = vec![
+        let types = [FileType::Rust, FileType::Unknown, FileType::Text];
+        let strategies = [
             "semantic",
             "recursive",
             "simple",

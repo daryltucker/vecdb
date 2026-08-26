@@ -33,6 +33,22 @@ impl Embedder for MockEmbedder {
     fn model_name(&self) -> String {
         "mock-model".to_string()
     }
+
+    async fn identity(&self) -> anyhow::Result<vecdb_core::types::ModelIdentity> {
+        // Shared sentinel: every test double is one embedding space, so the
+        // compatibility guard passes and these tests exercise what they are
+        // actually about. Guard behaviour has its own dedicated tests.
+        Ok(vecdb_core::types::ModelIdentity {
+            name: "mock-embedder".to_string(),
+            digest: Some("mock:test-double".to_string()),
+            architecture: Some("mock".to_string()),
+            family: Some("mock".to_string()),
+            parameter_size: Some("0".to_string()),
+            quantization_level: Some("none".to_string()),
+            embedding_length: None,
+            context_length: Some(8192),
+        })
+    }
 }
 
 #[tokio::test]

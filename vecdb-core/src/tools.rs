@@ -21,16 +21,49 @@ pub struct SearchArgs {
     #[serde(default)]
     pub json: bool,
 
-    /// Use smart routing to detect facets (overrides default search).
-    /// Defaults to false if not specified.
-    #[arg(long)]
+    /// Enable `key:value` facet qualifiers in the query (e.g. "parse errors language:rust").
+    /// Qualifiers are removed from the text before embedding, and the filters that
+    /// were applied are reported back in the response. An unknown facet value is an
+    /// error listing the valid ones, not a silently empty result set.
+    /// Off by default; the query is searched exactly as written.
+    #[arg(long, overrides_with = "no_smart")]
     #[serde(default)]
-    pub smart: Option<bool>,
+    pub smart: bool,
 
-    /// Minimum similarity score threshold (0.0-1.0). Results below this are filtered out.
+    /// Disable facet qualifier parsing. Present so the choice can be made
+    /// explicitly on the command line when a config default turns `smart` on.
+    #[arg(long = "no-smart", overrides_with = "smart")]
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub no_smart: bool,
+
+    /// Maximum number of results to return. Defaults to 10.
+    #[arg(long, short = 'n')]
+    #[serde(default)]
+    pub limit: Option<u64>,
+
+    /// Minimum similarity score threshold (0.0-1.0). Applied by the vector store
+    /// before the result limit is imposed, so a threshold never silently returns
+    /// fewer results than exist above it.
     #[arg(long)]
     #[serde(default)]
     pub min_score: Option<f64>,
+}
+
+impl SearchArgs {
+    /// Resolve the retrieval knobs into backend parameters.
+    ///
+    /// Single place where the defaults are applied, so the CLI and the MCP
+    /// server cannot disagree about what `limit` or `min_score` mean.
+    pub fn to_search_params(&self) -> crate::backend::SearchParams {
+        crate::backend::SearchParams::new(self.limit.unwrap_or(crate::config::DEFAULT_SEARCH_LIMIT))
+            .with_score_threshold(self.min_score.map(|s| s as f32))
+    }
+
+    /// Whether facet qualifier parsing is active for this request.
+    pub fn use_smart(&self) -> bool {
+        self.smart && !self.no_smart
+    }
 }
 
 /// Tool: Generate vectors from text
@@ -175,4 +208,77 @@ pub enum ToolCommand {
     Search(SearchArgs),
     Embed(EmbedArgs),
     IngestPath(IngestPathArgs),
+}
+
+#[cfg(test)]
+mod search_args_tests {
+    use super::*;
+    use crate::config::DEFAULT_SEARCH_LIMIT;
+
+    /// Deserializing from the wire is how the MCP server builds these, so the
+    /// tests exercise that path rather than constructing the struct by hand.
+    fn from_json(v: serde_json::Value) -> SearchArgs {
+        serde_json::from_value(v).expect("SearchArgs should deserialize")
+    }
+
+    #[test]
+    fn minimal_request_gets_the_shared_default_limit() {
+        let args = from_json(serde_json::json!({"query": "hello"}));
+        assert_eq!(args.to_search_params().limit, DEFAULT_SEARCH_LIMIT);
+        assert!(args.to_search_params().score_threshold.is_none());
+        assert!(!args.use_smart());
+    }
+
+    #[test]
+    fn limit_is_honored() {
+        let args = from_json(serde_json::json!({"query": "hello", "limit": 50}));
+        assert_eq!(args.to_search_params().limit, 50);
+    }
+
+    /// Regression: min_score used to be applied client-side after a hardcoded
+    /// limit of 10. It must now reach the backend so the store can apply it
+    /// before truncating.
+    #[test]
+    fn min_score_reaches_the_backend_params() {
+        let args = from_json(serde_json::json!({"query": "hello", "min_score": 0.75}));
+        let threshold = args.to_search_params().score_threshold.expect("threshold");
+        assert!((threshold - 0.75).abs() < f32::EPSILON);
+    }
+
+    /// Regression: `smart` was `Option<bool>`, which produced an MCP schema with
+    /// no declared default. Callers could not tell whether omitting it meant
+    /// on or off. It is now a plain bool defaulting to false.
+    #[test]
+    fn smart_defaults_to_off_when_omitted() {
+        assert!(!from_json(serde_json::json!({"query": "q"})).use_smart());
+    }
+
+    #[test]
+    fn smart_can_be_turned_on_explicitly() {
+        assert!(from_json(serde_json::json!({"query": "q", "smart": true})).use_smart());
+    }
+
+    #[test]
+    fn schema_declares_the_smart_default_and_omits_it_from_required() {
+        let schema = serde_json::to_value(schemars::schema_for!(SearchArgs)).unwrap();
+
+        assert_eq!(
+            schema["properties"]["smart"]["default"],
+            serde_json::json!(false),
+            "an agent must be able to read the default off the schema"
+        );
+
+        let required = schema["required"].as_array().cloned().unwrap_or_default();
+        assert!(required.iter().any(|r| r == "query"));
+        for optional in ["smart", "limit", "min_score", "collection"] {
+            assert!(
+                !required.iter().any(|r| r == optional),
+                "{optional} must not be required"
+            );
+        }
+
+        // `no_smart` is a command-line affordance only; leaking it into the tool
+        // schema would offer a model two ways to say the same thing.
+        assert!(schema["properties"].get("no_smart").is_none());
+    }
 }

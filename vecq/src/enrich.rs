@@ -1,6 +1,6 @@
-use crate::types::{ParsedDocument, DocumentElement, FileType, ElementType, ElementAttributes};
 use crate::error::VecqResult;
 use crate::parsers::markdown::parse_markdown_document;
+use crate::types::{DocumentElement, ElementAttributes, ElementType, FileType, ParsedDocument};
 
 /// Result of a content detection attempt
 #[derive(Debug, Clone, PartialEq)]
@@ -53,25 +53,28 @@ impl Enricher {
         // 2. If it's Markdown, parse it and add as children
         if let DetectionResult::Detected(FileType::Markdown) = detected {
             // Check if it already has markdown children to prevent double-enrichment
-            let already_enriched = el.children.iter().any(|c| 
-                matches!(c.element_type, ElementType::Header | ElementType::List | ElementType::CodeBlock)
-            );
+            let already_enriched = el.children.iter().any(|c| {
+                matches!(
+                    c.element_type,
+                    ElementType::Header | ElementType::List | ElementType::CodeBlock
+                )
+            });
 
             if !already_enriched {
                 let md_doc = parse_markdown_document(&el.content);
                 let mut md_elements = md_doc.elements;
-                
+
                 // Offset line numbers based on parent's start line
                 let offset = el.line_start.saturating_sub(1);
                 self.offset_elements(&mut md_elements, offset);
-                
+
                 el.children.extend(md_elements);
 
                 // Set metadata reflecting the enrichment
                 if let ElementAttributes::Html(ref mut html) = el.attributes {
                     html.other.insert(
                         "x-detected-content-type".to_string(),
-                        serde_json::Value::String("Markdown".to_string())
+                        serde_json::Value::String("Markdown".to_string()),
                     );
                 }
             }
@@ -120,16 +123,18 @@ impl Enricher {
         let trimmed = preview.trim();
 
         if trimmed.len() > 2 {
-            let looks_like_md = trimmed.starts_with("# ") || 
-                               trimmed.contains("\n# ") || 
-                               trimmed.contains("```") ||
-                               trimmed.starts_with("- ") ||
-                               trimmed.starts_with("* ");
-            
+            let looks_like_md = trimmed.starts_with("# ")
+                || trimmed.contains("\n# ")
+                || trimmed.contains("```")
+                || trimmed.starts_with("- ")
+                || trimmed.starts_with("* ");
+
             if looks_like_md {
-                 // Check if it's just a single line that might be a false positive (bullet points)
-                if !trimmed.contains('\n') && (trimmed.starts_with("- ") || trimmed.starts_with("* ")) {
-                    return DetectionResult::None; 
+                // Check if it's just a single line that might be a false positive (bullet points)
+                if !trimmed.contains('\n')
+                    && (trimmed.starts_with("- ") || trimmed.starts_with("* "))
+                {
+                    return DetectionResult::None;
                 }
                 return DetectionResult::Detected(FileType::Markdown);
             }

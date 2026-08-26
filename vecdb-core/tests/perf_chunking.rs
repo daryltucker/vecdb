@@ -10,10 +10,10 @@ async fn test_chunking_performance_1mb() {
     let text = line.repeat(iterations);
 
     let params = ChunkParams {
-        chunk_size: 512,
-        max_chunk_size: Some(1000),
+        target_chunk_size: 512,
+        max_chunk_bytes: Some(1000),
         chunk_overlap: 50,
-        tokenizer: "char".to_string(),
+        tokenizer: "bytes".to_string(),
         file_extension: None,
     };
 
@@ -42,7 +42,7 @@ async fn test_chunking_performance_1mb() {
 
 #[tokio::test]
 async fn test_simple_chunker_performance_1mb() {
-    use vecdb_core::chunking::simple::SimpleChunker;
+    use vecdb_core::chunking::simple::FixedWidthChunker;
 
     // Force many small chunks
     let line = "short\n";
@@ -50,20 +50,20 @@ async fn test_simple_chunker_performance_1mb() {
     let text = line.repeat(iterations);
 
     let params = ChunkParams {
-        chunk_size: 512,
-        max_chunk_size: Some(1000),
+        target_chunk_size: 512,
+        max_chunk_bytes: Some(1000),
         chunk_overlap: 0,
-        tokenizer: "char".to_string(),
+        tokenizer: "bytes".to_string(),
         file_extension: None,
     };
 
-    let chunker = SimpleChunker;
+    let chunker = FixedWidthChunker;
 
     let start = Instant::now();
     let result = chunker.chunk(&text, &params).await.unwrap();
     let duration = start.elapsed();
 
-    println!("SimpleChunker (Direct) 1MB in {:?}", duration);
+    println!("FixedWidthChunker (Direct) 1MB in {:?}", duration);
 
     // This should be very fast now with O(N) LineCounter
     // 200ms is very safe for O(N)

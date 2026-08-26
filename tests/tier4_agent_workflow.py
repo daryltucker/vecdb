@@ -34,9 +34,17 @@ import json
 import time
 import tempfile
 import shutil
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib_envelope import search_results
+
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import bin_path
 
 DEFAULT_TEST_GRPC_PORT = 6336
-COLLECTION_NAME = "tier4_agent_workflow"
+COLLECTION_NAME = "test_tier4_agent_workflow"
 CUDA_FIXTURE = "tests/fixtures/external/cuda-samples/Samples/2_Concepts_and_Techniques"
 
 
@@ -63,20 +71,26 @@ class Tier4AgentWorkflow(unittest.TestCase):
         cls.config_path = os.path.join(cls.test_dir, "config.toml")
         with open(cls.config_path, "w") as f:
             f.write(f"""
+[backend.local]
+kind = "fastembed"
+
+[embedder.default]
+backend = "local"
+model = "all-minilm-l6-v2"
+
 [profiles.default]
+embedder = "default"
 qdrant_url = "http://localhost:{cls.grpc_port}"
 collection_name = "{COLLECTION_NAME}"
-embedder_type = "local"
-embedding_model = "default"
 accept_invalid_certs = true
-chunk_size = 512
+target_chunk_size = 512
 """)
 
         subprocess.run(
             ["cargo", "build", "-p", "vecdb-server"],
             check=True, capture_output=True, cwd=cls.root,
         )
-        cls.server_bin = os.path.join(cls.root, "target/debug/vecdb-server")
+        cls.server_bin = os.path.join(cls.root, bin_path("vecdb-server"))
 
     @classmethod
     def tearDownClass(cls):
@@ -197,7 +211,8 @@ chunk_size = 512
                         "limit": 3,
                     }
                 })
-                content = json.loads(res["result"]["content"][0]["text"])
+                content = search_results(json.loads(res["result"]["content"][0]["text"]),
+                                         context="mcp search_vectors")
                 top_file = content[0].get("metadata", {}).get("source", "") if content else ""
                 all_top_files.append(top_file)
                 print(f"    '{q[:30]}...' → {top_file}")
@@ -250,7 +265,8 @@ chunk_size = 512
                     "limit": 10,
                 }
             })
-            results_before = json.loads(res1["result"]["content"][0]["text"])
+            results_before = search_results(json.loads(res1["result"]["content"][0]["text"]),
+                                            context="mcp search_vectors (before)")
             count_before = len(results_before)
         finally:
             self._stop_server()
@@ -282,7 +298,8 @@ chunk_size = 512
                     "limit": 10,
                 }
             })
-            results_after = json.loads(res2["result"]["content"][0]["text"])
+            results_after = search_results(json.loads(res2["result"]["content"][0]["text"]),
+                                           context="mcp search_vectors (after)")
             count_after = len(results_after)
         finally:
             self._stop_server()

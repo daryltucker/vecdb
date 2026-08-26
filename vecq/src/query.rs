@@ -5,16 +5,39 @@ use crate::error::{VecqError, VecqResult};
 use lru::LruCache;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex, LazyLock};
 use std::fs;
+use std::num::NonZeroUsize;
 use std::rc::Rc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 // jaq imports
-use jaq_core::{self, Ctx, Filter, Vars};
 use jaq_core::data::JustLut;
 use jaq_core::load::{Arena, File, Loader};
+use jaq_core::{self, Ctx, Filter, Vars};
 use jaq_json::{self, Val};
+
+/// Hard ceiling on any jaq-derived error message.
+///
+/// A backstop, not the fix. The fix is not formatting the program text into the
+/// message at all (see the two call sites); this exists so that no future jaq
+/// version, and no future addition to the prelude, can quietly reintroduce a
+/// five-figure token bill for a one-line typo.
+///
+/// 600 bytes is the size Ivaldi independently settled on when it had to
+/// sanitise these errors downstream in `ivaldi-core/src/util/vecq_error.rs`.
+const MAX_QUERY_ERROR_BYTES: usize = 600;
+
+fn concise(msg: String) -> String {
+    if msg.len() <= MAX_QUERY_ERROR_BYTES {
+        return msg;
+    }
+    // Truncate on a char boundary; a Debug string can hold multi-byte text.
+    let mut cut = MAX_QUERY_ERROR_BYTES;
+    while cut > 0 && !msg.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}… ({} bytes elided)", &msg[..cut], msg.len() - cut)
+}
 
 // Normalizers
 const NORM_LOG_NGINX: &str = include_str!("stdlib/normalizers/log_nginx.jq");
@@ -65,7 +88,8 @@ def re_sub($r; $s; $f): sub($r; $s; $f);
 "#;
 
 static PRELUDE_SOURCE: LazyLock<String> = LazyLock::new(|| {
-    format!("{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}", 
+    format!(
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
         REGEX_PRELUDE,
         NORM_LOG_NGINX,
         NORM_LOG_JOURNALD,
@@ -150,7 +174,7 @@ impl JqQueryEngine {
     pub fn with_cache_size(cache_size: usize) -> Self {
         Self {
             program_cache: Mutex::new(LruCache::new(
-                NonZeroUsize::new(cache_size).unwrap_or(NonZeroUsize::new(1).unwrap())
+                NonZeroUsize::new(cache_size).unwrap_or(NonZeroUsize::new(1).unwrap()),
             )),
             stats: Mutex::new(QueryStats::default()),
             library_paths: Vec::new(),
@@ -173,40 +197,43 @@ impl JqQueryEngine {
 
     fn compile_and_execute(&self, query: &str, json: &Value) -> VecqResult<Vec<Value>> {
         let start_time = std::time::Instant::now();
-        
+
         // Cache logic
         let filter_arc = {
             let mut cache = self.program_cache.lock().unwrap();
-            
+
             if let Some(compiled) = cache.get_mut(query) {
                 compiled.use_count += 1;
                 self.update_stats(|stats| stats.cache_hits += 1);
                 compiled.filter.clone()
             } else {
                 drop(cache); // Drop lock to compile
-                
+
                 let filter = self.compile_jaq_filter(query)?;
                 let arc_filter = Arc::new(filter);
-                
+
                 let mut cache = self.program_cache.lock().unwrap();
-                cache.put(query.to_string(), CompiledQuery {
-                    filter: arc_filter.clone(),
-                    use_count: 1,
-                });
+                cache.put(
+                    query.to_string(),
+                    CompiledQuery {
+                        filter: arc_filter.clone(),
+                        use_count: 1,
+                    },
+                );
                 self.update_stats(|stats| stats.cache_misses += 1);
-                
+
                 arc_filter
             }
         };
-        
+
         let results = self.execute_jaq_filter(&filter_arc, json)?;
-        
+
         let execution_time = start_time.elapsed().as_millis() as u64;
         self.update_stats(|stats| {
             stats.queries_executed += 1;
             stats.total_execution_time_ms += execution_time;
         });
-        
+
         Ok(results)
     }
 
@@ -223,48 +250,70 @@ impl JqQueryEngine {
 
         let prelude = &*PRELUDE_SOURCE;
         let full_source = format!("{}\n{}\n{}", prelude, user_scripts, query);
-        
+
         let loader = Loader::new(jaq_std::defs().chain(jaq_json::defs()));
         let arena = Arena::default();
 
-        let program = File { code: full_source.as_str(), path: () };
+        let program = File {
+            code: full_source.as_str(),
+            path: (),
+        };
         let modules = loader.load(&arena, program).map_err(|e| {
-             let error_msgs: Vec<String> = e.iter()
-                .map(|(file, undefined)| format!("File: {:?}, Undefined: {:?}", file, undefined))
+            // The `file` half of each entry is `File { code, .. }`, and `code`
+            // is the WHOLE program — vecq's injected prelude plus every stdlib
+            // .jq file plus the user's query. Debug-formatting it turned a
+            // one-line typo into a 42 KB error (104 KB once JSON-escaped
+            // through MCP, ~26k tokens), of which about 40 bytes carried any
+            // information.
+            //
+            // A tool that answers a typo by consuming the caller's remaining
+            // context is worse than one that just says "no". Report only the
+            // diagnostic; `QueryError.query` already carries what the user
+            // typed, which is the other half of the useful answer.
+            let error_msgs: Vec<String> = e
+                .iter()
+                .map(|(_file, undefined)| concise(format!("{undefined:?}")))
                 .collect();
-             VecqError::query_error(
+            VecqError::query_error(
                 query.to_string(),
                 error_msgs.join("; "),
                 Some("Check jq syntax".to_string()),
             )
         })?;
 
-        let compiler = jaq_core::Compiler::default()
-            .with_funs(jaq_std::funs().chain(jaq_json::funs()).chain(crate::natives::regex_natives()));
+        let compiler = jaq_core::Compiler::default().with_funs(
+            jaq_std::funs()
+                .chain(jaq_json::funs())
+                .chain(crate::natives::regex_natives()),
+        );
 
         let filter = compiler.compile(modules).map_err(|e| {
-             let error_msgs: Vec<String> = e.iter()
-                .map(|e| format!("{:?}", e))
-                .collect();
-             VecqError::query_error(
+            // Capped for the same reason as the loader arm above: a compile
+            // error is not known to embed the program today, but nothing stops
+            // a future jaq from doing so, and the cost of finding out that way
+            // is measured in whole context windows.
+            let error_msgs: Vec<String> = e.iter().map(|e| concise(format!("{e:?}"))).collect();
+            VecqError::query_error(
                 query.to_string(),
                 error_msgs.join("; "),
                 Some("Check jq syntax and functions".to_string()),
             )
         })?;
-        
+
         Ok(filter)
     }
 
-    fn execute_jaq_filter(&self, filter: &Filter<jaq_core::data::JustLut<Val>>, json: &Value) -> VecqResult<Vec<Value>> {
+    fn execute_jaq_filter(
+        &self,
+        filter: &Filter<jaq_core::data::JustLut<Val>>,
+        json: &Value,
+    ) -> VecqResult<Vec<Value>> {
         let input = self.serde_to_jaq(json);
-        
+
         let ctx: Ctx<'_, JustLut<Val>> = Ctx::new(&filter.lut, Vars::new([]));
-        
-        let results: Vec<Val> = filter.id.run((ctx, input))
-            .filter_map(|r| r.ok())
-            .collect();
-        
+
+        let results: Vec<Val> = filter.id.run((ctx, input)).filter_map(|r| r.ok()).collect();
+
         Ok(results.iter().map(|v| self.jaq_to_serde(v)).collect())
     }
 
@@ -278,18 +327,18 @@ impl JqQueryEngine {
                 } else if let Some(f) = n.as_f64() {
                     Val::from(f)
                 } else {
-                     Val::from(n.as_f64().unwrap_or(0.0))
+                    Val::from(n.as_f64().unwrap_or(0.0))
                 }
             }
             Value::String(s) => Val::from(s.clone()),
             Value::Array(arr) => {
                 let vec: Vec<Val> = arr.iter().map(|v| self.serde_to_jaq(v)).collect();
                 Val::Arr(Rc::new(vec))
-            },
+            }
             Value::Object(obj) => {
                 // Fix: Uses foldhash for IndexMap to match Val expectation
-                use indexmap::IndexMap;
                 use foldhash::fast::RandomState;
+                use indexmap::IndexMap;
                 let mut map = IndexMap::with_hasher(RandomState::default());
                 for (k, v) in obj {
                     map.insert(Val::from(k.clone()), self.serde_to_jaq(v));
@@ -304,24 +353,27 @@ impl JqQueryEngine {
             Val::Null => Value::Null,
             Val::Bool(b) => Value::Bool(*b),
             Val::Num(n) => {
-                 let s = n.to_string();
-                 if let Ok(v) = serde_json::from_str(&s) {
-                     v
-                 } else {
-                     Value::Number(serde_json::Number::from_f64(0.0).unwrap())
-                 }
+                let s = n.to_string();
+                if let Ok(v) = serde_json::from_str(&s) {
+                    v
+                } else {
+                    Value::Number(serde_json::Number::from_f64(0.0).unwrap())
+                }
             }
             Val::Str(s, _) => Value::String(String::from_utf8_lossy(s.as_ref()).to_string()),
             Val::Arr(arr) => Value::Array(arr.iter().map(|v| self.jaq_to_serde(v)).collect()),
             Val::Obj(obj) => {
-                let map: serde_json::Map<String, Value> = obj.iter()
-                    .map(|(k, v)| (
-                        match k {
-                            Val::Str(s, _) => String::from_utf8_lossy(s.as_ref()).to_string(),
-                            _ => k.to_string(), // Best effort for non-string keys
-                        }, 
-                        self.jaq_to_serde(v)
-                    ))
+                let map: serde_json::Map<String, Value> = obj
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            match k {
+                                Val::Str(s, _) => String::from_utf8_lossy(s.as_ref()).to_string(),
+                                _ => k.to_string(), // Best effort for non-string keys
+                            },
+                            self.jaq_to_serde(v),
+                        )
+                    })
                     .collect();
                 Value::Object(map)
             }
@@ -340,8 +392,9 @@ impl JqQueryEngine {
     fn analyze_complexity(&self, query: &str) -> QueryComplexity {
         let pipe_count = query.matches('|').count();
         let has_recursion = query.contains("recurse") || query.contains("..");
-        let has_complex_ops = query.contains("group_by") || query.contains("sort_by") || query.contains("reduce");
-        
+        let has_complex_ops =
+            query.contains("group_by") || query.contains("sort_by") || query.contains("reduce");
+
         if has_recursion || has_complex_ops {
             QueryComplexity::Complex
         } else if pipe_count > 2 {
@@ -354,7 +407,7 @@ impl JqQueryEngine {
     fn generate_explanation(&self, query: &str) -> QueryExplanation {
         let operations = self.parse_operations(query);
         let complexity = self.analyze_complexity(query);
-        
+
         let description = match complexity {
             QueryComplexity::Simple => "Simple query with basic operations".to_string(),
             QueryComplexity::Moderate => "Moderate query with multiple operations".to_string(),
@@ -371,7 +424,7 @@ impl JqQueryEngine {
 
     fn parse_operations(&self, query: &str) -> Vec<QueryOperation> {
         let mut operations = Vec::new();
-        
+
         if query.contains("select(") {
             operations.push(QueryOperation {
                 operation_type: "filter".to_string(),
@@ -379,7 +432,7 @@ impl JqQueryEngine {
                 example: Some("select(.visibility == \"pub\")".to_string()),
             });
         }
-        
+
         if query.contains("map(") {
             operations.push(QueryOperation {
                 operation_type: "transform".to_string(),
@@ -387,7 +440,7 @@ impl JqQueryEngine {
                 example: Some("map(.name)".to_string()),
             });
         }
-        
+
         if query.contains("[]") {
             operations.push(QueryOperation {
                 operation_type: "iterate".to_string(),
@@ -405,19 +458,19 @@ impl JqQueryEngine {
         }
 
         let mut scripts = String::new();
-        
+
         if let Some(config_dir) = dirs::config_dir() {
             let global_dir = config_dir.join("vecq").join("functions");
             self.append_scripts_from_dir(&global_dir, &mut scripts);
         }
-        
+
         let local_dir = std::path::Path::new(".vecq").join("functions");
         self.append_scripts_from_dir(&local_dir, &mut scripts);
 
         for path in &self.library_paths {
             self.append_scripts_from_dir(path, &mut scripts);
         }
-        
+
         scripts
     }
 
@@ -470,28 +523,43 @@ pub struct QueryPatterns;
 impl QueryPatterns {
     pub fn common_patterns() -> HashMap<&'static str, &'static str> {
         let mut patterns = HashMap::new();
-        
+
         patterns.insert(".", "Identity - returns input unchanged");
         patterns.insert(".field", "Field access - get value of field");
         patterns.insert(".[]", "Array iteration - iterate over array elements");
-        patterns.insert(".field[]", "Field array iteration - iterate over array in field");
-        patterns.insert("select(.condition)", "Filter - select elements matching condition");
-        patterns.insert("map(.expression)", "Transform - apply expression to each element");
+        patterns.insert(
+            ".field[]",
+            "Field array iteration - iterate over array in field",
+        );
+        patterns.insert(
+            "select(.condition)",
+            "Filter - select elements matching condition",
+        );
+        patterns.insert(
+            "map(.expression)",
+            "Transform - apply expression to each element",
+        );
         patterns.insert("sort_by(.field)", "Sort - sort array by field value");
-        patterns.insert("group_by(.field)", "Group - group array elements by field value");
+        patterns.insert(
+            "group_by(.field)",
+            "Group - group array elements by field value",
+        );
         patterns.insert("length", "Count - get length of array or object");
         patterns.insert("keys", "Keys - get object keys or array indices");
         patterns.insert("has(\"field\")", "Test - check if object has field");
         patterns.insert("empty", "Empty - produce no output");
         patterns.insert("error(\"message\")", "Error - raise error with message");
-        
+
         patterns
     }
 
     pub fn suggest_for_task(task: &str) -> Vec<&'static str> {
         match task.to_lowercase().as_str() {
             "list functions" => vec![".functions[]", ".functions[] | .name"],
-            "find public functions" => vec![".functions[] | select(.visibility == \"pub\")", ".functions[] | select(.visibility == \"pub\") | .name"],
+            "find public functions" => vec![
+                ".functions[] | select(.visibility == \"pub\")",
+                ".functions[] | select(.visibility == \"pub\") | .name",
+            ],
             "count functions" => vec![".functions | length"],
             "list headers" => vec![".headers[]", ".headers[] | .title"],
             "find level 2 headers" => vec![".headers[] | select(.level == 2)"],
@@ -517,11 +585,11 @@ mod tests {
     #[test]
     fn test_query_validation() {
         let engine = JqQueryEngine::new_hermetic();
-        
+
         assert!(engine.validate_query(".").is_ok());
         assert!(engine.validate_query(".functions").is_ok());
         assert!(engine.validate_query(".functions[]").is_ok());
-        
+
         assert!(engine.validate_query("").is_err());
         assert!(engine.validate_query(".functions[").is_err());
         assert!(engine.validate_query("select(").is_err());
@@ -566,24 +634,42 @@ mod tests {
     #[test]
     fn test_query_explanation() {
         let engine = JqQueryEngine::new();
-        
-        let explanation = engine.explain_query(".functions[] | select(.visibility == \"pub\")").unwrap();
-        assert_eq!(explanation.query, ".functions[] | select(.visibility == \"pub\")");
+
+        let explanation = engine
+            .explain_query(".functions[] | select(.visibility == \"pub\")")
+            .unwrap();
+        assert_eq!(
+            explanation.query,
+            ".functions[] | select(.visibility == \"pub\")"
+        );
         assert!(!explanation.operations.is_empty());
-        assert!(matches!(explanation.complexity, QueryComplexity::Simple | QueryComplexity::Moderate | QueryComplexity::Complex));
+        assert!(matches!(
+            explanation.complexity,
+            QueryComplexity::Simple | QueryComplexity::Moderate | QueryComplexity::Complex
+        ));
     }
 
     #[test]
     fn test_complexity_analysis() {
         let engine = JqQueryEngine::new();
-        
+
         let simple_complexity = engine.analyze_complexity(".");
         let moderate_complexity = engine.analyze_complexity(".functions[] | select(.name)");
-        let complex_complexity = engine.analyze_complexity(".functions[] | group_by(.type) | map(length)");
-        
-        assert!(matches!(simple_complexity, QueryComplexity::Simple | QueryComplexity::Moderate));
-        assert!(matches!(moderate_complexity, QueryComplexity::Simple | QueryComplexity::Moderate | QueryComplexity::Complex));
-        assert!(matches!(complex_complexity, QueryComplexity::Moderate | QueryComplexity::Complex));
+        let complex_complexity =
+            engine.analyze_complexity(".functions[] | group_by(.type) | map(length)");
+
+        assert!(matches!(
+            simple_complexity,
+            QueryComplexity::Simple | QueryComplexity::Moderate
+        ));
+        assert!(matches!(
+            moderate_complexity,
+            QueryComplexity::Simple | QueryComplexity::Moderate | QueryComplexity::Complex
+        ));
+        assert!(matches!(
+            complex_complexity,
+            QueryComplexity::Moderate | QueryComplexity::Complex
+        ));
     }
 
     #[test]
@@ -591,7 +677,7 @@ mod tests {
         let patterns = QueryPatterns::common_patterns();
         assert!(patterns.contains_key("."));
         assert!(patterns.contains_key("select(.condition)"));
-        
+
         let suggestions = QueryPatterns::suggest_for_task("list functions");
         assert!(!suggestions.is_empty());
         assert!(suggestions.contains(&".functions[]"));

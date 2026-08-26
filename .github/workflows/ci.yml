@@ -1,0 +1,235 @@
+name: CI
+run-name: CI ${{ github.ref_name }}
+
+# The backstop.
+#
+# Before this file existed, the ONLY workflow was release.yml, triggered on
+# `push: tags: v*`. CI therefore ran only AFTER a release was cut, and it only
+# built binaries — nothing tested anything, ever.
+#
+# v1.1.0 is the case in point. It shipped with `line_start` 0-indexed for
+# Python, Go and YAML while Rust, C, C++, CUDA and Bash were 1-indexed, and
+# with four clippy errors sitting in vecdb-core's tests. Both classes are
+# caught by the two jobs below, and neither would have reached a tag if this
+# had run on the branch.
+#
+# See: tests/run_all.sh (the authoritative manifest)
+#      vecq/tests/tier1_line_index_convention.rs (what the line bug cost)
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+
+# A second push to the same branch cancels the first. Saves runner minutes
+# without weakening the gate: the newer commit is the one that matters.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Match release.yml — node20 actions are EOL on some runner images.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════════
+  # check — the fast gate. No services. Blocks everything downstream.
+  #
+  # Deliberately the same command set as `make check`, so a developer who
+  # ran that locally already knows this job's result.
+  # ═══════════════════════════════════════════════════════════════════
+  check:
+    name: check (compile + clippy + guards)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # ONNX Runtime is downloaded by ort's build script into target/;
+          # sharing the cache across jobs avoids re-downloading ~500MB.
+          shared-key: vecdb-ci
+
+      # ─────────────────────────────────────────────────────────────────
+      # --all-targets on BOTH commands.
+      #
+      # `cargo check --workspace` alone does not compile test targets.
+      # `cargo clippy --workspace` alone does not lint them, nor inline
+      # `#[cfg(test)]` modules inside src/. That blind spot let four clippy
+      # errors sit in vecdb-core/tests behind a green `make check` all the
+      # way through the v1.1.0 release. Do not remove --all-targets.
+      # ─────────────────────────────────────────────────────────────────
+      - name: cargo check (--all-targets)
+        run: cargo check --workspace --all-targets
+
+      - name: cargo clippy (--all-targets, deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # ─────────────────────────────────────────────────────────────────
+      # cargo fmt — a HARD gate, as of day 238.
+      #
+      # It was going to ship non-blocking, on the rule "never wire a gate to a
+      # command that has never passed": 192 diff hunks, plus 22 rustfmt
+      # internal errors. Both were then driven to zero, so the rule no longer
+      # applies and the gate is real.
+      #
+      # Reaching zero surfaced a genuine defect rather than only churn:
+      # `vecq/src/lib.rs` declared `pub mod natural_language;` behind a
+      # `natural-language` feature whose source file has never existed. Enabling
+      # the feature failed to compile, and because rustfmt resolves `mod` items
+      # without regard for `cfg`, it also made `cargo fmt` unable to walk the
+      # crate at all. The feature is gone.
+      # ─────────────────────────────────────────────────────────────────
+      - name: cargo fmt (--check)
+        run: cargo fmt --all -- --check
+
+      # Both guards are also prerequisites of `make check`, and both are ~0s.
+      #   guard-paths     — absolute /home/... paths in shipped sources.
+      #                     Three shipped in release binaries once, one of them
+      #                     forking a doomed `git` on every MCP handshake.
+      #                     Scoped to NON-test sources: tests/ legitimately
+      #                     holds absolute fixture paths.
+      #   guard-workspace — every tracked Cargo.toml is a member or an explicit
+      #                     exclude. `docsize` is an explicit, commented exclude.
+      - name: Guard — no hardcoded home paths in shipped sources
+        run: make guard-paths
+
+      - name: Guard — no tracked-but-unlisted crates
+        run: make guard-workspace
+
+      # The tables in docs/CONFIG.md are generated from the /// comments in
+      # vecdb-core/src/config.rs. This is what T2.5 runs.
+      - name: docs/CONFIG.md is regenerated, not hand-edited
+        run: cargo run -p xtask -- gen-config-docs --check
+
+  # ═══════════════════════════════════════════════════════════════════
+  # test-fast — NOT the full suite. The name says so on purpose.
+  #
+  # WHAT THIS COVERS:
+  #   Tier 0  — Qdrant isolation guard
+  #   Tier 1  — the Qdrant-free Python/Bash contract tests
+  #   Tier 1.5 + Tier 2 — `cargo test --workspace`
+  #
+  # WHAT THIS DOES **NOT** COVER — do not read a green badge as "tested":
+  #   * Tier 3 (MCP end-to-end) and Tier 4 (Agent Reality / real corpora).
+  #     Both need the external fixture corpus (`tests/fixtures/init.sh`
+  #     clones cuda-samples and fetches lua-5.4.6 + a Gutenberg text) and
+  #     minutes of embedding work.
+  #   * Anything needing a local embedding model. The default feature set
+  #     pulls fastembed + ONNX Runtime; hosted runners have no GPU, and
+  #     downloading model weights per-run is not viable.
+  #   * Anything needing Ollama.
+  #   * verify_installed_binary.py — drives ~/.cargo/bin/vecdb-server, i.e.
+  #     an installed artifact, not a build output.
+  #
+  #   → The authoritative gate remains `make tests` (tests/run_all.sh), run
+  #     locally against real infrastructure before a release.
+  #
+  #   → `make tests` treats a SKIP as a failure. Absent infrastructure is
+  #     never a pass, which is why this job runs a deliberately scoped
+  #     subset instead of pretending.
+  # ═══════════════════════════════════════════════════════════════════
+  test-fast:
+    name: test-fast (Tier 0/1 + cargo test — NOT Tier 3/4)
+    needs: check
+    runs-on: ubuntu-latest
+
+    services:
+      # ─────────────────────────────────────────────────────────────────
+      # PORT MAPPING IS LOAD-BEARING.
+      #
+      # tests/tier0_qdrant_isolation.py FAILS THE RUN if any configured URL
+      # uses 6333/6334 — the production ports. So the host side must be
+      # 6335/6336 and nothing else.
+      #
+      #   host 6335 → container 6333 (HTTP/REST)
+      #   host 6336 → container 6334 (gRPC)
+      # ─────────────────────────────────────────────────────────────────
+      qdrant:
+        image: qdrant/qdrant:v1.16.0
+        ports:
+          - 6335:6333
+          - 6336:6334
+
+    env:
+      # Absolute, always. A relative VECDB_CONFIG resolves against each test's
+      # working directory, which is how `cargo test -p vecdb-cli` once loaded a
+      # stale fixture naming the production collection `docs`.
+      # tier0_qdrant_isolation.py rejects a relative value outright.
+      VECDB_CONFIG: ${{ github.workspace }}/tests/fixtures/config.toml
+      VECDB_TEST_QDRANT_URL: http://localhost:6336
+      VECDB_TEST_QDRANT_HTTP_URL: http://localhost:6335
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: vecdb-ci
+
+      # `services:` health is not guaranteed by Actions (qdrant/qdrant ships no
+      # HEALTHCHECK), so poll it ourselves and FAIL loudly rather than letting
+      # downstream tests self-disable into green.
+      - name: Wait for test Qdrant (6335/6336)
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS -m 2 http://localhost:6335/healthz >/dev/null; then
+              echo "Qdrant healthy on 6335 (HTTP) / 6336 (gRPC)."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Test Qdrant never became healthy on 6335." >&2
+          echo "Refusing to continue — absent infrastructure is a FAIL, not a pass." >&2
+          exit 1
+
+      # The production-Qdrant lockout. Proves the suite cannot reach 6333/6334.
+      # Cheap, and it must pass before anything touches Qdrant.
+      - name: Tier 0 — Qdrant isolation guard
+        run: python3 tests/tier0_qdrant_isolation.py
+
+      - name: Build binaries
+        run: cargo build --bin vecdb --bin vecdb-server --bin vecq
+
+      # Tier 1 subset: the contract tests that need no embedder, no Ollama and
+      # no external corpus. Everything else is left to the local `make tests`
+      # run, which reports SKIP for what it cannot do.
+      - name: Tier 1 — contract tests (infrastructure-free subset)
+        run: |
+          set -e
+          python3 tests/tier1_parity.py              # MCP/CLI schema parity
+          python3 tests/tier1_security.py            # ingest_path gated on --allow-local-fs
+          bash    tests/tier1_parsers.sh             # multi-language structural parse
+          python3 tests/tier1_config.py              # config load / profile resolution
+          python3 tests/tier1_asm_deduplication.py
+          python3 tests/tier1_asm_sequencing.py
+          python3 tests/tier1_asm_state_diff.py
+
+      # NOTE: tier2_config_compliance.py is deliberately absent. It was deleted
+      # in v1.1.0 and replaced by `xtask gen-config-docs --check`, which runs in
+      # the `check` job above.
+      - name: Tier 2 — compliance checks
+        run: |
+          set -e
+          python3 tests/tier2_cli_compliance.py
+          python3 tests/tier2_parsers_all.py
+          python3 tests/tier2_compile.py
+
+      - name: cargo test --workspace (Tier 1.5 + Tier 2 Rust)
+        run: cargo test --workspace

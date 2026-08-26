@@ -79,7 +79,7 @@ graph TD
 3. If chunk > max_size, split by space ` ` (Words)
 
 **Parameters**:
-- `chunk_size`: 512 tokens (approx 2048 chars)
+- `target_chunk_size`: 512 tokens (approx 2048 chars)
 - `chunk_overlap`: 64 tokens (approx 256 chars)
 
 **Metadata Preservation**:

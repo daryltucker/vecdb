@@ -10,7 +10,11 @@ import json
 import subprocess
 import os
 
-SERVER_BIN = "target/debug/vecdb-server"
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import bin_path
+
+SERVER_BIN = bin_path("vecdb-server")
 
 def log(msg):
     print(msg, file=sys.stderr)
@@ -55,7 +59,7 @@ def run_security_test():
             "name": "ingest_path",
             "arguments": {
                 "path": "/tmp/test",
-                "collection": "test"
+                "collection": "test_security_denied"
             }
         }, 2)
         

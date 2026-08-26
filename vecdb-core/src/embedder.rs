@@ -45,6 +45,21 @@ pub trait Embedder: Send + Sync {
     /// Return the name of the model being used (e.g. "fastembed:AllMiniLML6V2", "ollama:nomic-embed-text")
     fn model_name(&self) -> String;
 
+    /// Everything this embedder can prove about the model behind it.
+    ///
+    /// This is what gets written into a collection's genesis point and what the
+    /// compatibility guard compares. The default returns name-only, which the
+    /// guard treats as *insufficient to compare* — i.e. it refuses rather than
+    /// assumes. Backends that can do better (Ollama exposes digest,
+    /// architecture, parameter_size and quantization_level via `/api/show`)
+    /// MUST override this; a name-only identity means the operator cannot mix
+    /// machines safely.
+    ///
+    /// May perform network I/O, so callers should fetch once and reuse.
+    async fn identity(&self) -> Result<crate::types::ModelIdentity> {
+        Ok(crate::types::ModelIdentity::unknown(self.model_name()))
+    }
+
     /// Release any heavyweight resources held by this embedder (e.g. GPU model weights).
     ///
     /// Called by the server's idle-eviction watchdog. After release, the next embed()

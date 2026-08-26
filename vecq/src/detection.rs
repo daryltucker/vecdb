@@ -11,7 +11,7 @@
 //   - Must support user-defined file type mappings via configuration
 //   - Must provide confidence scoring for detection decisions
 //   - Must be extensible for new file types without breaking existing detection
-//   
+//
 //   Implementation-discovered:
 //   - Requires multiple detection strategies (extension, MIME, shebang, content analysis)
 //   - Must cache detection results for performance with repeated processing
@@ -21,19 +21,19 @@
 // IMPLEMENTATION RULES:
 //   1. Use multiple detection strategies with confidence scoring
 //      Rationale: Single strategy is insufficient for accurate detection
-//   
+//
 //   2. Primary strategy is file extension mapping for performance
 //      Rationale: Most files have correct extensions, fastest detection method
-//   
+//
 //   3. Secondary strategy is MIME type detection for extensionless files
 //      Rationale: Handles files without extensions or with wrong extensions
-//   
+//
 //   4. Tertiary strategy is shebang detection for script files
 //      Rationale: Scripts often have generic extensions but specific shebangs
-//   
+//
 //   5. Cache detection results by file hash to avoid redundant work
 //      Rationale: Same files are often processed multiple times
-//   
+//
 //   Critical:
 //   - DO NOT change detection behavior without extensive testing
 //   - DO NOT cache results without considering file content changes
@@ -42,11 +42,11 @@
 // USAGE:
 //   use vecq::detection::{FileTypeDetector, HybridDetector, DetectionConfig};
 //   use std::path::Path;
-//   
+//
 //   // Basic detection
 //   let detector = HybridDetector::new();
 //   let file_type = detector.detect_type(Path::new("example.rs"), content.as_bytes())?;
-//   
+//
 //   // With custom configuration
 //   let config = DetectionConfig::new()
 //       .with_custom_mapping("mylang", FileType::Unknown);
@@ -60,7 +60,7 @@
 //   4. Update confidence scoring logic for new patterns
 //   5. Add comprehensive tests for new file type detection
 //   6. Update documentation with new supported extensions
-//   
+//
 //   When detection accuracy issues are reported:
 //   1. Add logging to identify misclassification patterns
 //   2. Collect problematic files for test fixtures
@@ -142,13 +142,15 @@ impl DetectionConfig {
 
     /// Add custom file extension mapping
     pub fn with_custom_extension(mut self, extension: &str, file_type: FileType) -> Self {
-        self.custom_extensions.insert(extension.to_lowercase(), file_type);
+        self.custom_extensions
+            .insert(extension.to_lowercase(), file_type);
         self
     }
 
     /// Add custom MIME type mapping
     pub fn with_custom_mime_type(mut self, mime_type: &str, file_type: FileType) -> Self {
-        self.custom_mime_types.insert(mime_type.to_lowercase(), file_type);
+        self.custom_mime_types
+            .insert(mime_type.to_lowercase(), file_type);
         self
     }
 
@@ -202,9 +204,9 @@ impl HybridDetector {
         let cache_size = if config.enable_caching { 1000 } else { 1 };
         Self {
             config,
-            detection_cache: std::sync::Mutex::new(
-                lru::LruCache::new(std::num::NonZeroUsize::new(cache_size).unwrap())
-            ),
+            detection_cache: std::sync::Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(cache_size).unwrap(),
+            )),
         }
     }
 
@@ -321,7 +323,10 @@ impl HybridDetector {
         let markdown_score = self.calculate_markdown_score(&sample);
         let c_score = self.calculate_c_score(&sample);
 
-        let max_score = rust_score.max(python_score).max(markdown_score).max(c_score);
+        let max_score = rust_score
+            .max(python_score)
+            .max(markdown_score)
+            .max(c_score);
 
         if max_score < 0.3 {
             return None; // Not confident enough
@@ -384,7 +389,7 @@ impl HybridDetector {
 
         // Python-specific patterns
         let python_keywords = ["def ", "class ", "import ", "from ", "if __name__"];
-        let python_patterns = ["self.", "self,", ":", "    "] ; // Indentation
+        let python_patterns = ["self.", "self,", ":", "    "]; // Indentation
 
         for keyword in &python_keywords {
             if content.contains(keyword) {
@@ -568,15 +573,17 @@ mod tests {
     #[test]
     fn test_extension_detection() {
         let detector = HybridDetector::new();
-        
+
         let rust_path = PathBuf::from("main.rs");
         let result = detector.detect_type(&rust_path, b"fn main() {}").unwrap();
         assert_eq!(result, FileType::Rust);
-        
+
         let python_path = PathBuf::from("script.py");
-        let result = detector.detect_type(&python_path, b"def main(): pass").unwrap();
+        let result = detector
+            .detect_type(&python_path, b"def main(): pass")
+            .unwrap();
         assert_eq!(result, FileType::Python);
-        
+
         let markdown_path = PathBuf::from("README.md");
         let result = detector.detect_type(&markdown_path, b"# Title").unwrap();
         assert_eq!(result, FileType::Markdown);
@@ -586,11 +593,11 @@ mod tests {
     fn test_shebang_detection() {
         let detector = HybridDetector::new();
         let path = PathBuf::from("script");
-        
+
         let python_content = b"#!/usr/bin/env python3\nprint('hello')";
         let result = detector.detect_type(&path, python_content).unwrap();
         assert_eq!(result, FileType::Python);
-        
+
         let bash_content = b"#!/bin/bash\necho 'hello'";
         let result = detector.detect_type(&path, bash_content).unwrap();
         assert_eq!(result, FileType::Bash);
@@ -600,11 +607,11 @@ mod tests {
     fn test_content_analysis() {
         let detector = HybridDetector::new();
         let path = PathBuf::from("unknown");
-        
+
         let rust_content = b"fn main() {\n    println!(\"Hello, world!\");\n}";
         let _result = detector.detect_type(&path, rust_content).unwrap();
         // Content analysis might detect this as Rust
-        
+
         let markdown_content = b"# Title\n\n## Subtitle\n\n- Item 1\n- Item 2";
         let _result = detector.detect_type(&path, markdown_content).unwrap();
         // Content analysis might detect this as Markdown
@@ -615,7 +622,7 @@ mod tests {
         let config = DetectionConfig::new()
             .with_custom_extension("mylang", FileType::Unknown)
             .with_confidence_threshold(0.8);
-        
+
         let detector = HybridDetector::with_config(config);
         let path = PathBuf::from("test.mylang");
         let result = detector.detect_type(&path, b"custom content").unwrap();
@@ -625,11 +632,11 @@ mod tests {
     #[test]
     fn test_confidence_scoring() {
         let detector = HybridDetector::new();
-        
+
         let rust_path = PathBuf::from("main.rs");
         let confidence = detector.get_confidence(&rust_path, b"fn main() {}");
         assert!(confidence > 0.8); // Extension detection should be high confidence
-        
+
         let unknown_path = PathBuf::from("unknown");
         let confidence = detector.get_confidence(&unknown_path, b"random content");
         assert!(confidence < 0.5); // Unknown content should be low confidence
@@ -640,13 +647,13 @@ mod tests {
         let detector = HybridDetector::new();
         let path = PathBuf::from("test.rs");
         let content = b"fn main() {}";
-        
+
         // First detection
         let result1 = detector.detect_type(&path, content).unwrap();
-        
+
         // Second detection (should use cache)
         let result2 = detector.detect_type(&path, content).unwrap();
-        
+
         assert_eq!(result1, result2);
         assert_eq!(result1, FileType::Rust);
     }

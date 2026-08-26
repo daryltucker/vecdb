@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 import subprocess
+import os
 import sys
 import json
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib_envelope import search_results
+
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import bin_path
+
 # --- Configuration ---
-VECDB_BINARY = "./target/debug/vecdb"
-VECQ_BINARY = "./target/debug/vecq"
+VECDB_BINARY = bin_path("vecdb")
+VECQ_BINARY = bin_path("vecq")
 
 def run_command(cmd, input_text=None):
     """Runs a shell command with optional input."""
@@ -23,16 +31,14 @@ def test_json_pipeline():
     print("--- Testing Pipeline ---")
     
     # 1. Get JSON search results
-    search_cmd = f"{VECDB_BINARY} search --json 'port' --collection docs"
+    search_cmd = f"{VECDB_BINARY} search --json 'port' --collection test_default"
     search_result = run_command(search_cmd)
     if not search_result:
         sys.exit(1)
         
     try:
-        json_out = json.loads(search_result.stdout)
-        if not isinstance(json_out, list):
-            print("FAILED: Output is not a JSON list")
-            sys.exit(1)
+        json_out = search_results(json.loads(search_result.stdout),
+                                  context="vecdb search --json")
         print(f"Got {len(json_out)} results from search.")
     except json.JSONDecodeError:
         print("FAILED: Output is not valid JSON")

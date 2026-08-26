@@ -9,7 +9,10 @@
 
 use crate::error::{VecqError, VecqResult};
 use crate::parser::{Parser, ParserCapabilities, ParserConfig};
-use crate::types::{DocumentElement, DocumentMetadata, ElementType, ParsedDocument, JavaScriptAttributes, ElementAttributes, UsageAttributes};
+use crate::types::{
+    DocumentElement, DocumentMetadata, ElementAttributes, ElementType, JavaScriptAttributes,
+    ParsedDocument, UsageAttributes,
+};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -52,7 +55,11 @@ impl JavaScriptParser {
         }
     }
 
-    fn extract_functions(&self, content: &str, tree: &tree_sitter::Tree) -> VecqResult<Vec<DocumentElement>> {
+    fn extract_functions(
+        &self,
+        content: &str,
+        tree: &tree_sitter::Tree,
+    ) -> VecqResult<Vec<DocumentElement>> {
         let mut functions = Vec::new();
         let root = tree.root_node();
         let mut cursor = root.walk();
@@ -85,7 +92,10 @@ impl JavaScriptParser {
                 is_async = true;
             }
             if child.kind() == "identifier" {
-                name = child.utf8_text(content.as_bytes()).unwrap_or("").to_string();
+                name = child
+                    .utf8_text(content.as_bytes())
+                    .unwrap_or("")
+                    .to_string();
             }
         }
 
@@ -109,9 +119,13 @@ impl JavaScriptParser {
         Some(element)
     }
 
-    fn parse_arrow_function(&self, content: &str, node: tree_sitter::Node) -> Option<DocumentElement> {
+    fn parse_arrow_function(
+        &self,
+        content: &str,
+        node: tree_sitter::Node,
+    ) -> Option<DocumentElement> {
         let text = node.utf8_text(content.as_bytes()).unwrap_or("");
-        
+
         if !text.contains("=>") {
             return None;
         }
@@ -122,21 +136,28 @@ impl JavaScriptParser {
                 let mut decl_cursor = child.walk();
                 for decl_child in child.children(&mut decl_cursor) {
                     if decl_child.kind() == "identifier" {
-                        let name = decl_child.utf8_text(content.as_bytes()).unwrap_or("").to_string();
+                        let name = decl_child
+                            .utf8_text(content.as_bytes())
+                            .unwrap_or("")
+                            .to_string();
                         let is_async = text.contains("async");
-                        
-                        return Some(DocumentElement::new(
-                            ElementType::Function,
-                            Some(name),
-                            text.to_string(),
-                            node.start_position().row + 1,
-                            node.end_position().row + 1,
-                        )
-                        .set_attributes(ElementAttributes::JavaScript(JavaScriptAttributes {
-                            is_async,
-                            is_arrow: true,
-                            other: HashMap::new(),
-                        })));
+
+                        return Some(
+                            DocumentElement::new(
+                                ElementType::Function,
+                                Some(name),
+                                text.to_string(),
+                                node.start_position().row + 1,
+                                node.end_position().row + 1,
+                            )
+                            .set_attributes(
+                                ElementAttributes::JavaScript(JavaScriptAttributes {
+                                    is_async,
+                                    is_arrow: true,
+                                    other: HashMap::new(),
+                                }),
+                            ),
+                        );
                     }
                 }
             }
@@ -144,7 +165,11 @@ impl JavaScriptParser {
         None
     }
 
-    fn extract_classes(&self, content: &str, tree: &tree_sitter::Tree) -> VecqResult<Vec<DocumentElement>> {
+    fn extract_classes(
+        &self,
+        content: &str,
+        tree: &tree_sitter::Tree,
+    ) -> VecqResult<Vec<DocumentElement>> {
         let mut classes = Vec::new();
         let root = tree.root_node();
         let mut cursor = root.walk();
@@ -166,7 +191,12 @@ impl JavaScriptParser {
 
         for child in node.children(&mut cursor) {
             if child.kind() == "identifier" {
-                name = Some(child.utf8_text(content.as_bytes()).unwrap_or("").to_string());
+                name = Some(
+                    child
+                        .utf8_text(content.as_bytes())
+                        .unwrap_or("")
+                        .to_string(),
+                );
                 break;
             }
         }
@@ -180,7 +210,11 @@ impl JavaScriptParser {
         ))
     }
 
-    fn extract_imports(&self, content: &str, tree: &tree_sitter::Tree) -> VecqResult<Vec<DocumentElement>> {
+    fn extract_imports(
+        &self,
+        content: &str,
+        tree: &tree_sitter::Tree,
+    ) -> VecqResult<Vec<DocumentElement>> {
         let mut imports = Vec::new();
         let root = tree.root_node();
         let mut cursor = root.walk();
@@ -188,7 +222,7 @@ impl JavaScriptParser {
         for child in root.children(&mut cursor) {
             if child.kind() == "import_statement" {
                 let text = child.utf8_text(content.as_bytes()).unwrap_or("");
-                
+
                 imports.push(DocumentElement::new(
                     ElementType::Import,
                     None,
@@ -232,7 +266,8 @@ impl Parser for JavaScriptParser {
 
     async fn parse(&self, content: &str) -> VecqResult<ParsedDocument> {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_javascript::LANGUAGE.into())
+        parser
+            .set_language(&tree_sitter_javascript::LANGUAGE.into())
             .map_err(|e| VecqError::ParseError {
                 file: PathBuf::from(STRING_PLACEHOLDER),
                 line: 0,
@@ -240,7 +275,8 @@ impl Parser for JavaScriptParser {
                 source: None,
             })?;
 
-        let tree = parser.parse(content, None)
+        let tree = parser
+            .parse(content, None)
             .ok_or_else(|| VecqError::ParseError {
                 file: PathBuf::from(STRING_PLACEHOLDER),
                 line: 0,
@@ -285,10 +321,17 @@ impl JavaScriptParser {
         for child in root.children(&mut cursor) {
             match child.kind() {
                 "function_declaration" | "function" | "arrow_function" | "method_definition" => {
-                    let func_name = self.extract_function_name(content, child).unwrap_or("anonymous");
+                    let func_name = self
+                        .extract_function_name(content, child)
+                        .unwrap_or("anonymous");
 
                     let new_scope = format!("function:{}", func_name);
-                    usages.extend(self.detect_usages_in_node(content, child, Some(func_name), &new_scope)?);
+                    usages.extend(self.detect_usages_in_node(
+                        content,
+                        child,
+                        Some(func_name),
+                        &new_scope,
+                    )?);
                 }
                 "class_declaration" => {
                     let class_name = child
@@ -297,10 +340,20 @@ impl JavaScriptParser {
                         .unwrap_or("");
 
                     let new_scope = format!("class:{}", class_name);
-                    usages.extend(self.detect_usages_in_node(content, child, current_function, &new_scope)?);
+                    usages.extend(self.detect_usages_in_node(
+                        content,
+                        child,
+                        current_function,
+                        &new_scope,
+                    )?);
                 }
                 "call_expression" => {
-                    usages.extend(self.detect_call_expression(content, child, current_function, current_scope));
+                    usages.extend(self.detect_call_expression(
+                        content,
+                        child,
+                        current_function,
+                        current_scope,
+                    ));
                 }
                 "member_expression" => {
                     // Check if this is part of a method call
@@ -310,20 +363,45 @@ impl JavaScriptParser {
                             continue;
                         }
                     }
-                    usages.extend(self.detect_member_expression(content, child, current_function, current_scope));
+                    usages.extend(self.detect_member_expression(
+                        content,
+                        child,
+                        current_function,
+                        current_scope,
+                    ));
                 }
                 "variable_declaration" | "lexical_declaration" => {
-                    usages.extend(self.detect_variable_declaration(content, child, current_function, current_scope));
+                    usages.extend(self.detect_variable_declaration(
+                        content,
+                        child,
+                        current_function,
+                        current_scope,
+                    ));
                 }
                 "assignment_expression" | "assignment_pattern" => {
-                    usages.extend(self.detect_assignment(content, child, current_function, current_scope));
+                    usages.extend(self.detect_assignment(
+                        content,
+                        child,
+                        current_function,
+                        current_scope,
+                    ));
                 }
                 "import_statement" => {
-                    usages.extend(self.detect_import_usage(content, child, current_function, current_scope));
+                    usages.extend(self.detect_import_usage(
+                        content,
+                        child,
+                        current_function,
+                        current_scope,
+                    ));
                 }
                 _ => {
                     // Recursively check child nodes
-                    usages.extend(self.detect_usages_in_node(content, child, current_function, current_scope)?);
+                    usages.extend(self.detect_usages_in_node(
+                        content,
+                        child,
+                        current_function,
+                        current_scope,
+                    )?);
                 }
             }
         }
@@ -345,7 +423,12 @@ impl JavaScriptParser {
         for child in node.children(&mut cursor) {
             match child.kind() {
                 "call_expression" => {
-                    usages.extend(self.detect_call_expression(content, child, current_function, current_scope));
+                    usages.extend(self.detect_call_expression(
+                        content,
+                        child,
+                        current_function,
+                        current_scope,
+                    ));
                 }
                 "member_expression" => {
                     if let Some(parent) = child.parent() {
@@ -353,16 +436,36 @@ impl JavaScriptParser {
                             continue;
                         }
                     }
-                    usages.extend(self.detect_member_expression(content, child, current_function, current_scope));
+                    usages.extend(self.detect_member_expression(
+                        content,
+                        child,
+                        current_function,
+                        current_scope,
+                    ));
                 }
                 "identifier" => {
-                    usages.extend(self.detect_identifier_usage(content, child, current_function, current_scope));
+                    usages.extend(self.detect_identifier_usage(
+                        content,
+                        child,
+                        current_function,
+                        current_scope,
+                    ));
                 }
                 "variable_declaration" | "lexical_declaration" => {
-                    usages.extend(self.detect_variable_declaration(content, child, current_function, current_scope));
+                    usages.extend(self.detect_variable_declaration(
+                        content,
+                        child,
+                        current_function,
+                        current_scope,
+                    ));
                 }
                 _ => {
-                    usages.extend(self.detect_usages_in_node(content, child, current_function, current_scope)?);
+                    usages.extend(self.detect_usages_in_node(
+                        content,
+                        child,
+                        current_function,
+                        current_scope,
+                    )?);
                 }
             }
         }
@@ -371,7 +474,11 @@ impl JavaScriptParser {
     }
 
     /// Extract function name from various function node types
-    fn extract_function_name<'a>(&self, content: &'a str, node: tree_sitter::Node) -> Option<&'a str> {
+    fn extract_function_name<'a>(
+        &self,
+        content: &'a str,
+        node: tree_sitter::Node,
+    ) -> Option<&'a str> {
         match node.kind() {
             "function_declaration" => node
                 .child_by_field_name("name")
@@ -420,8 +527,8 @@ impl JavaScriptParser {
                 element_type,
                 Some(symbol_name.clone()),
                 format!("{}()", symbol_name),
-                node.start_position().row,
-                node.end_position().row,
+                node.start_position().row + 1,
+                node.end_position().row + 1,
             )
             .set_attributes(ElementAttributes::Usage(usage_attr));
 
@@ -459,8 +566,8 @@ impl JavaScriptParser {
                 ElementType::VariableReference,
                 Some(property_name.clone()),
                 property_name,
-                node.start_position().row,
-                node.end_position().row,
+                node.start_position().row + 1,
+                node.end_position().row + 1,
             )
             .set_attributes(ElementAttributes::Usage(usage_attr));
 
@@ -480,10 +587,7 @@ impl JavaScriptParser {
     ) -> Vec<DocumentElement> {
         let mut usages = Vec::new();
 
-        let identifier = node
-            .utf8_text(content.as_bytes())
-            .unwrap_or("")
-            .to_string();
+        let identifier = node.utf8_text(content.as_bytes()).unwrap_or("").to_string();
 
         let usage_attr = UsageAttributes {
             symbol_name: identifier.clone(),
@@ -497,8 +601,8 @@ impl JavaScriptParser {
             ElementType::VariableReference,
             Some(identifier.clone()),
             identifier,
-            node.start_position().row,
-            node.end_position().row,
+            node.start_position().row + 1,
+            node.end_position().row + 1,
         )
         .set_attributes(ElementAttributes::Usage(usage_attr));
 
@@ -539,8 +643,8 @@ impl JavaScriptParser {
                         ElementType::Assignment,
                         Some(var_name.clone()),
                         format!("{} = ...", var_name),
-                        node.start_position().row,
-                        node.end_position().row,
+                        node.start_position().row + 1,
+                        node.end_position().row + 1,
                     )
                     .set_attributes(ElementAttributes::Usage(usage_attr));
 
@@ -582,8 +686,8 @@ impl JavaScriptParser {
                     ElementType::Assignment,
                     Some(var_name.clone()),
                     format!("{} = ...", var_name),
-                    node.start_position().row,
-                    node.end_position().row,
+                    node.start_position().row + 1,
+                    node.end_position().row + 1,
                 )
                 .set_attributes(ElementAttributes::Usage(usage_attr));
 
@@ -632,8 +736,8 @@ impl JavaScriptParser {
                                         ElementType::ImportUsage,
                                         Some(import_name.clone()),
                                         format!("import {}", import_name),
-                                        node.start_position().row,
-                                        node.end_position().row,
+                                        node.start_position().row + 1,
+                                        node.end_position().row + 1,
                                     )
                                     .set_attributes(ElementAttributes::Usage(usage_attr));
 
@@ -663,11 +767,13 @@ function greet(name) {
 }
 "#;
         let result = parser.parse(content).await.unwrap();
-        
-        let functions: Vec<_> = result.elements.iter()
+
+        let functions: Vec<_> = result
+            .elements
+            .iter()
             .filter(|e| e.element_type == ElementType::Function)
             .collect();
-        
+
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0].name, Some("greet".to_string()));
     }
@@ -677,11 +783,13 @@ function greet(name) {
         let parser = JavaScriptParser::new();
         let content = "async function fetchData() { return await fetch('/api'); }";
         let result = parser.parse(content).await.unwrap();
-        
-        let functions: Vec<_> = result.elements.iter()
+
+        let functions: Vec<_> = result
+            .elements
+            .iter()
             .filter(|e| e.element_type == ElementType::Function)
             .collect();
-        
+
         assert_eq!(functions.len(), 1);
         if let ElementAttributes::JavaScript(attrs) = &functions[0].attributes {
             assert!(attrs.is_async);
@@ -695,11 +803,13 @@ function greet(name) {
         let parser = JavaScriptParser::new();
         let content = "const add = (a, b) => a + b;";
         let result = parser.parse(content).await.unwrap();
-        
-        let functions: Vec<_> = result.elements.iter()
+
+        let functions: Vec<_> = result
+            .elements
+            .iter()
             .filter(|e| e.element_type == ElementType::Function)
             .collect();
-        
+
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0].name, Some("add".to_string()));
         if let ElementAttributes::JavaScript(attrs) = &functions[0].attributes {
@@ -720,11 +830,13 @@ class User {
 }
 "#;
         let result = parser.parse(content).await.unwrap();
-        
-        let classes: Vec<_> = result.elements.iter()
+
+        let classes: Vec<_> = result
+            .elements
+            .iter()
             .filter(|e| e.element_type == ElementType::Class)
             .collect();
-        
+
         assert_eq!(classes.len(), 1);
         assert_eq!(classes[0].name, Some("User".to_string()));
     }
@@ -737,11 +849,13 @@ import { useState } from 'react';
 import axios from 'axios';
 "#;
         let result = parser.parse(content).await.unwrap();
-        
-        let imports: Vec<_> = result.elements.iter()
+
+        let imports: Vec<_> = result
+            .elements
+            .iter()
             .filter(|e| e.element_type == ElementType::Import)
             .collect();
-        
+
         assert_eq!(imports.len(), 2);
     }
 
@@ -775,16 +889,19 @@ function main() {
         let calls: Vec<_> = result
             .elements
             .iter()
-            .filter(|e| e.element_type == ElementType::FunctionCall || e.element_type == ElementType::MethodCall)
+            .filter(|e| {
+                e.element_type == ElementType::FunctionCall
+                    || e.element_type == ElementType::MethodCall
+            })
             .collect();
         assert!(calls.len() >= 2); // At least log and greet
 
         // Check call names
-        let call_names: Vec<String> = calls
-            .iter()
-            .filter_map(|e| e.name.clone())
-            .collect();
-        assert!(call_names.contains(&"log".to_string()) || call_names.contains(&"console.log".to_string()));
+        let call_names: Vec<String> = calls.iter().filter_map(|e| e.name.clone()).collect();
+        assert!(
+            call_names.contains(&"log".to_string())
+                || call_names.contains(&"console.log".to_string())
+        );
         assert!(call_names.contains(&"greet".to_string()));
     }
 
@@ -810,10 +927,8 @@ function main() {
         assert_eq!(assignments.len(), 3);
 
         // Check assignment names
-        let assignment_names: Vec<String> = assignments
-            .iter()
-            .filter_map(|e| e.name.clone())
-            .collect();
+        let assignment_names: Vec<String> =
+            assignments.iter().filter_map(|e| e.name.clone()).collect();
         assert!(assignment_names.contains(&"x".to_string()));
         assert!(assignment_names.contains(&"y".to_string()));
         assert!(assignment_names.contains(&"z".to_string()));
@@ -836,13 +951,13 @@ import * as utils from './utils';
             .filter(|e| e.element_type == ElementType::ImportUsage)
             .collect();
         // Should detect import usages: useState, fs, utils
-        assert!(import_usages.len() >= 1); // At least some imports
+        assert!(!import_usages.is_empty()); // At least some imports
 
         // Check that we have import names
         let import_names: Vec<String> = import_usages
             .iter()
             .filter_map(|e| e.name.clone())
             .collect();
-        assert!(import_names.len() > 0);
+        assert!(!import_names.is_empty());
     }
 }

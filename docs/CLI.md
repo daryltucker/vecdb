@@ -7,11 +7,29 @@ The `vecdb` command-line tool is the primary interface for humans and scripts to
 
 | Option | Description |
 | :--- | :--- |
-| `--profile <NAME>` | Specify the configuration profile to use (overrides `VECDB_PROFILE`). |
+| `--profile <NAME>` | **WHICH** embedder and store — the configuration profile to use (overrides `VECDB_PROFILE`). |
+| `--embedder <NAME>` | **WHAT** model, and how it is tuned. Overrides the profile's (and a collection's) `embedder`; the store is unchanged. |
+| `--backend <NAME>` | **WHERE** the embedder runs. Same model, `num_ctx` and batch — only the host changes. Refuses to cross a backend `kind`. |
 | `-j, --json` | **Force** JSON output (bypasses smart detection). |
 | `-m, --markdown` | **Force** Human-Readable output (bypasses smart detection). |
 | `-h, --help` | Show help information. |
 | `-V, --version` | Show version information. |
+
+One flag per configuration layer, so a run can change one without redefining it
+in `config.toml`. The common use is two machines filling one collection at once,
+so a single embed host does not become everyone's queue:
+
+```bash
+vecdb --profile code ingest -c code ./                    # embedder's own backend
+vecdb --profile code --backend blade ingest -c code ./    # same model, other GPU
+```
+
+Both write comparable vectors because `--backend` changes only *where* the model
+runs. A run whose model weights or dimension disagree with the collection is
+refused, not silently accepted.
+
+`vecdb list` ignores `--embedder` and `--backend`: it resolves every profile to
+enumerate stores, so overriding an embedder across all of them has no meaning.
 
 ## Output Standardization (Smart Defaults)
 **"Pipes want Data, Humans want Headers."**
@@ -50,6 +68,10 @@ Recursively ingest documents from a path into a collection.
     *   `--dry-run`: Dry run: List files without processing.
     *   `-P, --concurrency <INT>`: Max concurrent file processing tasks.
     *   `-G, --gpu-concurrency <INT>`: Max concurrent GPU embedding tasks.
+    *   `--allow-quantization-delta`: Permit writing into a collection whose
+        model matches on architecture and parameter size but differs in
+        quantization. Off by default; see
+        [EMBEDDING_MODELS.md](EMBEDDING_MODELS.md).
 
 ### `search <QUERY>`
 Perform semantic search against the index.
@@ -57,10 +79,27 @@ Perform semantic search against the index.
 *   **Options**:
     *   `-c, --collection <NAME>`: Collection to search in.
     *   `--profile <NAME>`: Profile to use.
-    *   `--smart`: Enable smart routing (multi-hop reasoning and facet detection).
+    *   `-n, --limit <INT>`: Max results (default: 10).
+    *   `--min-score <FLOAT>`: Minimum similarity (0.0-1.0). Applied by the
+        vector store before the limit is imposed, so a threshold never silently
+        shortens a full page of results.
+    *   `--smart`: Enable `key:value` facet qualifiers in the query
+        (e.g. `"parse errors language:rust"`). Off by default.
+        See [VECTOR_FACETS.md](VECTOR_FACETS.md).
+    *   `--no-smart`: Explicitly disable qualifier parsing.
+
+With `--json`, the response is an object — `{collection, query, limit,
+min_score, applied_filters, results[]}` — not a bare array. `results.length ==
+limit` means the list was truncated; re-run with a higher `--limit`.
 
 ### `list`
-List available collections and their statistics.
+List every collection on each configured backend, with its statistics and the
+model that created it.
+
+Collections not created by vecdb are shown and labelled
+(`— not a vecdb collection`, or `"is_vecdb": false` under `--json`) rather than
+hidden. A Qdrant instance is shared infrastructure; a name that is absent from
+`list` but rejects an ingest is worse than a labelled one.
 
 ### `status`
 Show system health, connectivity, and detailed collection stats.

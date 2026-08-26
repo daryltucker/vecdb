@@ -14,12 +14,17 @@ class InstalledBinaryTest(unittest.TestCase):
         
         # ALL TESTS MUST USE TEST QDRANT — NEVER PRODUCTION (6333/6334)
         config_content = """
+[backend.local]
+kind = "fastembed"
+
+[embedder.default]
+backend = "local"
+model = "all-minilm-l6-v2"
+
 [profiles.default]
+embedder = "default"
 qdrant_url = "http://localhost:6336"
 collection_name = "install_verify_test"
-ollama_url = "http://localhost:11434"
-embedding_model = "nomic-embed-text"
-embedder_type = "local"
 accept_invalid_certs = true
 """
         with open(self.config_path, "w") as f:

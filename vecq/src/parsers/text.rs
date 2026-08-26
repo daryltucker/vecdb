@@ -40,7 +40,9 @@ impl Default for TextParser {
 #[async_trait]
 impl Parser for TextParser {
     fn file_extensions(&self) -> &[&str] {
-        &["txt", "log", "cfg", "ini", "conf", "yaml", "yml", "json", "toml", "xml"]
+        &[
+            "txt", "log", "cfg", "ini", "conf", "yaml", "yml", "json", "toml", "xml",
+        ]
     }
 
     fn language_name(&self) -> &str {
@@ -61,9 +63,9 @@ impl Parser for TextParser {
     async fn parse(&self, content: &str) -> VecqResult<ParsedDocument> {
         // For generic text, we create one large 'Block' element containing the content.
         // In the future, we could split by paragraphs or double newlines.
-        
+
         let line_count = content.lines().count();
-        
+
         let element = DocumentElement::new(
             ElementType::Block,
             None, // No name for a generic block
@@ -80,7 +82,7 @@ impl Parser for TextParser {
         let mut doc = ParsedDocument::new(
             DocumentMetadata::new(PathBuf::from("file.txt"), content.len() as u64)
                 .with_line_count(content)
-                .with_file_type(FileType::Text)
+                .with_file_type(FileType::Text),
         );
         doc.elements = elements;
 
@@ -97,7 +99,7 @@ mod tests {
         let parser = TextParser::new();
         let content = "Line 1\nLine 2\nLine 3";
         let result = parser.parse(content).await.unwrap();
-        
+
         assert_eq!(result.elements.len(), 1);
         assert_eq!(result.metadata.file_type, FileType::Text);
         assert_eq!(result.elements[0].content, content);
@@ -110,7 +112,7 @@ mod tests {
         let parser = TextParser::new();
         let content = "";
         let result = parser.parse(content).await.unwrap();
-        
+
         assert!(result.elements.is_empty());
         assert_eq!(result.metadata.file_type, FileType::Text);
     }
@@ -120,7 +122,7 @@ mod tests {
         let parser = TextParser::new();
         let content = "Single line";
         let result = parser.parse(content).await.unwrap();
-        
+
         assert_eq!(result.elements.len(), 1);
         assert_eq!(result.elements[0].line_start, 1);
         assert_eq!(result.elements[0].line_end, 1);

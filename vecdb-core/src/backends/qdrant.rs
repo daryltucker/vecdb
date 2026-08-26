@@ -20,8 +20,10 @@
  *   2. Map `uuid` to `PointId::Uuid`
  *      Rationale: Native UUID support in Qdrant is efficient
  *
- *   3. Filter mapping: Disabled for MVP
- *      Rationale: `qdrant::Filter` does not implement Deserialize. Needs manual mapping helper later.
+ *   3. Filter mapping: implemented in `json_to_qdrant_filter`
+ *      Rationale: `qdrant::Filter` does not implement Deserialize, so payload
+ *      filters arrive as generic JSON and are mapped by hand. Used by faceted
+ *      search — see `router.rs`.
  *
  * USAGE:
  *   let backend = QdrantBackend::new("http://localhost:6334").await?;
@@ -321,19 +323,35 @@ impl Backend for QdrantBackend {
         &self,
         collection: &str,
         vector: &[f32],
-        limit: u64,
-        filter: Option<serde_json::Value>,
+        params: crate::backend::SearchParams,
     ) -> Result<Vec<SearchResult>> {
+        let crate::backend::SearchParams {
+            limit,
+            filter,
+            score_threshold,
+        } = params;
+
         let qdrant_filter = filter.map(|f| self.json_to_qdrant_filter(f));
 
-        // Remove & reference
+        // Over-fetch by one. The genesis point is a real point in the collection
+        // and can score against any query, but it is bookkeeping rather than
+        // content and is dropped below. Without the +1 a caller asking for
+        // `limit` results would silently receive `limit - 1` whenever genesis
+        // ranked in. There is exactly one genesis point per collection, so one
+        // extra row is sufficient. Truncated back to `limit` after filtering.
+        let fetch_limit = limit.saturating_add(1);
+
         let search_result = self
             .client
             .search_points(SearchPoints {
                 collection_name: collection.to_string(),
                 vector: vector.to_vec(),
                 filter: qdrant_filter,
-                limit,
+                limit: fetch_limit,
+                // Applied by Qdrant during traversal, i.e. BEFORE the limit cut.
+                // Filtering client-side after truncation would turn a threshold
+                // into a silent result-count reduction.
+                score_threshold,
                 with_payload: Some(WithPayloadSelector {
                     selector_options: Some(
                         qdrant_client::qdrant::with_payload_selector::SelectorOptions::Enable(true),
@@ -352,8 +370,9 @@ impl Backend for QdrantBackend {
                 // Skip genesis points
                 if payload.get("type").and_then(|v| match &v.kind {
                     Some(Kind::StringValue(s)) => Some(s.as_str()),
-                    _ => None
-                }) == Some("genesis") {
+                    _ => None,
+                }) == Some("genesis")
+                {
                     return None;
                 }
 
@@ -420,6 +439,8 @@ impl Backend for QdrantBackend {
                     metadata,
                 })
             })
+            // Give back the over-fetched slot: honor the caller's limit exactly.
+            .take(limit as usize)
             .collect();
 
         Ok(results)
@@ -457,6 +478,81 @@ impl Backend for QdrantBackend {
             .collect())
     }
 
+    async fn delete_stale_points(
+        &self,
+        collection: &str,
+        document_id: &str,
+        keep: &[String],
+    ) -> Result<usize> {
+        use qdrant_client::qdrant::{DeletePointsBuilder, PointsIdsList, ScrollPoints};
+        use std::collections::HashSet;
+
+        // Scroll the document's points and diff against `keep`, rather than
+        // expressing "not in this id set" as a server-side filter. The id list
+        // is per-file and small, the diff is exact, and it yields a real count
+        // to report — a filter delete returns no indication of what it touched.
+        let keep: HashSet<&str> = keep.iter().map(|s| s.as_str()).collect();
+        let filter = Filter::must([Condition::from(FieldCondition {
+            key: "document_id".to_string(),
+            r#match: Some(Match {
+                match_value: Some(MatchValue::Keyword(document_id.to_string())),
+            }),
+            ..Default::default()
+        })]);
+
+        let mut stale: Vec<PointId> = Vec::new();
+        let mut offset = None;
+        loop {
+            let result = self
+                .client
+                .scroll(ScrollPoints {
+                    collection_name: collection.to_string(),
+                    filter: Some(filter.clone()),
+                    with_payload: Some(false.into()),
+                    with_vectors: Some(false.into()),
+                    limit: Some(256),
+                    offset: offset.clone(),
+                    ..Default::default()
+                })
+                .await?;
+
+            for point in &result.result {
+                let id = match &point.id {
+                    Some(PointId {
+                        point_id_options: Some(PointIdOptions::Uuid(u)),
+                    }) => u.clone(),
+                    Some(PointId {
+                        point_id_options: Some(PointIdOptions::Num(n)),
+                    }) => n.to_string(),
+                    _ => continue,
+                };
+                if !keep.contains(id.as_str()) {
+                    stale.push(PointId::from(id));
+                }
+            }
+
+            offset = result.next_page_offset;
+            if offset.is_none() {
+                break;
+            }
+        }
+
+        if stale.is_empty() {
+            return Ok(0);
+        }
+
+        let removed = stale.len();
+        self.client
+            .delete_points(
+                DeletePointsBuilder::new(collection)
+                    .points(PointsIdsList { ids: stale })
+                    .wait(true),
+            )
+            .await?;
+
+        Ok(removed)
+    }
+
     async fn list_collections(&self) -> Result<Vec<String>> {
         let result = self.client.list_collections().await?;
         Ok(result.collections.into_iter().map(|c| c.name).collect())
@@ -465,22 +561,24 @@ impl Backend for QdrantBackend {
     async fn get_collection_info(&self, name: &str) -> Result<crate::types::CollectionInfo> {
         let info = self.client.collection_info(name).await?;
 
-        let (vector_count, vector_size, quantization, vectors_on_disk, payload_on_disk) = if let Some(result) = info.result {
-            let count = result.points_count;
-            let (size, quant, vectors_on_disk_inner, payload_on_disk_inner) = result
-                .config
-                .map(|c| {
-                    let s = c.params.clone().and_then(|p| {
-                        p.vectors_config.and_then(|vc| match vc.config {
-                            Some(qdrant_client::qdrant::vectors_config::Config::Params(vp)) => {
-                                Some((vp.size, vp.on_disk))
-                            }
-                            _ => None,
-                        })
-                    });
+        let (vector_count, vector_size, quantization, vectors_on_disk, payload_on_disk) =
+            if let Some(result) = info.result {
+                let count = result.points_count;
+                let (size, quant, vectors_on_disk_inner, payload_on_disk_inner) = result
+                    .config
+                    .map(|c| {
+                        let s = c.params.clone().and_then(|p| {
+                            p.vectors_config.and_then(|vc| match vc.config {
+                                Some(qdrant_client::qdrant::vectors_config::Config::Params(vp)) => {
+                                    Some((vp.size, vp.on_disk))
+                                }
+                                _ => None,
+                            })
+                        });
 
-                    let q = c.quantization_config.and_then(|qc| {
-                        qc.quantization.map(|q_enum| match q_enum {
+                        let q = c.quantization_config.and_then(|qc| {
+                            qc.quantization.map(|q_enum| {
+                                match q_enum {
                             qdrant_client::qdrant::quantization_config::Quantization::Scalar(_) => {
                                 crate::config::QuantizationType::Scalar
                             }
@@ -490,22 +588,31 @@ impl Backend for QdrantBackend {
                             qdrant_client::qdrant::quantization_config::Quantization::Product(
                                 _,
                             ) => crate::config::QuantizationType::None, // Not supported
-                        })
-                    });
+                        }
+                            })
+                        });
 
-                    let payload_on_disk = c.params.map(|p| p.on_disk_payload);
+                        let payload_on_disk = c.params.map(|p| p.on_disk_payload);
 
-                    match s {
-                        Some((size_val, on_disk)) => (Some(size_val), q, on_disk, payload_on_disk),
-                        None => (None, q, None, payload_on_disk),
-                    }
-                })
-                .unwrap_or((None, None, None, None));
+                        match s {
+                            Some((size_val, on_disk)) => {
+                                (Some(size_val), q, on_disk, payload_on_disk)
+                            }
+                            None => (None, q, None, payload_on_disk),
+                        }
+                    })
+                    .unwrap_or((None, None, None, None));
 
-            (count, size, quant, vectors_on_disk_inner, payload_on_disk_inner)
-        } else {
-            (None, None, None, None, None)
-        };
+                (
+                    count,
+                    size,
+                    quant,
+                    vectors_on_disk_inner,
+                    payload_on_disk_inner,
+                )
+            } else {
+                (None, None, None, None, None)
+            };
 
         Ok(crate::types::CollectionInfo {
             name: name.to_string(),
@@ -591,6 +698,182 @@ impl Backend for QdrantBackend {
         Ok(None)
     }
 
+    async fn write_genesis(
+        &self,
+        collection: &str,
+        meta: &crate::types::GenesisMetadata,
+    ) -> Result<()> {
+        use qdrant_client::qdrant::UpsertPoints;
+
+        let sv = |s: &str| Value {
+            kind: Some(Kind::StringValue(s.to_string())),
+        };
+        let iv = |n: u64| Value {
+            kind: Some(Kind::IntegerValue(n as i64)),
+        };
+
+        let mut payload = HashMap::new();
+        payload.insert("type".to_string(), sv("genesis"));
+        payload.insert(
+            "__meta_collection_identity".to_string(),
+            sv(&meta.collection_id),
+        );
+        payload.insert("__meta_embedder_model".to_string(), sv(&meta.model.name));
+        payload.insert("__meta_dimension".to_string(), iv(meta.dimension));
+        payload.insert("__meta_distance".to_string(), sv(&meta.distance));
+
+        payload.insert("__meta_created_at".to_string(), sv(&meta.created_at));
+        // The magic marker. Written first in spirit: everything else in this
+        // payload is only meaningful if this key says the collection is ours.
+        payload.insert(
+            "__meta_vecdb".to_string(),
+            sv(&crate::types::CollectionGenesis::marker_value()),
+        );
+        // Which BUILD, not just which release. Between releases the version is
+        // constant while semantics change — the fidelity fix shipped inside
+        // 1.0.4 — so the version alone cannot tell a pre-fix collection from a
+        // post-fix one.
+        payload.insert(
+            "__meta_vecdb_revision".to_string(),
+            sv(&crate::types::build_revision()),
+        );
+
+        // The compatibility-class fields. Absent ones are simply not written,
+        // which read_genesis maps back to None and the guard treats as
+        // "insufficient identity" — a refusal, never an assumption.
+        for (key, val) in [
+            ("__meta_embedder_digest", &meta.model.digest),
+            ("__meta_architecture", &meta.model.architecture),
+            ("__meta_family", &meta.model.family),
+            ("__meta_parameter_size", &meta.model.parameter_size),
+            ("__meta_quantization_level", &meta.model.quantization_level),
+        ] {
+            if let Some(v) = val {
+                payload.insert(key.to_string(), sv(v));
+            }
+        }
+        if let Some(v) = meta.model.embedding_length {
+            payload.insert("__meta_embedding_length".to_string(), iv(v));
+        }
+        if let Some(v) = meta.model.context_length {
+            payload.insert("__meta_context_length".to_string(), iv(v));
+        }
+
+        // Chunking is baked into the vectors as permanently as the model is,
+        // and is recoverable from nowhere afterwards. Written as a group: a
+        // partial record would let a reader compare one parameter while
+        // silently ignoring another that also moved.
+        if let Some(c) = &meta.chunking {
+            payload.insert(
+                "__meta_chunk_target".to_string(),
+                iv(c.target_chunk_size as u64),
+            );
+            payload.insert(
+                "__meta_chunk_overlap".to_string(),
+                iv(c.chunk_overlap as u64),
+            );
+            payload.insert(
+                "__meta_chunk_max_bytes".to_string(),
+                iv(c.max_chunk_bytes as u64),
+            );
+            payload.insert("__meta_chunk_tokenizer".to_string(), sv(&c.tokenizer));
+        }
+
+        let point = PointStruct::new(
+            PointId::from(Uuid::nil().to_string()),
+            vec![0.0; meta.dimension as usize],
+            payload,
+        );
+
+        self.client
+            .upsert_points(UpsertPoints {
+                collection_name: collection.to_string(),
+                points: vec![point],
+                ..Default::default()
+            })
+            .await?;
+
+        Ok(())
+    }
+
+    async fn read_genesis(&self, collection: &str) -> Result<crate::types::CollectionGenesis> {
+        use qdrant_client::qdrant::GetPoints;
+
+        let response = self
+            .client
+            .get_points(GetPoints {
+                collection_name: collection.to_string(),
+                ids: vec![PointId::from(Uuid::nil().to_string())],
+                with_vectors: Some(qdrant_client::qdrant::WithVectorsSelector::from(false)),
+                with_payload: Some(qdrant_client::qdrant::WithPayloadSelector::from(true)),
+                ..Default::default()
+            })
+            .await?;
+
+        let Some(point) = response.result.first() else {
+            // Nothing at the nil UUID: not a vecdb collection.
+            return Ok(crate::types::CollectionGenesis::default());
+        };
+
+        let get_s = |key: &str| -> Option<String> {
+            point.payload.get(key).and_then(|v| match &v.kind {
+                Some(Kind::StringValue(s)) => Some(s.clone()),
+                _ => None,
+            })
+        };
+        let get_i = |key: &str| -> Option<u64> {
+            point.payload.get(key).and_then(|v| match &v.kind {
+                Some(Kind::IntegerValue(i)) => Some(*i as u64),
+                _ => None,
+            })
+        };
+
+        // Check the magic marker before reading anything else. A point can sit
+        // at the nil UUID without being ours; only the marker settles it, and
+        // an absent marker means every other field here is meaningless.
+        let vecdb_version = crate::types::CollectionGenesis::parse_marker(get_s("__meta_vecdb"));
+        if vecdb_version.is_none() {
+            return Ok(crate::types::CollectionGenesis::default());
+        }
+
+        Ok(crate::types::CollectionGenesis {
+            vecdb_version,
+            vecdb_revision: get_s("__meta_vecdb_revision"),
+            collection_id: get_s("__meta_collection_identity"),
+            model: crate::types::ModelIdentity {
+                name: get_s("__meta_embedder_model").unwrap_or_default(),
+                digest: get_s("__meta_embedder_digest"),
+                architecture: get_s("__meta_architecture"),
+                family: get_s("__meta_family"),
+                parameter_size: get_s("__meta_parameter_size"),
+                quantization_level: get_s("__meta_quantization_level"),
+                embedding_length: get_i("__meta_embedding_length"),
+                context_length: get_i("__meta_context_length"),
+            },
+            dimension: get_i("__meta_dimension"),
+            distance: get_s("__meta_distance"),
+            // All-or-nothing, matching how it is written. A half-read record
+            // would invite comparing one parameter while another moved unseen.
+            chunking: match (
+                get_i("__meta_chunk_target"),
+                get_i("__meta_chunk_overlap"),
+                get_i("__meta_chunk_max_bytes"),
+                get_s("__meta_chunk_tokenizer"),
+            ) {
+                (Some(target), Some(overlap), Some(max_bytes), Some(tokenizer)) => {
+                    Some(crate::types::ChunkingIdentity {
+                        target_chunk_size: target as usize,
+                        chunk_overlap: overlap as usize,
+                        max_chunk_bytes: max_bytes as usize,
+                        tokenizer,
+                    })
+                }
+                _ => None,
+            },
+            created_at: get_s("__meta_created_at"),
+        })
+    }
+
     async fn set_collection_id(&self, collection: &str, id: &str) -> Result<()> {
         use qdrant_client::qdrant::UpsertPoints;
 
@@ -633,9 +916,19 @@ impl Backend for QdrantBackend {
     }
 
     async fn list_tasks(&self) -> Result<Vec<crate::types::TaskInfo>> {
-        // qdrant-client v1.16.0 handles tasks differently (often via a separate service client
-        // or builder pattern that isn't immediately obvious in the flat Qdrant struct).
-        // Returning empty list for now to fix build.
-        Ok(Vec::new())
+        // Refused, not empty.
+        //
+        // Qdrant exposes no general task enumeration — there is per-collection
+        // `optimizer_status`, and nothing that lists work in flight. This used
+        // to `Ok(Vec::new())` "to fix build", which made `vecdb status` print
+        // "No active remote tasks" as a statement of fact derived from a value
+        // that was never looked up. An empty list and an unanswerable question
+        // are different things, and only one of them should be reported as
+        // reassurance.
+        anyhow::bail!(
+            "the Qdrant backend cannot enumerate background tasks — Qdrant exposes \
+             per-collection optimizer status, not a task list. Local ingest jobs are \
+             tracked separately and are reported by `vecdb status` and `get_job_status`."
+        )
     }
 }

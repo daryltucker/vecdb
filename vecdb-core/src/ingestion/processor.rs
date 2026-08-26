@@ -9,17 +9,34 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tracing::debug;
-use vecdb_common::FileTypeDetector;
+use vecdb_common::{FileType, FileTypeDetector};
+
+/// Per-run machinery, identical for every file in an ingest.
+///
+/// Grouped so the per-file arguments stay legible. Cloned per spawned task; all
+/// three fields are cheap to clone (two `Arc`s and a compiled rule list).
+#[derive(Clone)]
+pub struct FileProcessor {
+    pub detector: Arc<dyn FileTypeDetector>,
+    pub parser_factory: Arc<dyn ParserFactory>,
+    pub rules: Vec<Regex>,
+}
 
 pub async fn process_single_file(
     path: PathBuf,
     rel_path: PathBuf,
-    detector: Arc<dyn FileTypeDetector>,
-    parser_factory: Arc<dyn ParserFactory>,
-    rules: Vec<Regex>,
+    processor: FileProcessor,
     options: Arc<IngestionOptions>,
     commit_sha: Option<String>,
+    // Destination collection, so chunking uses the parameters configured for
+    // where the file is actually going.
+    collection: String,
 ) -> Result<Option<Vec<Chunk>>> {
+    let FileProcessor {
+        detector,
+        parser_factory,
+        rules,
+    } = processor;
     let metadata_fs = tokio::fs::metadata(&path)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to stat {}: {}", path.display(), e))?;
@@ -35,7 +52,13 @@ pub async fn process_single_file(
 
     let file_type = detector.detect(&path, content_preview);
 
-    if !file_type.is_supported() && is_binary(content_preview) {
+    // Early reject on the 8 KiB header, before the file is read in full — the
+    // point of this pass is to avoid pulling a large binary into memory. Same
+    // rule as the full-content check below: applied whatever the detected type.
+    if FileType::is_binary_content(content_preview) {
+        if OUTPUT.is_interactive {
+            eprintln!("Skipping binary file: {}", path.display());
+        }
         return Ok(None);
     }
 
@@ -59,25 +82,6 @@ pub async fn process_single_file(
         }
     }
 
-    if options.dry_run {
-        let display_path = if rel_path.as_os_str().is_empty() {
-            path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(path.to_str().unwrap_or(""))
-        } else {
-            rel_path.to_str().unwrap_or("")
-        };
-        println!("Would ingest: {}", display_path);
-
-        if let Some(ref meta) = options.metadata {
-            for (k, v) in meta {
-                println!("  Metadata: {}={}", k, v);
-            }
-        }
-
-        return Ok(Some(Vec::new())); // Count as processed
-    }
-
     let mut metadata = std::collections::HashMap::new();
     metadata.insert(
         "path".to_string(),
@@ -89,6 +93,16 @@ pub async fn process_single_file(
     );
     metadata.insert(
         "full_path".to_string(),
+        serde_json::Value::String(path.display().to_string()),
+    );
+    // `source` was previously written only by the AST parsers, so chunks that
+    // took the plain-text path carried `path` and `full_path` but no `source`.
+    // Anything reading or filtering on `source` therefore saw a subset of the
+    // corpus with nothing indicating a subset — the same failure shape as a
+    // silently truncated result list. Set it here so every chunk has it,
+    // matching the parsers' meaning (the full path).
+    metadata.insert(
+        "source".to_string(),
         serde_json::Value::String(path.display().to_string()),
     );
     metadata.insert(
@@ -165,10 +179,22 @@ pub async fn process_single_file(
     }
 
     let full_bytes = tokio::fs::read(&path).await?;
-    if !file_type.is_supported() && is_binary(&full_bytes) {
+
+    // Applied to every file, not only those of unrecognised type. The previous
+    // condition was `!file_type.is_supported() && is_binary(..)`, which skipped
+    // the check entirely whenever the detector produced a type — so a blob
+    // named `.json` or `.txt` was ingested without ever being looked at. An
+    // extension is a claim about content, not evidence of it.
+    if FileType::is_binary_content(&full_bytes) {
+        if OUTPUT.is_interactive {
+            eprintln!("Skipping binary file: {}", path.display());
+        }
         return Ok(None);
     }
 
+    // Lossy conversion is safe only because the check above ran: without it,
+    // binary arrives here as a wall of U+FFFD and embeds as confident garbage
+    // that is indistinguishable from real content at search time.
     let content = String::from_utf8_lossy(&full_bytes).to_string();
 
     debug!(
@@ -193,18 +219,65 @@ pub async fn process_single_file(
                     &path,
                     &metadata,
                     vecdb_common::FileType::Text,
+                    &collection,
                 )
                 .await?
             }
         }
     } else {
-        process_content(&content, &options, &path, &metadata, file_type).await?
+        process_content(&content, &options, &path, &metadata, file_type, &collection).await?
     };
+
+    if options.dry_run {
+        // Reported after chunking, not before.
+        //
+        // "Would ingest: <file>" answers a question nobody has — the shell
+        // already listed the files. What is not knowable without doing the work
+        // is how many chunks come out, and whether any of them will trip the
+        // oversize ceiling. Parsing and chunking are local and cheap; embedding
+        // and upserting are the expensive parts, and neither happens here.
+        let display_path = if rel_path.as_os_str().is_empty() {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(path.to_str().unwrap_or(""))
+        } else {
+            rel_path.to_str().unwrap_or("")
+        };
+
+        let ceiling = options.chunking_for(&collection).ceiling();
+        let oversized = chunks.iter().filter(|c| c.content.len() > ceiling).count();
+
+        let bytes: usize = chunks.iter().map(|c| c.content.len()).sum();
+        print!(
+            "Would ingest: {display_path} — {} chunk(s), {} KB",
+            chunks.len(),
+            bytes / 1024
+        );
+        if oversized > 0 {
+            // The same policy that would apply for real, named up front rather
+            // than discovered in the run summary afterwards.
+            print!(
+                " [{oversized} over max_chunk_bytes {ceiling} → {}]",
+                options.on_oversize
+            );
+        }
+        println!();
+
+        if let Some(ref meta) = options.metadata {
+            for (k, v) in meta {
+                println!("  Metadata: {}={}", k, v);
+            }
+        }
+
+        // Empty, so nothing downstream can embed or upsert it.
+        return Ok(Some(Vec::new()));
+    }
 
     Ok(Some(chunks))
 }
 
-fn is_binary(content: &[u8]) -> bool {
-    let len = std::cmp::min(content.len(), 8192);
-    content[0..len].contains(&0)
-}
+// `is_binary` lived here and scanned only for NUL bytes. It is replaced by
+// `FileType::is_binary_content` (vecdb-common), which additionally checks
+// magic numbers and UTF-8 validity and is applied to every file rather than
+// only to files of unrecognised type. Removed rather than left unused so there
+// is one binary check in the codebase, not two with different answers.

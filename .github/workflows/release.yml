@@ -95,12 +95,18 @@ jobs:
         cp target/${{ matrix.target }}/release/vecdb-server${{ matrix.asset_ext }} dist/
         cp target/${{ matrix.target }}/release/vecq${{ matrix.asset_ext }} dist/
         
-        # Bundle Shared Libraries for Portable/RPATH support
-        mkdir -p dist/lib
-        # Find and copy libonnxruntime* from build artifacts to dist/lib
-        find target/${{ matrix.target }}/release -name "libonnxruntime*${{ matrix.asset_ext }}*" -exec cp {} dist/lib/ \; || true
-        find target/${{ matrix.target }}/release/deps -name "libonnxruntime*${{ matrix.asset_ext }}*" -exec cp {} dist/lib/ \; || true
-        find target/${{ matrix.target }}/release/build -name "libonnxruntime*${{ matrix.asset_ext }}*" -exec cp {} dist/lib/ \; || true
+        # NO lib/ BUNDLING — ONNX Runtime is linked statically.
+        #
+        # This used to `find ... -name "libonnxruntime*" -exec cp ... || true`.
+        # It matched nothing and, being `|| true`, silently "succeeded", so every
+        # published archive carried an empty lib/ directory. Verified against the
+        # v1.0.4 artifacts: lib/ is empty on all four targets, and `ldd vecdb`
+        # shows no onnxruntime. The libonnxruntime_providers_*.so strings in the
+        # binary are optional CUDA execution providers `ort` dlopens at runtime,
+        # already covered by the documented CPU fallback.
+        #
+        # If ORT ever links dynamically, restore this deliberately AND drop the
+        # `|| true` — a bundling step that cannot fail cannot be trusted.
         
         # Create archive
         cd dist

@@ -50,7 +50,10 @@ async fn test_heavy_batch_embedding_stress() {
     // We enforce a generous timeout (60s) just to be safe, but it should finish much faster.
     let task = async {
         let start = std::time::Instant::now();
-        let _ = embedder.embed_batch(&texts, None).await.expect("Batch failed");
+        let _ = embedder
+            .embed_batch(&texts, None)
+            .await
+            .expect("Batch failed");
         start.elapsed()
     };
 

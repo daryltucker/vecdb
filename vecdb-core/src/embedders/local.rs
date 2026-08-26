@@ -57,7 +57,11 @@ struct LocalEmbedderInitParams {
 impl LocalEmbedder {
     /// Create a new LocalEmbedder with the specified model name.
     /// The model is downloaded automatically on first use.
-    pub fn new(model_name: &str, cache_path: Option<std::path::PathBuf>, use_gpu: bool) -> Result<Self> {
+    pub fn new(
+        model_name: &str,
+        cache_path: Option<std::path::PathBuf>,
+        use_gpu: bool,
+    ) -> Result<Self> {
         // Starvation Protection: Limit ONNX Runtime threads
         // Unless explicitly overridden by user, cap intra-op threads to a safe number (e.g., 4)
         // or 50% of logical cores, to prevent "System Lockup" during ingestion.
@@ -93,13 +97,21 @@ impl LocalEmbedder {
             // all-MiniLM-L6-v2: 22M params, 384-dim, 256 tok context
             "all-minilm-l6-v2" | "minilm" | "default" | "" => EmbeddingModel::AllMiniLML6V2,
             // BGE Small EN v1.5: 33M params, 384-dim, 512 tok context
-            "bge-small-en-v1.5" | "bge-small-en" | "baai/bge-small-en-v1.5" => EmbeddingModel::BGESmallENV15,
+            "bge-small-en-v1.5" | "bge-small-en" | "baai/bge-small-en-v1.5" => {
+                EmbeddingModel::BGESmallENV15
+            }
             // BGE Base EN v1.5: 109M params, 768-dim, 512 tok context
-            "bge-base-en-v1.5" | "bge-base-en" | "baai/bge-base-en-v1.5" => EmbeddingModel::BGEBaseENV15,
+            "bge-base-en-v1.5" | "bge-base-en" | "baai/bge-base-en-v1.5" => {
+                EmbeddingModel::BGEBaseENV15
+            }
             // BGE Large EN v1.5: 335M params, 1024-dim, 512 tok context
-            "bge-large-en-v1.5" | "bge-large-en" | "baai/bge-large-en-v1.5" => EmbeddingModel::BGELargeENV15,
+            "bge-large-en-v1.5" | "bge-large-en" | "baai/bge-large-en-v1.5" => {
+                EmbeddingModel::BGELargeENV15
+            }
             // Nomic Embed Text v1: 137M params, 768-dim, 8192 tok context
-            "nomic-embed-text-v1" | "nomic-embed-text" | "nomic-v1" => EmbeddingModel::NomicEmbedTextV1,
+            "nomic-embed-text-v1" | "nomic-embed-text" | "nomic-v1" => {
+                EmbeddingModel::NomicEmbedTextV1
+            }
             // Nomic Embed Text v1.5: 137M params, 768-dim, 8192 tok context, Matryoshka-trained
             "nomic-embed-text-v1.5" | "nomic-v1.5" => EmbeddingModel::NomicEmbedTextV15,
             _ => {
@@ -233,7 +245,9 @@ impl LocalEmbedder {
                     match try_init_gpu() {
                         Ok(m) => {
                             if attempt > 1 {
-                                eprintln!("✅ GPU available — initialized successfully after retry.");
+                                eprintln!(
+                                    "✅ GPU available — initialized successfully after retry."
+                                );
                             }
                             gpu_model = Some(Ok(m));
                             break;
@@ -244,7 +258,8 @@ impl LocalEmbedder {
                                 || err_string.contains("CUDA_ERROR_OUT_OF_MEMORY")
                                 || err_string.contains("out of memory")
                                 || err_string.contains("CUBLAS failure")
-                                || err_string.contains("Failed to allocate memory for requested buffer");
+                                || err_string
+                                    .contains("Failed to allocate memory for requested buffer");
 
                             if !is_oom {
                                 gpu_model = Some(Err(e));
@@ -266,7 +281,9 @@ impl LocalEmbedder {
                     }
                 }
 
-                match gpu_model.unwrap_or_else(|| Err(anyhow::anyhow!("GPU init failed after all retries"))) {
+                match gpu_model
+                    .unwrap_or_else(|| Err(anyhow::anyhow!("GPU init failed after all retries")))
+                {
                     Ok(m) => {
                         // VERIFICATION: Even if try_new succeeds, ORT might have silently failed to register
                         // the CUDA provider and fallen back to CPU internally.
@@ -283,13 +300,16 @@ impl LocalEmbedder {
                         m
                     }
                     Err(e) => {
-                        eprintln!("\n❌ [CUDA FAILURE] GPU initialization failed after {} retries.", num_attempts);
+                        eprintln!(
+                            "\n❌ [CUDA FAILURE] GPU initialization failed after {} retries.",
+                            num_attempts
+                        );
                         eprintln!("   Last error: {}", e);
                         eprintln!("   Troubleshooting:");
                         eprintln!("     1. GPU may be occupied by another process (Ollama, training job, etc.)");
                         eprintln!("     2. Run 'nvidia-smi' to check what's using VRAM");
                         eprintln!("     3. Set 'local_use_gpu = false' in config.toml to use CPU instead\n");
-                        
+
                         return Err(e).context(format!(
                             "Local embedder failed to initialize with GPU after {} retries",
                             num_attempts
@@ -387,8 +407,7 @@ impl Embedder for LocalEmbedder {
             let model = guard
                 .as_mut()
                 .ok_or_else(|| anyhow::anyhow!("Model not initialized"))?;
-            model.embed(vec![text_owned], None)
-                .map_err(wrap_cuda_error)
+            model.embed(vec![text_owned], None).map_err(wrap_cuda_error)
         })
         .await
         .context("Embedding task panicked")??;
@@ -408,7 +427,11 @@ impl Embedder for LocalEmbedder {
         Ok(vec)
     }
 
-    async fn embed_batch(&self, texts: &[String], target_dim: Option<usize>) -> Result<Vec<Vec<f32>>> {
+    async fn embed_batch(
+        &self,
+        texts: &[String],
+        target_dim: Option<usize>,
+    ) -> Result<Vec<Vec<f32>>> {
         let myself = self.clone();
         let texts_owned: Vec<String> = texts.to_vec();
 
@@ -423,8 +446,7 @@ impl Embedder for LocalEmbedder {
             let model = guard
                 .as_mut()
                 .ok_or_else(|| anyhow::anyhow!("Model not initialized"))?;
-            model.embed(texts_owned, None)
-                .map_err(wrap_cuda_error)
+            model.embed(texts_owned, None).map_err(wrap_cuda_error)
         })
         .await
         .context("Embedding batch task panicked")??;
@@ -447,6 +469,33 @@ impl Embedder for LocalEmbedder {
 
     fn model_name(&self) -> String {
         format!("fastembed:{}", self.model_name)
+    }
+
+    /// Identity for a fastembed model.
+    ///
+    /// Unlike an Ollama tag, `model_code` *is* the identity: each `EmbeddingModel`
+    /// variant pins a specific ONNX artifact, so two `LocalEmbedder`s reporting
+    /// the same code are running the same weights. There is no separate digest
+    /// to fetch and no quantization axis the operator can vary, so the code is
+    /// promoted into the digest slot directly.
+    ///
+    /// This must not fall through to the name-only default: the guard treats
+    /// absent identity as "cannot establish compatibility" and refuses the
+    /// write, which would reject a collection against the very model that
+    /// created it.
+    async fn identity(&self) -> Result<crate::types::ModelIdentity> {
+        Ok(crate::types::ModelIdentity {
+            name: self.model_name(),
+            digest: Some(format!("fastembed:{}", self.model_name)),
+            architecture: Some(fastembed_architecture(&self.model_name).to_string()),
+            family: Some(fastembed_architecture(&self.model_name).to_string()),
+            // fastembed exposes no parameter count, and none is needed: the
+            // pinned artifact makes the digest authoritative on its own.
+            parameter_size: None,
+            quantization_level: None,
+            embedding_length: Some(self.dimension as u64),
+            context_length: None,
+        })
     }
 
     /// Drops the loaded ONNX model, freeing the bulk of VRAM/RAM held by the
@@ -479,6 +528,28 @@ impl Clone for LocalEmbedder {
             model_name: self.model_name.clone(),
             use_gpu: self.use_gpu,
         }
+    }
+}
+
+/// Best-effort architecture label from a fastembed model code.
+///
+/// Only used for reporting and for the `Compatible` tier; correctness of the
+/// guard rests on the digest, which is exact. An unrecognised code reports
+/// itself rather than guessing.
+#[cfg(feature = "local-embed")]
+fn fastembed_architecture(model_code: &str) -> &str {
+    let lower = model_code.to_lowercase();
+
+    // Nomic and MPNet first: they are the exceptions. BGE, MiniLM and GTE are
+    // all BERT-architecture encoders, so they deliberately share a label.
+    if lower.contains("nomic") {
+        "nomic-bert"
+    } else if lower.contains("mpnet") {
+        "mpnet"
+    } else if lower.contains("bge") || lower.contains("minilm") || lower.contains("gte") {
+        "bert"
+    } else {
+        "unknown"
     }
 }
 
@@ -548,13 +619,22 @@ mod tests {
         // Unknown model names MUST return an error, not silently fall back.
         // This prevents misconfiguration from producing garbage search results.
         let result = LocalEmbedder::new("nomic-v2-moe", None, false);
-        assert!(result.is_err(), "nomic-v2-moe is not a valid fastembed model and must error");
+        assert!(
+            result.is_err(),
+            "nomic-v2-moe is not a valid fastembed model and must error"
+        );
         let err_msg = match result {
             Err(e) => e.to_string(),
             Ok(_) => panic!("Expected error for nomic-v2-moe"),
         };
-        assert!(err_msg.contains("Unknown local embedding model"), "Error must be descriptive");
-        assert!(err_msg.contains("nomic-v2-moe"), "Error must include the bad model name");
+        assert!(
+            err_msg.contains("Unknown local embedding model"),
+            "Error must be descriptive"
+        );
+        assert!(
+            err_msg.contains("nomic-v2-moe"),
+            "Error must include the bad model name"
+        );
 
         // Also test a completely random name
         let result2 = LocalEmbedder::new("totally-fake-model", None, false);
@@ -565,7 +645,10 @@ mod tests {
     async fn test_removed_aliases_error() {
         // bge-micro-v2 was a misleading alias (mapped to bge-small-en-v1.5)
         let result = LocalEmbedder::new("bge-micro-v2", None, false);
-        assert!(result.is_err(), "bge-micro-v2 was a misleading alias and must be removed");
+        assert!(
+            result.is_err(),
+            "bge-micro-v2 was a misleading alias and must be removed"
+        );
     }
 
     /// Regression test for the release → reload cycle.
@@ -579,8 +662,8 @@ mod tests {
     /// CPU-only on purpose — runs in CI without a GPU.
     #[tokio::test]
     async fn test_release_then_reload() {
-        let embedder = LocalEmbedder::new("all-minilm-l6-v2", None, false)
-            .expect("construct LocalEmbedder");
+        let embedder =
+            LocalEmbedder::new("all-minilm-l6-v2", None, false).expect("construct LocalEmbedder");
 
         // Cycle 1: cold load → embed → release.
         let v1 = embedder.embed("first", None).await.expect("first embed");
@@ -588,18 +671,27 @@ mod tests {
         embedder.release();
 
         // Cycle 2: this is the previously-broken path. Must reload cleanly.
-        let v2 = embedder.embed("second", None).await.expect("reload after release");
+        let v2 = embedder
+            .embed("second", None)
+            .await
+            .expect("reload after release");
         assert_eq!(v2.len(), 384);
 
         // Cycle 3: prove release() is idempotent and the params survive repeated cycles.
         embedder.release();
         embedder.release(); // double-release must not error or hang
-        let v3 = embedder.embed("third", None).await.expect("reload after double release");
+        let v3 = embedder
+            .embed("third", None)
+            .await
+            .expect("reload after double release");
         assert_eq!(v3.len(), 384);
 
         // Sanity: same input embeds to same vector across reloads (deterministic model).
         let v1_again = embedder.embed("first", None).await.expect("re-embed first");
-        assert_eq!(v1, v1_again, "model must be deterministic across reload cycles");
+        assert_eq!(
+            v1, v1_again,
+            "model must be deterministic across reload cycles"
+        );
     }
 
     /// Confirms the `Embedder` trait's `release()` default no-op compiles for
@@ -613,8 +705,10 @@ mod tests {
 
         let _ = embedder.embed("warmup", None).await.expect("initial embed");
         embedder.release(); // dispatched via trait object
-        let v = embedder.embed("post-release", None).await.expect("reload via trait");
+        let v = embedder
+            .embed("post-release", None)
+            .await
+            .expect("reload via trait");
         assert_eq!(v.len(), 384);
     }
 }
-

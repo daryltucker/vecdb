@@ -1,6 +1,6 @@
+use super::{FormatOptions, OutputFormatter};
 use crate::error::{VecqError, VecqResult};
 use serde_json::Value;
-use super::{OutputFormatter, FormatOptions};
 
 /// JSON output formatter
 pub struct JsonFormatter;
@@ -23,19 +23,20 @@ impl OutputFormatter for JsonFormatter {
             match data {
                 Value::String(s) => return Ok(s.clone()),
                 Value::Array(arr) => {
-                    let lines: Vec<String> = arr.iter().map(|v| {
-                        match v {
+                    let lines: Vec<String> = arr
+                        .iter()
+                        .map(|v| match v {
                             Value::String(s) => s.clone(),
                             _ => serde_json::to_string(v).unwrap_or_default(),
-                        }
-                    }).collect();
+                        })
+                        .collect();
                     return Ok(lines.join("\n"));
-                },
+                }
                 Value::Null => return Ok(String::new()),
                 _ => {}
             }
         }
-        
+
         if options.pretty_print {
             serde_json::to_string_pretty(data)
         } else {
@@ -64,12 +65,12 @@ mod tests {
         let data = json!([
             { "name": "test" }
         ]);
-        
+
         // Compact format
         let options = FormatOptions::compact_json();
         let result = formatter.format(&data, &options).unwrap();
         assert!(!result.contains('\n')); // Should be compact
-        
+
         // Pretty format
         let options = FormatOptions::pretty_json();
         let result = formatter.format(&data, &options).unwrap();

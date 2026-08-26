@@ -6,6 +6,14 @@ import json
 import time
 import tempfile
 import shutil
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib_envelope import search_results
+
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import bin_path
 
 class Tier3HistoryTest(unittest.TestCase):
     def setUp(self):
@@ -37,12 +45,17 @@ class Tier3HistoryTest(unittest.TestCase):
         # Config
         # ALL TESTS MUST USE TEST QDRANT — NEVER PRODUCTION (6333/6334)
         config_content = """
+[backend.local]
+kind = "fastembed"
+
+[embedder.default]
+backend = "local"
+model = "all-minilm-l6-v2"
+
 [profiles.default]
+embedder = "default"
 qdrant_url = "http://localhost:6336"
-collection_name = "tier3_history_test"
-ollama_url = "http://localhost:11434"
-embedding_model = "nomic-embed-text"
-embedder_type = "local"
+collection_name = "test_tier3_history"
 accept_invalid_certs = true
 """
         with open(self.config_path, "w") as f:
@@ -54,7 +67,7 @@ accept_invalid_certs = true
         
         # Build
         subprocess.run(["cargo", "build", "-p", "vecdb-server"], check=True, capture_output=True)
-        self.server_bin = "./target/debug/vecdb-server"
+        self.server_bin = bin_path("vecdb-server")
         
         self.process = subprocess.Popen(
             [self.server_bin, "--stdio", "--allow-local-fs"],
@@ -111,7 +124,7 @@ accept_invalid_certs = true
             "arguments": {
                 "repo_path": self.repo_dir,
                 "git_ref": "v1.0.0",
-                "collection": "history_v1"
+                "collection": "test_history_v1"
             }
         })
         self.assertNotIn("error", res)
@@ -123,7 +136,7 @@ accept_invalid_certs = true
             "arguments": {
                 "repo_path": self.repo_dir,
                 "git_ref": "v2.0.0",
-                "collection": "history_v2"
+                "collection": "test_history_v2"
             }
         })
         self.assertNotIn("error", res)
@@ -134,12 +147,13 @@ accept_invalid_certs = true
             "name": "search_vectors",
             "arguments": {
                 "query": "logic version",
-                "collection": "history_v1",
+                "collection": "test_history_v1",
                 "smart": False,
                 "json": True
             }
         })
-        content = json.loads(res["result"]["content"][0]["text"])
+        content = search_results(json.loads(res["result"]["content"][0]["text"]),
+                                 context="mcp search_vectors")
         self.assertTrue(any("version ONE" in c["content"] for c in content), "Should find v1 content in v1 collection")
         self.assertFalse(any("version TWO" in c["content"] for c in content), "Should NOT find v2 content in v1 collection")
 
@@ -149,12 +163,13 @@ accept_invalid_certs = true
             "name": "search_vectors",
             "arguments": {
                 "query": "logic version",
-                "collection": "history_v2",
+                "collection": "test_history_v2",
                 "smart": False,
                 "json": True
             }
         })
-        content = json.loads(res["result"]["content"][0]["text"])
+        content = search_results(json.loads(res["result"]["content"][0]["text"]),
+                                 context="mcp search_vectors")
         self.assertTrue(any("version TWO" in c["content"] for c in content), "Should find v2 content in v2 collection")
         self.assertFalse(any("version ONE" in c["content"] for c in content), "Should NOT find v1 content in v2 collection")
         

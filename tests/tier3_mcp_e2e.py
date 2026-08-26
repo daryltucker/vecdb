@@ -6,6 +6,15 @@ import json
 import time
 import tempfile
 import shutil
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib_envelope import search_results
+
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import bin_path
+
 
 # Default ports if running standalone
 DEFAULT_TEST_HTTP_PORT = 6433
@@ -83,12 +92,17 @@ class Tier3MCPTest(unittest.TestCase):
 
         # Use Class-level ports
         config_content = f"""
+[backend.local]
+kind = "fastembed"
+
+[embedder.default]
+backend = "local"
+model = "all-minilm-l6-v2"
+
 [profiles.default]
+embedder = "default"
 qdrant_url = "http://localhost:{self.grpc_port}"
 collection_name = "tier3_test"
-ollama_url = "http://localhost:11434"
-embedding_model = "nomic-embed-text"
-embedder_type = "local"
 accept_invalid_certs = true
 """
         with open(self.config_path, "w") as f:
@@ -98,7 +112,7 @@ accept_invalid_certs = true
         # In managed mode, maybe skip build? 
         # But 'cargo build' is idempotent.
         subprocess.run(["cargo", "build", "-p", "vecdb-server"], check=True, capture_output=True)
-        self.server_bin = "./target/debug/vecdb-server"
+        self.server_bin = bin_path("vecdb-server")
         
         # 3. Start Server with ISOLATED CONFIG
         self.env = os.environ.copy()
@@ -169,7 +183,7 @@ accept_invalid_certs = true
             "name": "ingest_path",
             "arguments": {
                 "path": self.doc_dir,
-                "collection": "flow_test"
+                "collection": "test_flow"
             }
         })
         self.assertNotIn("error", res, f"Ingest failed: {res.get('error')}")
@@ -180,7 +194,7 @@ accept_invalid_certs = true
             "name": "search_vectors",
             "arguments": {
                 "query": "fun",
-                "collection": "flow_test",
+                "collection": "test_flow",
                 "smart": False,
                 "json": True
             }
@@ -188,7 +202,8 @@ accept_invalid_certs = true
         self.assertNotIn("error", res)
         if "content" not in res["result"]:
              self.fail(f"Search result missing content: {res}")
-        content = json.loads(res["result"]["content"][0]["text"])
+        content = search_results(json.loads(res["result"]["content"][0]["text"]),
+                                 context="mcp search_vectors")
         self.assertTrue(len(content) > 0, "Should have found the document")
         self.assertIn("Integration Testing", content[0]["content"])
         
@@ -198,7 +213,7 @@ accept_invalid_certs = true
         res = self._rpc("tools/call", {
             "name": "delete_collection",
             "arguments": {
-                "collection": "flow_test"
+                "collection": "test_flow"
             }
         })
         self.assertIn("error", res["result"] if "result" in res else res)
@@ -208,8 +223,8 @@ accept_invalid_certs = true
         res = self._rpc("tools/call", {
             "name": "delete_collection",
             "arguments": {
-                "collection": "flow_test",
-                "confirmation_code": "flow_test-DELETE"
+                "collection": "test_flow",
+                "confirmation_code": "test_flow-DELETE"
             }
         })
         self.assertNotIn("error", res)

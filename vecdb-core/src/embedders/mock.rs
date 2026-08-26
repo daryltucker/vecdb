@@ -41,4 +41,25 @@ impl Embedder for MockEmbedder {
     fn model_name(&self) -> String {
         "mock-embedder".to_string()
     }
+
+    /// A complete, fixed identity shared by every test double.
+    ///
+    /// Deliberately not the name-only default: the guard refuses to write when
+    /// it cannot establish identity, so a name-only mock would make every
+    /// ingestion test fail for the *right* reason while testing nothing. The
+    /// shared sentinel digest makes all test doubles one space, which is what
+    /// tests that are not about the guard actually want. Tests that ARE about
+    /// the guard construct `ModelIdentity` values directly.
+    async fn identity(&self) -> Result<crate::types::ModelIdentity> {
+        Ok(crate::types::ModelIdentity {
+            name: "mock-embedder".to_string(),
+            digest: Some("mock:test-double".to_string()),
+            architecture: Some("mock".to_string()),
+            family: Some("mock".to_string()),
+            parameter_size: Some("0".to_string()),
+            quantization_level: Some("none".to_string()),
+            embedding_length: None,
+            context_length: Some(8192),
+        })
+    }
 }

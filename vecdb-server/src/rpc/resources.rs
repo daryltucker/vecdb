@@ -143,26 +143,60 @@ pub async fn handle_resources_read(
             data: None,
         })?;
 
-        let collections = core.list_collections().await.map_err(|e| JsonRpcError {
-            code: -32000,
-            message: e.to_string(),
-            data: None,
-        })?;
+        // Read genesis alongside the collection: compatibility is a claim about
+        // the embedding space, which only the genesis record carries.
+        let collections = core
+            .list_collections_with_genesis()
+            .await
+            .map_err(|e| JsonRpcError {
+                code: -32000,
+                message: e.to_string(),
+                data: None,
+            })?;
 
-        if let Some(collection) = collections.into_iter().find(|c| c.name == collection_name) {
-            let profile = config
-                .get_profile(Some(active_profile_name))
-                .or_else(|_| config.get_profile(None))
-                .unwrap_or_else(|_| config.get_profile(None).unwrap());
+        if let Some((collection, genesis)) = collections
+            .into_iter()
+            .find(|(c, _)| c.name == collection_name)
+        {
+            let resolution = config
+                .resolve(Some(active_profile_name), Some(collection_name))
+                .or_else(|_| config.resolve(None, Some(collection_name)))
+                .map_err(|e| JsonRpcError {
+                    code: -32000,
+                    message: format!("Profile resolution failed: {e}"),
+                    data: None,
+                })?;
 
-            let is_compatible = true; // TODO: Implement proper compatibility check
+            // `is_compatible` used to be hardcoded `true`.
+            //
+            // This resource is what an agent reads to decide whether it may use
+            // a collection, so a hardcoded `true` is not a missing feature — it
+            // is an answer that is wrong exactly when it matters: a foreign
+            // collection, or one written by a different model, reported as
+            // usable right up until the write is refused.
+            let identity = core.embedder().identity().await.ok();
+            let report = identity.as_ref().map(|id| {
+                vecdb_core::types::compare_spaces(
+                    &genesis.model,
+                    genesis.dimension,
+                    id,
+                    resolution.embedder.dimension.map(|d| d as u64),
+                )
+            });
+
+            let is_vecdb = genesis.is_vecdb();
+            let is_compatible =
+                is_vecdb && report.as_ref().map(|r| r.permits_read()).unwrap_or(false);
 
             let collection_info = json!({
                 "name": collection.name,
                 "vector_count": collection.vector_count,
                 "vector_size": collection.vector_size,
-                "is_active": profile.default_collection_name.as_deref() == Some(collection.name.as_str()),
-                "is_compatible": is_compatible
+                "is_active": resolution.collection.as_deref() == Some(collection.name.as_str()),
+                "is_vecdb": is_vecdb,
+                "is_compatible": is_compatible,
+                "model": if is_vecdb { Some(genesis.model.describe()) } else { None },
+                "reason": report.as_ref().map(|r| r.reason.clone()),
             });
 
             return Ok(json!({

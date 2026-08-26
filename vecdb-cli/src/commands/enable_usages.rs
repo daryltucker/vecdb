@@ -64,17 +64,21 @@ pub async fn run(args: EnableUsagesArgs) -> Result<()> {
         let filtered_usages: Vec<_> = match filter_type.as_str() {
             "all" => {
                 println!("=== Analysis for: {} ===", path.display());
-                document.elements.iter().filter(|e| {
-                    matches!(
-                        e.element_type,
-                        ElementType::FunctionCall
-                            | ElementType::VariableReference
-                            | ElementType::TypeReference
-                            | ElementType::MethodCall
-                            | ElementType::Assignment
-                            | ElementType::ImportUsage
-                    )
-                }).collect()
+                document
+                    .elements
+                    .iter()
+                    .filter(|e| {
+                        matches!(
+                            e.element_type,
+                            ElementType::FunctionCall
+                                | ElementType::VariableReference
+                                | ElementType::TypeReference
+                                | ElementType::MethodCall
+                                | ElementType::Assignment
+                                | ElementType::ImportUsage
+                        )
+                    })
+                    .collect()
             }
             "calls" => {
                 println!("=== Function Calls ===");
@@ -182,11 +186,14 @@ mod tests {
         // Create a temporary test file
         let temp_dir = tempfile::tempdir()?;
         let test_file = temp_dir.path().join("test.py");
-        fs::write(&test_file, r#"
+        fs::write(
+            &test_file,
+            r#"
 def hello():
     print("Hello world")
     x = 42
-"#)?;
+"#,
+        )?;
 
         // Create args for the test
         let args = EnableUsagesArgs {

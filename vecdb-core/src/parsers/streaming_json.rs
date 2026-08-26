@@ -91,8 +91,8 @@ impl StreamingJsonParser {
                         vector: None,
                         metadata: metadata.into_iter().collect(),
                         page_num: None,
-                        char_start: 0,
-                        char_end: 0,
+                        byte_start: 0,
+                        byte_end: 0,
                         start_line: None,
                         end_line: None,
                     });

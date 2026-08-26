@@ -40,7 +40,7 @@ def run_test():
         cmd = [
             "cargo", "run", "--quiet", "--bin", "vecdb", "--", 
             "ingest", TEST_DIR, 
-            "--collection", "git_test"
+            "--collection", "test_git"
         ]
         
         result = subprocess.run(cmd, capture_output=True, text=True)

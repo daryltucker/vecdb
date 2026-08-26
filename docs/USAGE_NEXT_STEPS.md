@@ -139,5 +139,4 @@ if options.enable_usages {
 
 ---
 
-*This document captures the current state and decisions needed to complete the usage detection feature. Created January 23, 2026.*</content>
-<parameter name="filePath">/home/daryl/Projects/NRG/vecdb-mcp/docs/USAGE_NEXT_STEPS.md
+*This document captures the current state and decisions needed to complete the usage detection feature. Created January 23, 2026.*

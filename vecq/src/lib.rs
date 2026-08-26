@@ -10,7 +10,7 @@
 //   - Must expose all core functionality (parsing, conversion, querying, formatting)
 //   - Must maintain backward compatibility as the library evolves
 //   - Must support both synchronous and asynchronous usage patterns
-//   
+//
 //   Implementation-discovered:
 //   - Requires careful module organization for clean API surface
 //   - Must re-export key types and traits for user convenience
@@ -20,19 +20,19 @@
 // IMPLEMENTATION RULES:
 //   1. Re-export all essential types and traits at the crate root
 //      Rationale: Provides convenient access without deep module paths
-//   
+//
 //   2. Use feature flags for optional dependencies (property testing, etc.)
 //      Rationale: Reduces compile time and binary size for basic usage
-//   
+//
 //   3. Provide high-level convenience functions for common operations
 //      Rationale: Makes the library easy to use for simple cases
-//   
+//
 //   4. Maintain clear separation between public and private APIs
 //      Rationale: Enables internal refactoring without breaking users
-//   
+//
 //   5. Document all public APIs with examples and usage patterns
 //      Rationale: Essential for library adoption and correct usage
-//   
+//
 //   Critical:
 //   - DO NOT expose internal implementation details in public API
 //   - DO NOT break backward compatibility without major version bump
@@ -41,15 +41,15 @@
 // USAGE:
 //   // Basic usage - parse and query a file
 //   use vecq::{parse_file, query_json, FileType};
-//   
+//
 //   let content = std::fs::read_to_string("example.rs")?;
 //   let parsed = parse_file(&content, FileType::Rust).await?;
 //   let json = vecq::convert_to_json(parsed)?;
 //   let result = query_json(&json, ".functions[] | select(.visibility == \"pub\")")?;
-//   
+//
 //   // Advanced usage - custom parsers and formatters
 //   use vecq::{ParserRegistry, FormatterRegistry, UnifiedJsonConverter};
-//   
+//
 //   let mut parser_registry = ParserRegistry::new();
 //   let converter = UnifiedJsonConverter::with_default_schemas();
 //   let mut formatter_registry = FormatterRegistry::new();
@@ -62,7 +62,7 @@
 //   4. Add comprehensive documentation with examples
 //   5. Update integration tests to cover new functionality
 //   6. Consider feature flags for optional new dependencies
-//   
+//
 //   When modifying public API:
 //   1. Ensure backward compatibility or plan major version bump
 //   2. Update all documentation and examples
@@ -177,15 +177,15 @@
 //! ```
 
 // Core modules
-pub mod error;
-pub mod types;
-pub mod parser;
 pub mod converter;
+pub mod error;
+pub mod formatter;
 pub mod generator;
 pub mod generators;
-pub mod query;
 pub mod natives;
-pub mod formatter;
+pub mod parser;
+pub mod query;
+pub mod types;
 
 // Parser implementations
 pub mod parsers;
@@ -194,8 +194,12 @@ pub mod parsers;
 pub mod detection;
 
 // Optional modules (behind feature flags)
-#[cfg(feature = "natural-language")]
-pub mod natural_language;
+//
+// `natural_language` was removed here: it was declared behind a
+// `natural-language` feature whose source file has never existed, so enabling
+// the feature failed to compile and leaving it declared made `cargo fmt`
+// unable to resolve the module tree at all (rustfmt walks `mod` items without
+// regard for `cfg`). A feature that only breaks things is not a feature.
 pub mod enrich;
 
 // Project-level AST analysis
@@ -203,17 +207,16 @@ pub mod project;
 pub use project::{project_overview, ProjectOverview, ProjectOverviewArgs};
 
 // Re-export essential types and traits
-pub use error::{VecqError, VecqResult};
-pub use types::{ParsedDocument, DocumentElement, ElementType, FileType, DocumentMetadata};
-pub use parser::{Parser, ParserRegistry, ParserCapabilities, ParserConfig};
-pub use converter::{JsonConverter, UnifiedJsonConverter, SchemaRegistry};
-pub use query::{QueryEngine, JqQueryEngine, QueryExplanation, QueryStats};
-pub use formatter::{
-    OutputFormatter, JsonFormatter, GrepFormatter, HumanFormatter,
-    FormatterRegistry, FormatOptions
-};
-pub use detection::{FileTypeDetector, HybridDetector, DetectionConfig};
+pub use converter::{JsonConverter, SchemaRegistry, UnifiedJsonConverter};
+pub use detection::{DetectionConfig, FileTypeDetector, HybridDetector};
 pub use enrich::Enricher;
+pub use error::{VecqError, VecqResult};
+pub use formatter::{
+    FormatOptions, FormatterRegistry, GrepFormatter, HumanFormatter, JsonFormatter, OutputFormatter,
+};
+pub use parser::{Parser, ParserCapabilities, ParserConfig, ParserRegistry};
+pub use query::{JqQueryEngine, QueryEngine, QueryExplanation, QueryStats};
+pub use types::{DocumentElement, DocumentMetadata, ElementType, FileType, ParsedDocument};
 
 // High-level convenience functions
 
@@ -224,14 +227,15 @@ pub async fn parse_file_auto(content: &str, file_path: Option<&str>) -> VecqResu
     } else {
         FileType::Unknown
     };
-    
+
     parse_file(content, file_type).await
 }
 
 /// Parse a file with specified type
 pub async fn parse_file(content: &str, file_type: FileType) -> VecqResult<ParsedDocument> {
     let registry = ParserRegistry::with_default_parsers()?;
-    let parser = registry.get_parser(file_type)
+    let parser = registry
+        .get_parser(file_type)
         .ok_or_else(|| VecqError::UnsupportedFileType {
             file_type: file_type.to_string(),
         })?;
@@ -267,7 +271,7 @@ pub fn create_parser_with_options(
             } else {
                 Ok(Box::new(parser))
             }
-        },
+        }
         FileType::Python => {
             let parser = PythonParser::new();
             if enable_usages {
@@ -275,7 +279,7 @@ pub fn create_parser_with_options(
             } else {
                 Ok(Box::new(parser))
             }
-        },
+        }
         FileType::C => Ok(Box::new(CParser::new())),
         FileType::Cpp => Ok(Box::new(CppParser::new())),
         FileType::Cuda => Ok(Box::new(CudaParser::new())),
@@ -286,11 +290,12 @@ pub fn create_parser_with_options(
             } else {
                 Ok(Box::new(parser))
             }
-        },
+        }
         FileType::Bash => Ok(Box::new(BashParser::new())),
         FileType::Text => Ok(Box::new(TextParser::new())),
         FileType::Html => Ok(Box::new(HtmlParser::new())),
         FileType::Toml => Ok(Box::new(TomlParser::new())),
+        FileType::Yaml => Ok(Box::new(YamlParser::new())),
         FileType::Json => Ok(Box::new(JsonParser::new())),
 
         _ => Err(VecqError::UnsupportedFileType {
@@ -324,11 +329,12 @@ pub fn format_results(
     options: &FormatOptions,
 ) -> VecqResult<String> {
     let registry = FormatterRegistry::new();
-    let formatter = registry.get_formatter(format)
+    let formatter = registry
+        .get_formatter(format)
         .ok_or_else(|| VecqError::ConfigError {
             message: format!("Unknown output format: {}", format),
         })?;
-    
+
     formatter.format(data, options)
 }
 
@@ -341,31 +347,33 @@ pub async fn process_file(
     options: &FormatOptions,
 ) -> VecqResult<String> {
     let json = if file_type == FileType::Toml {
-         // Treat TOML as data for direct querying
-         let toml_val: toml::Value = toml::from_str(content)
-            .map_err(|e| VecqError::ParseError { 
-                file: std::path::PathBuf::from("memory"),
-                line: 0,
-                message: e.to_string(),
-                source: Some(Box::new(e))
-            })?;
-         // Convert to serde_json::Value
-         // toml::Value implements serde::Serialize, so we can convert via generic serialization
-         serde_json::to_value(toml_val).map_err(|e| VecqError::json_error("TOML to JSON conversion failed".to_string(), Some(e)))?
+        // Treat TOML as data for direct querying
+        let toml_val: toml::Value = toml::from_str(content).map_err(|e| VecqError::ParseError {
+            file: std::path::PathBuf::from("memory"),
+            line: 0,
+            message: e.to_string(),
+            source: Some(Box::new(e)),
+        })?;
+        // Convert to serde_json::Value
+        // toml::Value implements serde::Serialize, so we can convert via generic serialization
+        serde_json::to_value(toml_val).map_err(|e| {
+            VecqError::json_error("TOML to JSON conversion failed".to_string(), Some(e))
+        })?
     } else if file_type == FileType::Json {
-         // Treat JSON as data for direct querying
-         serde_json::from_str(content).map_err(|e| VecqError::json_error("Invalid JSON input".to_string(), Some(e)))?
+        // Treat JSON as data for direct querying
+        serde_json::from_str(content)
+            .map_err(|e| VecqError::json_error("Invalid JSON input".to_string(), Some(e)))?
     } else {
         // Parse file
         let parsed = parse_file(content, file_type).await?;
-        
+
         // Convert to JSON
         convert_to_json(parsed)?
     };
-    
+
     // Execute query
     let results = query_json(&json, query)?;
-    
+
     // Format output
     let mut outputs = Vec::new();
     for result in results {
@@ -374,7 +382,7 @@ pub async fn process_file(
             outputs.push(output);
         }
     }
-    
+
     Ok(outputs.join("\n"))
 }
 
@@ -394,11 +402,12 @@ pub fn explain_query(query: &str) -> VecqResult<QueryExplanation> {
 /// Get list of supported file types
 pub fn supported_file_types() -> Vec<FileType> {
     let registry = SchemaRegistry::new();
-    let mut types: Vec<_> = registry.list_schemas()
+    let mut types: Vec<_> = registry
+        .list_schemas()
         .into_iter()
         .map(|s| s.file_type)
         .collect();
-        
+
     // Standard sorting for consistent output
     types.sort_by_key(|t| t.to_string());
     types
@@ -473,15 +482,19 @@ mod tests {
             assert!(validate_query(".functions").is_ok());
             assert!(validate_query("").is_err());
             assert!(validate_query(".functions[").is_err());
-        }).await;
-        
+        })
+        .await;
+
         assert!(result.is_ok(), "Test timed out (>10s)! This indicates a PERFORMANCE REGRESSION. Check JQ stdlib caching.");
     }
 
     #[test]
     fn test_query_explanation() {
         let explanation = explain_query(".functions[] | select(.visibility == \"pub\")").unwrap();
-        assert_eq!(explanation.query, ".functions[] | select(.visibility == \"pub\")");
+        assert_eq!(
+            explanation.query,
+            ".functions[] | select(.visibility == \"pub\")"
+        );
         assert!(!explanation.operations.is_empty());
     }
 
@@ -507,11 +520,11 @@ mod tests {
         ]);
 
         let options = FormatOptions::default();
-        
+
         // JSON format
         let json_output = format_results(&data, "json", &options).unwrap();
         assert!(json_output.contains("test"));
-        
+
         // Grep format
         let grep_output = format_results(&data, "grep", &options).unwrap();
         assert!(grep_output.contains(":1:"));

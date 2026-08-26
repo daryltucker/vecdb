@@ -24,19 +24,13 @@ async fn test_qdrant_backend_integration() {
 
     // 1. Config
     let profile = Profile {
+        embedder: "default".to_string(),
         qdrant_url: qdrant_url.clone(),
-        default_collection_name: Some("tier2_rust_test".to_string()), // Unique name
-        ollama_url: "http://localhost:11434".to_string(),
-        embedding_model: Some("nomic-embed-text".to_string()),
-        embedder_type: "local".to_string(),
-        accept_invalid_certs: true,
         qdrant_api_key: None,
-        ollama_api_key: None,
-        num_ctx: None,
-        gpu_batch_size: None,
+        default_collection_name: Some("test_tier2_rust".to_string()),
         quantization: None,
-        chunk_size: None,
-        max_chunk_size: None,
+        target_chunk_size: None,
+        max_chunk_bytes: None,
         chunk_overlap: None,
         resolved_profile_name: "test".to_string(),
     };
@@ -51,9 +45,7 @@ async fn test_qdrant_backend_integration() {
     backend.health_check().await.expect("Health check failed");
 
     // 4. Create Collection (ensure fresh)
-    let _ = backend
-        .delete_collection(collection)
-        .await; // Ignore error if missing
+    let _ = backend.delete_collection(collection).await; // Ignore error if missing
     backend
         .create_collection(collection, 4, None)
         .await
@@ -67,8 +59,8 @@ async fn test_qdrant_backend_integration() {
         vector: Some(vec![0.1, 0.2, 0.3, 0.4]),
         metadata: HashMap::new(),
         page_num: None,
-        char_start: 0,
-        char_end: 20,
+        byte_start: 0,
+        byte_end: 20,
         start_line: None,
         end_line: None,
     };
@@ -86,8 +78,7 @@ async fn test_qdrant_backend_integration() {
         .search(
             collection,
             &[0.1, 0.2, 0.3, 0.4],
-            10,
-            None,
+            vecdb_core::backend::SearchParams::new(10),
         )
         .await
         .expect("Search failed");

@@ -5,10 +5,10 @@ async fn test_recursive_chunker_enforces_max_size() {
     let chunker = RecursiveChunker;
     let _params = ChunkParams {
         // Unused check params
-        chunk_size: 100,
-        max_chunk_size: Some(150), // Hard limit
+        target_chunk_size: 100,
+        max_chunk_bytes: Some(150), // Hard limit
         chunk_overlap: 0,
-        tokenizer: "char".to_string(),
+        tokenizer: "bytes".to_string(),
         file_extension: None,
     };
 
@@ -22,14 +22,14 @@ async fn test_recursive_chunker_enforces_max_size() {
 
     // Let's create a simulated "oversized" chunk scenario
     // Since we can't easily force text_splitter to fail its own config without bad config,
-    // we can test the fallback logic by using a `chunk_size` > `max_chunk_size` (misconfiguration)
+    // we can test the fallback logic by using a `target_chunk_size` > `max_chunk_bytes` (misconfiguration)
     // to see if it catches it.
 
     let bad_params = ChunkParams {
-        chunk_size: 200,           // Requested chunk size
-        max_chunk_size: Some(100), // BUT hard limit is smaller!
+        target_chunk_size: 200,     // Requested chunk size
+        max_chunk_bytes: Some(100), // BUT hard limit is smaller!
         chunk_overlap: 0,
-        tokenizer: "char".to_string(),
+        tokenizer: "bytes".to_string(),
         file_extension: None,
     };
 
@@ -40,8 +40,8 @@ async fn test_recursive_chunker_enforces_max_size() {
         .await
         .expect("Chunking failed");
 
-    // With chunk_size=200, text_splitter might give 200-char chunks.
-    // But max_chunk_size=100 should force them to be split further by SimpleChunker.
+    // With target_chunk_size=200, text_splitter might give 200-char chunks.
+    // But max_chunk_bytes=100 should force them to be split further by FixedWidthChunker.
 
     for (i, chunk) in chunks.iter().enumerate() {
         assert!(
@@ -56,35 +56,9 @@ async fn test_recursive_chunker_enforces_max_size() {
     assert!(chunks.len() >= 3);
 }
 
-#[tokio::test]
-async fn test_code_chunker_enforces_max_size() {
-    use vecdb_core::chunking::{Chunker, CodeChunker};
-
-    let chunker = CodeChunker;
-    let params = ChunkParams {
-        chunk_size: 50,
-        max_chunk_size: Some(50),
-        chunk_overlap: 0,
-        tokenizer: "char".to_string(),
-        file_extension: Some("rs".to_string()),
-    };
-
-    // vecq parser might return a large block if it's a single function
-    let code = format!("fn big_function() {{\n{}\n}}", "let x = 1;\n".repeat(10));
-    // The content inside is 11 * 10 = 110 chars.
-    // CodeChunker tries to keep blocks.
-
-    let chunks = chunker
-        .chunk(&code, &params)
-        .await
-        .expect("Chunking failed");
-
-    for (i, chunk) in chunks.iter().enumerate() {
-        assert!(
-            chunk.content.len() <= 50,
-            "Chunk {} size {} exceeds max 50",
-            i,
-            chunk.content.len()
-        );
-    }
-}
+// `test_code_chunker_enforces_max_size` was here.
+//
+// CodeChunker is gone: it was reachable only via `strategy = "code_aware"`, and
+// a chunker never sees a source file — the parser's AST elements are used
+// instead. `test_recursive_chunker_enforces_max_size` above covers the same
+// property for the chunker that actually runs.

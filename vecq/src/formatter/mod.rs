@@ -1,13 +1,13 @@
 use crate::error::VecqResult;
 use serde_json::Value;
 
-pub mod json;
 pub mod grep;
 pub mod human;
+pub mod json;
 
-pub use json::JsonFormatter;
 pub use grep::GrepFormatter;
 pub use human::HumanFormatter;
+pub use json::JsonFormatter;
 
 /// Trait for formatting query results into different output formats
 pub trait OutputFormatter: Send + Sync {
@@ -172,7 +172,7 @@ mod tests {
             .with_pretty_print(true)
             .with_color_output(true)
             .with_grep_compatible(false);
-        
+
         assert!(options.pretty_print);
         assert!(options.color_output);
         assert!(!options.grep_compatible);
@@ -181,12 +181,12 @@ mod tests {
     #[test]
     fn test_formatter_registry() {
         let registry = FormatterRegistry::new();
-        
+
         assert!(registry.get_formatter("json").is_some());
         assert!(registry.get_formatter("grep").is_some());
         assert!(registry.get_formatter("human").is_some());
         assert!(registry.get_formatter("unknown").is_none());
-        
+
         let available = registry.available_formatters();
         assert!(available.contains(&"json".to_string()));
         assert!(available.contains(&"grep".to_string()));

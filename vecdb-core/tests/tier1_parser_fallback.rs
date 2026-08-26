@@ -60,12 +60,14 @@ async fn test_fallback_on_parser_failure() -> Result<()> {
         vecdbrc_routes: None,
         vecdbrc_root: None,
         strategy: "code_aware".to_string(), // Request code aware!
-        chunk_size: 100,
-        max_chunk_size: None,
+        target_chunk_size: 100,
+        max_chunk_bytes: None,
+        on_oversize: Default::default(),
+        route_chunking: Default::default(),
         chunk_overlap: 0,
         respect_gitignore: false,
         ignore_vectorignore: false,
-        tokenizer: "char".to_string(),
+        tokenizer: "bytes".to_string(),
         git_ref: None,
         extensions: None,
         excludes: None,
@@ -77,6 +79,7 @@ async fn test_fallback_on_parser_failure() -> Result<()> {
         max_concurrent_requests: 1,
         gpu_batch_size: 1,
         quantization: None,
+        allow_quantization_delta: false,
     });
 
     let dir = tempfile::tempdir()?;
@@ -89,11 +92,14 @@ async fn test_fallback_on_parser_failure() -> Result<()> {
     let result = process_single_file(
         file_path.clone(),
         rel_path,
-        detector,
-        parser_factory,
-        rules,
+        vecdb_core::ingestion::processor::FileProcessor {
+            detector,
+            parser_factory,
+            rules,
+        },
         options,
         None,
+        "test_parser_fallback".to_string(),
     )
     .await?;
 

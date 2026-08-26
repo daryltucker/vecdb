@@ -77,12 +77,15 @@ pub struct ProjectOverview {
 /// (default: false). Files that cannot be read or parsed are counted in
 /// `files_skipped` without failing the overall analysis.
 pub async fn project_overview(args: ProjectOverviewArgs) -> VecqResult<ProjectOverview> {
-    let root = args.path.canonicalize().map_err(|e| VecqError::ParseError {
-        file: args.path.clone(),
-        line: 0,
-        message: format!("Cannot access path: {e}"),
-        source: Some(Box::new(e)),
-    })?;
+    let root = args
+        .path
+        .canonicalize()
+        .map_err(|e| VecqError::ParseError {
+            file: args.path.clone(),
+            line: 0,
+            message: format!("Cannot access path: {e}"),
+            source: Some(Box::new(e)),
+        })?;
 
     let max_depth = args.max_depth.unwrap_or(10);
 
@@ -178,12 +181,14 @@ pub async fn project_overview(args: ProjectOverviewArgs) -> VecqResult<ProjectOv
     // Apply src_to_architecture (= src_to_graph | graph_to_architecture):
     // prunes down to files, modules, structs, classes, interfaces.
     let input = serde_json::Value::Array(file_jsons);
-    let arch_results = query_json(&input, "src_to_architecture").map_err(|e| {
-        VecqError::ConfigError {
+    let arch_results =
+        query_json(&input, "src_to_architecture").map_err(|e| VecqError::ConfigError {
             message: format!("src_to_architecture failed: {e}"),
-        }
-    })?;
-    let graph = arch_results.into_iter().next().unwrap_or(serde_json::json!({ "graphs": [] }));
+        })?;
+    let graph = arch_results
+        .into_iter()
+        .next()
+        .unwrap_or(serde_json::json!({ "graphs": [] }));
 
     // Render Mermaid from the architectural JGF v2 graph.
     let mermaid = query_json(&graph, "graph_format_mermaid")

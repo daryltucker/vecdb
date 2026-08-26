@@ -58,10 +58,13 @@ def start_container():
     if status is None:
         # Container doesn't exist - create it
         log("Creating test Qdrant container...")
+        # Bind to loopback explicitly. A bare "-p 6335:6333" publishes on
+        # 0.0.0.0, which puts a wide-open, unauthenticated Qdrant holding test
+        # data on every interface of the host for the duration of the run.
         subprocess.run([
             "docker", "run", "-d",
-            "-p", "6335:6333",  # HTTP port
-            "-p", "6336:6334",  # gRPC port
+            "-p", "127.0.0.1:6335:6333",  # HTTP port
+            "-p", "127.0.0.1:6336:6334",  # gRPC port
             "--name", CONTAINER_NAME,
             "qdrant/qdrant"
         ], check=True)

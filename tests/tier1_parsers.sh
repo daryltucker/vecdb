@@ -8,7 +8,14 @@ set -e
 PROJECT_ROOT=$(dirname "$0")/..
 cd "$PROJECT_ROOT"
 
-VECQ="target/debug/vecq"
+# Resolve cargo's real target dir. `.cargo/config.toml` redirects build output
+# off this volume, so "target/debug" is not where binaries land — hardcoding it
+# reported "vecq missing" on a tree where vecq was built fine.
+TARGET_DIR=$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])' 2>/dev/null)
+TARGET_DIR="${CARGO_TARGET_DIR:-${TARGET_DIR:-target}}"
+
+VECQ="$TARGET_DIR/debug/vecq"
 if [ ! -f "$VECQ" ]; then
     echo "Building vecq..."
     cargo build --bin vecq --quiet

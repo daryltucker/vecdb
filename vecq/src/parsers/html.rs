@@ -1,10 +1,13 @@
-use crate::types::{DocumentElement, ElementType, ParsedDocument, FileType, DocumentMetadata, HtmlAttributes, ElementAttributes};
+use crate::error::{VecqError, VecqResult};
 use crate::parser::Parser;
-use crate::error::{VecqResult, VecqError};
+use crate::types::{
+    DocumentElement, DocumentMetadata, ElementAttributes, ElementType, FileType, HtmlAttributes,
+    ParsedDocument,
+};
+use async_trait::async_trait;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::HashMap;
-use async_trait::async_trait;
 use std::path::PathBuf;
 
 pub struct HtmlParser;
@@ -22,9 +25,22 @@ impl HtmlParser {
 
     pub fn is_void_tag(tag: &str) -> bool {
         let tag = tag.to_lowercase();
-        matches!(tag.as_str(), 
-            "area" | "base" | "br" | "col" | "embed" | "hr" | "img" | 
-            "input" | "link" | "meta" | "param" | "source" | "track" | "wbr"
+        matches!(
+            tag.as_str(),
+            "area"
+                | "base"
+                | "br"
+                | "col"
+                | "embed"
+                | "hr"
+                | "img"
+                | "input"
+                | "link"
+                | "meta"
+                | "param"
+                | "source"
+                | "track"
+                | "wbr"
         )
     }
 }
@@ -51,16 +67,14 @@ impl Parser for HtmlParser {
 fn parse_html_internal(document: &mut ParsedDocument, content: &str) -> VecqResult<()> {
     let mut reader = Reader::from_str(content);
     reader.config_mut().trim_text(false);
-    reader.config_mut().check_end_names = false; 
+    reader.config_mut().check_end_names = false;
 
     // Helper to convert u64 position to usize safely
-    let to_usize = |pos: u64| -> usize {
-        pos.try_into().unwrap_or(usize::MAX)
-    };
+    let to_usize = |pos: u64| -> usize { pos.try_into().unwrap_or(usize::MAX) };
 
     struct OpenElement {
         tag: String,
-        start_pos: usize, 
+        start_pos: usize,
         start_line: usize,
         attributes: HashMap<String, serde_json::Value>,
         children: Vec<DocumentElement>,
@@ -68,7 +82,7 @@ fn parse_html_internal(document: &mut ParsedDocument, content: &str) -> VecqResu
     }
 
     let mut open_stack: Vec<OpenElement> = Vec::new();
-    
+
     let line_counter = crate::parser::utils::LineCounter::new(content);
     let get_line_number = |pos: usize| line_counter.get_line_number(pos);
 
@@ -84,18 +98,21 @@ fn parse_html_internal(document: &mut ParsedDocument, content: &str) -> VecqResu
 
     loop {
         if document.elements.len() > MAX_ELEMENTS_PER_FILE {
-            return Err(VecqError::CircuitBreakerTriggered { 
-                message: format!("File exceeded maximum element limit of {}", MAX_ELEMENTS_PER_FILE) 
+            return Err(VecqError::CircuitBreakerTriggered {
+                message: format!(
+                    "File exceeded maximum element limit of {}",
+                    MAX_ELEMENTS_PER_FILE
+                ),
             });
         }
 
         let event_start = to_usize(reader.buffer_position());
-        
+
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 let start_line = get_line_number(event_start);
-                
+
                 let mut attributes = HashMap::new();
                 for attr in e.attributes().flatten() {
                     let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
@@ -103,7 +120,7 @@ fn parse_html_internal(document: &mut ParsedDocument, content: &str) -> VecqResu
                     attributes.insert(key, serde_json::Value::String(value));
                 }
 
-                let content_start = to_usize(reader.buffer_position()); 
+                let content_start = to_usize(reader.buffer_position());
 
                 if HtmlParser::is_void_tag(&tag_name) {
                     let element = DocumentElement::new(
@@ -112,7 +129,8 @@ fn parse_html_internal(document: &mut ParsedDocument, content: &str) -> VecqResu
                         String::new(),
                         start_line,
                         start_line,
-                    ).set_attributes(ElementAttributes::Html(HtmlAttributes {
+                    )
+                    .set_attributes(ElementAttributes::Html(HtmlAttributes {
                         other: attributes,
                     }));
                     if let Some(parent) = open_stack.last_mut() {
@@ -124,7 +142,10 @@ fn parse_html_internal(document: &mut ParsedDocument, content: &str) -> VecqResu
                     // D026: Consecutive Tag Check
                     let mut consecutive_count = 0;
                     if let Some(last) = open_stack.last() {
-                        if last.tag == tag_name && last.attributes.is_empty() && attributes.is_empty() {
+                        if last.tag == tag_name
+                            && last.attributes.is_empty()
+                            && attributes.is_empty()
+                        {
                             consecutive_count = last.consecutive_count + 1;
                             if consecutive_count > CONSECUTIVE_TAG_LIMIT {
                                 return Err(VecqError::CircuitBreakerTriggered {
@@ -146,14 +167,14 @@ fn parse_html_internal(document: &mut ParsedDocument, content: &str) -> VecqResu
                     malformed_count += 1;
                     if malformed_count > MAX_MALFORMED_TAGS {
                         return Err(VecqError::CircuitBreakerTriggered {
-                            message: "Too many malformed or deeply nested tags".to_string()
+                            message: "Too many malformed or deeply nested tags".to_string(),
                         });
                     }
                 }
             }
             Ok(Event::End(ref e)) => {
                 let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                
+
                 let mut found_idx = None;
                 for (i, open) in open_stack.iter().enumerate().rev() {
                     if open.tag == tag_name {
@@ -165,11 +186,11 @@ fn parse_html_internal(document: &mut ParsedDocument, content: &str) -> VecqResu
                 if let Some(idx) = found_idx {
                     while open_stack.len() > idx {
                         if let Some(open) = open_stack.pop() {
-                            let content_end = event_start; 
-                            
+                            let content_end = event_start;
+
                             let safe_start = open.start_pos.min(content.len());
                             let safe_end = content_end.min(content.len());
-                            
+
                             let raw_content = if safe_start <= safe_end {
                                 &content[safe_start..safe_end]
                             } else {
@@ -185,11 +206,12 @@ fn parse_html_internal(document: &mut ParsedDocument, content: &str) -> VecqResu
                                 open.start_line,
                                 end_line,
                             );
-                            
-                            element = element.set_attributes(ElementAttributes::Html(HtmlAttributes {
-                                other: open.attributes,
-                            }));
-                            
+
+                            element =
+                                element.set_attributes(ElementAttributes::Html(HtmlAttributes {
+                                    other: open.attributes,
+                                }));
+
                             element = element.with_children(open.children);
 
                             if let Some(parent) = open_stack.last_mut() {
@@ -208,14 +230,14 @@ fn parse_html_internal(document: &mut ParsedDocument, content: &str) -> VecqResu
                     document.metadata.path.clone(),
                     line,
                     e.to_string(),
-                    Some(e)
+                    Some(e),
                 ));
             }
             _ => {}
         }
         buf.clear();
     }
-    
+
     // Handle unclosed tags
     while let Some(open) = open_stack.pop() {
         let end_pos = content.len();
@@ -234,7 +256,7 @@ fn parse_html_internal(document: &mut ParsedDocument, content: &str) -> VecqResu
         element = element.set_attributes(ElementAttributes::Html(HtmlAttributes {
             other: open.attributes,
         }));
-        
+
         element = element.with_children(open.children);
 
         if let Some(parent) = open_stack.last_mut() {
@@ -290,7 +312,7 @@ mod tests {
         let el = &doc.elements[0];
         assert!(el.content.contains("## Header"));
     }
-    
+
     #[test]
     fn test_custom_tags() {
         let doc = parse_html("<mcp_servers>List</mcp_servers>");
@@ -303,24 +325,33 @@ mod tests {
         for i in 0..150 {
             deep_html = format!("<div id=\"{}\">{}</div>", i, deep_html);
         }
-        
+
         let start = std::time::Instant::now();
         let doc = parse_html(&deep_html);
         let duration = start.elapsed();
-        
+
         assert!(!doc.elements.is_empty());
         // Skeleton-first should be extremely fast, even with 150 levels
-        assert!(duration.as_millis() < 50, "Skeleton refactor should be ultra-fast: {:?}", duration);
+        assert!(
+            duration.as_millis() < 50,
+            "Skeleton refactor should be ultra-fast: {:?}",
+            duration
+        );
     }
 
     #[test]
     fn test_3kb_fixture() {
         let path = std::path::Path::new("tests/fixtures/perf_3kb.html");
-        if !path.exists() { return; }
+        if !path.exists() {
+            return;
+        }
         let content = std::fs::read_to_string(path).unwrap();
         let doc = parse_html(&content);
         assert!(!doc.elements.is_empty());
-        assert!(doc.elements.iter().any(|e| e.name.as_deref() == Some("div")));
+        assert!(doc
+            .elements
+            .iter()
+            .any(|e| e.name.as_deref() == Some("div")));
     }
 
     #[test]
@@ -346,7 +377,7 @@ mod tests {
             VecqError::CircuitBreakerTriggered { message } => {
                 assert!(message.contains("Consecutive open tags"));
                 assert!(message.contains("div"));
-            },
+            }
             _ => panic!("Expected CircuitBreakerTriggered (Consecutive)"),
         }
     }
@@ -355,16 +386,23 @@ mod tests {
     fn test_enrich_markdown() {
         let text = "<task>\n# Header\n- Item 1\n</task>";
         let doc = parse_html(text);
-        
+
         let task = &doc.elements[0];
         // In Skeleton mode, there should be no Markdown children yet
-        assert!(task.children.is_empty(), "Skeleton should not have markdown children");
-        
+        assert!(
+            task.children.is_empty(),
+            "Skeleton should not have markdown children"
+        );
+
         // Enrich it
         let enriched_doc = crate::enrich_document(doc).unwrap();
         let enriched_task = &enriched_doc.elements[0];
-        
-        assert_eq!(enriched_task.children.len(), 3, "Enriched task should have 3 markdown children (Header, List, and ListItem)");
+
+        assert_eq!(
+            enriched_task.children.len(),
+            3,
+            "Enriched task should have 3 markdown children (Header, List, and ListItem)"
+        );
         let header = &enriched_task.children[0];
         assert_eq!(header.element_type, crate::types::ElementType::Header);
         assert_eq!(header.name.as_deref(), Some("Header"));
@@ -374,12 +412,14 @@ mod tests {
     #[test]
     fn test_html_failure_fixture() {
         let path = std::path::Path::new("tests/fixtures/html_failure.html");
-        if !path.exists() { return; }
+        if !path.exists() {
+            return;
+        }
         let content = std::fs::read_to_string(path).unwrap();
-        
+
         // This file contains binary junk. While the parser itself might try to find tags,
         // we want to ensure it doesn't hang or crash.
         let doc = parse_html(&content);
-        assert!(!doc.elements.is_empty()); 
+        assert!(!doc.elements.is_empty());
     }
 }

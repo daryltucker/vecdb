@@ -27,6 +27,12 @@ pub struct TomlAttributes {
     pub other: HashMap<String, serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct YamlAttributes {
+    #[serde(flatten)]
+    pub other: HashMap<String, serde_json::Value>,
+}
+
 /// Attributes specific to JavaScript elements
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct JavaScriptAttributes {
@@ -99,6 +105,7 @@ pub struct TextAttributes {
 pub enum ElementAttributes {
     Rust(RustAttributes),
     Toml(TomlAttributes),
+    Yaml(YamlAttributes),
     JavaScript(JavaScriptAttributes),
     Json(JsonAttributes),
     Python(PythonAttributes),
@@ -129,6 +136,9 @@ impl ElementAttributes {
                 attr.other.insert(key, value);
             }
             Self::Toml(attr) => {
+                attr.other.insert(key, value);
+            }
+            Self::Yaml(attr) => {
                 attr.other.insert(key, value);
             }
             Self::JavaScript(attr) => {
@@ -178,6 +188,11 @@ impl ElementAttributes {
                     .map(|s| s.to_string())
             }
             Self::Toml(attr) => attr
+                .other
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            Self::Yaml(attr) => attr
                 .other
                 .get(key)
                 .and_then(|v| v.as_str())
@@ -265,6 +280,7 @@ impl ElementAttributes {
             Self::Generic(map) => map.is_empty(),
             Self::Rust(attr) => attr.visibility == "private" && attr.other.is_empty(), // Assume private is default?
             Self::Toml(attr) => attr.other.is_empty(),
+            Self::Yaml(attr) => attr.other.is_empty(),
             Self::JavaScript(attr) => !attr.is_async && !attr.is_arrow && attr.other.is_empty(),
             Self::Json(attr) => attr.other.is_empty(),
             Self::Python(attr) => !attr.is_async && attr.other.is_empty(),
@@ -290,6 +306,7 @@ impl ElementAttributes {
             Self::Generic(map) => map.get(key),
             Self::Rust(attr) => attr.other.get(key),
             Self::Toml(attr) => attr.other.get(key),
+            Self::Yaml(attr) => attr.other.get(key),
             Self::JavaScript(attr) => attr.other.get(key),
             Self::Json(attr) => attr.other.get(key),
             Self::Python(attr) => attr.other.get(key),
@@ -309,6 +326,7 @@ impl ElementAttributes {
             Self::Generic(map) => map.contains_key(key),
             Self::Rust(attr) => key == "visibility" || attr.other.contains_key(key),
             Self::Toml(attr) => attr.other.contains_key(key),
+            Self::Yaml(attr) => attr.other.contains_key(key),
             Self::JavaScript(attr) => {
                 key == "is_async" || key == "is_arrow" || attr.other.contains_key(key)
             }

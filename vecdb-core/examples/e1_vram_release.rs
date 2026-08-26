@@ -8,8 +8,8 @@
 
 use std::process::Command;
 use std::time::Duration;
-use vecdb_core::embedders::local::LocalEmbedder;
 use vecdb_core::embedder::Embedder;
+use vecdb_core::embedders::local::LocalEmbedder;
 
 fn vram_for_pid(pid: u32) -> String {
     let out = Command::new("nvidia-smi")
@@ -36,7 +36,12 @@ fn vram_for_pid(pid: u32) -> String {
 fn phase(label: &str, pid: u32) {
     // Brief settle so the driver bookkeeping catches up.
     std::thread::sleep(Duration::from_millis(500));
-    println!("[E1] {:<28} VRAM(pid {}): {}", label, pid, vram_for_pid(pid));
+    println!(
+        "[E1] {:<28} VRAM(pid {}): {}",
+        label,
+        pid,
+        vram_for_pid(pid)
+    );
 }
 
 #[tokio::main]

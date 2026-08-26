@@ -1,8 +1,12 @@
 # Test Configuration - DO NOT use production Qdrant!
-# This config is used by ALL test tiers for consistency
+# This config is used by ALL test tiers for consistency.
+#
+# Collection names are `test_`-prefixed, including the per-profile defaults.
+# A test that omits `-c` inherits the default, so a default named after a real
+# collection ("docs") silently pulls those tests onto a production name and lets
+# them collide with each other's embedding spaces. The Tier 0 isolation gate
+# enforces the prefix; it is not merely a convention.
 
-# Global defaults (for default fallback)
-qdrant_url = "http://localhost:6336" # Test instance HTTP port
 default_profile = "tier1_basic"
 
 [ingestion]
@@ -10,27 +14,46 @@ path_rules = [
   { pattern = "(?P<year>\\d{4})/(?P<quarter>Q\\d)/.*" }
 ]
 
-# Test Profiles
-# Each profile tests a different configuration scenario
+# ── Backends: WHERE a model runs ─────────────────────────────────────────────
+# Connection only. Reusable by many embedders.
+
+[backend.local]
+kind = "fastembed"
+
+[backend.ollama_test]
+kind = "ollama"
+url = "http://localhost:11434"
+
+# ── Embedders: WHAT model, and HOW it is tuned ───────────────────────────────
+# Each references a backend. Two embedders may share one.
+
+[embedder.small]
+backend = "local"
+model = "BAAI/bge-small-en-v1.5"
+batch_rows = 2
+
+[embedder.ollama_nomic]
+backend = "ollama_test"
+model = "nomic-embed-text"
+num_ctx = 4096
+batch_inputs = 8
+
+# ── Profiles: WHICH embedder, and WHICH store ────────────────────────────────
 
 [profiles.tier1_basic]
+embedder = "small"
 qdrant_url = "http://localhost:6336"
-default_collection_name = "docs"
-embedder_type = "fastembed"
-embedding_model = "BAAI/bge-small-en-v1.5"
-chunk_size = 500
+default_collection_name = "test_default"
+target_chunk_size = 500
 
 [profiles.tier1_large_chunks]
+embedder = "small"
 qdrant_url = "http://localhost:6336"
-default_collection_name = "docs"
-embedder_type = "fastembed"
-embedding_model = "BAAI/bge-small-en-v1.5"
-chunk_size = 2000
+default_collection_name = "test_default"
+target_chunk_size = 2000
 
 [profiles.tier1_ollama]
+embedder = "ollama_nomic"
 qdrant_url = "http://localhost:6335"
-default_collection_name = "docs"
-embedder_type = "ollama"
-embedding_model = "nomic-embed-text"
-ollama_url = "http://localhost:11434"
-chunk_size = 500
+default_collection_name = "test_default"
+target_chunk_size = 500

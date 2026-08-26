@@ -4,9 +4,51 @@ pub mod pipeline;
 pub mod processor;
 pub mod twopass;
 
+/// Remove the points a document used to occupy, keeping only the chunks it
+/// produces now.
+///
+/// A chunk ID is a UUIDv5 over the content, so re-ingesting an edited file
+/// writes the new version under a new ID and leaves the old point behind.
+/// Nothing collected those, so every edit grew the collection and searches
+/// returned stale copies of code alongside the current one, indistinguishable
+/// from it.
+///
+/// Takes the file's *complete* chunk set and runs before those chunks are
+/// upserted, so a point that is about to be rewritten is never deleted — the
+/// worst case is deleting a point and immediately restoring it.
+///
+/// A purge failure is reported but does not abort the run: a duplicate point is
+/// a bad search result, while a half-finished ingest is a broken collection.
+async fn purge_stale_for_document(
+    backend: &Arc<dyn Backend + Send + Sync>,
+    collection: &str,
+    file_chunks: &[crate::types::Chunk],
+) -> usize {
+    let Some(document_id) = file_chunks.first().map(|c| c.document_id.clone()) else {
+        return 0;
+    };
+    let keep: Vec<String> = file_chunks.iter().map(|c| c.id.clone()).collect();
+
+    match backend
+        .delete_stale_points(collection, &document_id, &keep)
+        .await
+    {
+        Ok(n) => n,
+        Err(e) => {
+            if OUTPUT.is_interactive {
+                eprintln!(
+                    "warning: could not remove superseded chunks for document {document_id} \
+                     in '{collection}': {e}. Stale copies may remain in search results."
+                );
+            }
+            0
+        }
+    }
+}
+
 pub use discovery::{build_walker, count_files};
 pub use options::IngestionOptions;
-pub use pipeline::{flush_chunks, process_content};
+pub use pipeline::{flush_chunks, process_content, FlushParams, OversizeReport};
 pub use processor::process_single_file;
 
 use crate::backend::Backend;
@@ -21,6 +63,146 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use vecdb_common::{FileType, FileTypeDetector};
+
+/// Resolve a write target: create it with a full genesis contract, or verify
+/// that an existing one accepts vectors from this machine's embedder.
+///
+/// Every ingest path goes through here. The guard is asymmetric on purpose:
+/// **a bad write contaminates a collection permanently and compounds with
+/// every subsequent ingest, while a bad read produces one mediocre ranking and
+/// evaporates.** So writes demand `Identical` unless the operator explicitly
+/// opts into a quantization delta; reads (in `Core::search`) let `Compatible`
+/// through with a note.
+///
+/// `target_dim` is the Matryoshka truncation request: the caller intends to
+/// write vectors of that width rather than the model's native width. It is the
+/// *effective* dimension and is therefore what gets compared and recorded — the
+/// guard must never be handed the native dimension while truncated vectors go
+/// to the backend behind it.
+///
+/// Returns the dimension to embed at.
+pub async fn ensure_write_target(
+    backend: &Arc<dyn Backend + Send + Sync>,
+    embedder: &Arc<dyn Embedder + Send + Sync>,
+    collection: &str,
+    quantization: Option<crate::config::QuantizationType>,
+    allow_quantization_delta: bool,
+    target_dim: Option<usize>,
+    // `chunking` is recorded into genesis only when THIS call creates the
+    // collection. Ignored when it already exists: chunking describes how the
+    // existing points were cut, and a later run at different parameters must
+    // not rewrite that claim into looking like it was always so.
+    chunking: Option<crate::types::ChunkingIdentity>,
+) -> Result<usize> {
+    let identity = embedder.identity().await?;
+    let native_dim = embedder.dimension().await?;
+    let dim = target_dim.unwrap_or(native_dim);
+
+    // Truncation only ever narrows. Asking a 768-dim model for 1024 dimensions
+    // is not a Matryoshka request, it is a bug in the caller, and padding to
+    // satisfy it would put junk components into the space.
+    if dim > native_dim {
+        anyhow::bail!(
+            "requested dimension {dim} exceeds what {} produces ({native_dim}-dim).\n\
+             Matryoshka truncation can only narrow a vector, never widen one.",
+            identity.describe(),
+        );
+    }
+
+    if !backend.collection_exists(collection).await? {
+        if OUTPUT.is_interactive {
+            let note = if dim != native_dim {
+                format!(" truncated from {native_dim}")
+            } else {
+                String::new()
+            };
+            eprintln!(
+                "Creating collection '{}' ({}, {}-dim{})",
+                collection,
+                identity.describe(),
+                dim,
+                note
+            );
+        }
+        backend
+            .create_collection(collection, dim as u64, quantization)
+            .await?;
+        backend
+            .write_genesis(
+                collection,
+                &crate::types::GenesisMetadata {
+                    collection_id: uuid::Uuid::new_v4().to_string(),
+                    model: identity,
+                    dimension: dim as u64,
+                    distance: "Cosine".to_string(),
+                    chunking,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                },
+            )
+            .await?;
+        return Ok(dim);
+    }
+
+    let genesis = backend.read_genesis(collection).await?;
+
+    // Ownership before compatibility. "The models do not match" is a claim you
+    // can only make about a collection whose model you know; for someone else's
+    // collection the honest answer is simply that it is not ours. A Qdrant
+    // instance is shared infrastructure, so this is a permanent condition, not
+    // migration debt.
+    if !genesis.is_vecdb() {
+        anyhow::bail!(
+            "'{collection}' is not a vecdb collection.\n\
+             \n\
+             It exists on this Qdrant but carries no vecdb marker, so it belongs \n\
+             to another tool. vecdb will not write to it.\n\
+             \n\
+             fix: choose a different collection name, e.g. -c {collection}-vecdb"
+        );
+    }
+
+    let report = crate::types::compare_spaces(
+        &genesis.model,
+        genesis.dimension,
+        &identity,
+        Some(dim as u64),
+    );
+
+    if !report.permits_write(allow_quantization_delta) {
+        let hint = match report.tier {
+            crate::types::Compatibility::Compatible => format!(
+                "\n  {}\n\n  This is a quantization difference only. To accept it, re-run with \n  --allow-quantization-delta.",
+                report.warning().unwrap_or_default()
+            ),
+            _ => report
+                .suggestion
+                .as_ref()
+                .map(|s| format!("\n\n  fix: {s}"))
+                .unwrap_or_default(),
+        };
+        anyhow::bail!(
+            "embedding space mismatch for collection '{collection}'\n\
+             \n\
+             \x20 collection was created with:  {}  {}-dim\n\
+             \x20 this machine resolves to:     {}  {}-dim\n\
+             \n\
+             \x20 {}{hint}",
+            genesis.model.describe(),
+            genesis.dimension.unwrap_or(0),
+            identity.describe(),
+            dim,
+            report.reason,
+        );
+    }
+
+    if let Some(w) = report.warning() {
+        if OUTPUT.is_interactive {
+            eprintln!("warning: {w}");
+        }
+    }
+
+    Ok(genesis.dimension.map(|d| d as usize).unwrap_or(dim))
+}
 
 /// Orchestrate ingestion of a path
 pub async fn ingest_path(
@@ -40,28 +222,36 @@ pub async fn ingest_path(
         eprintln!("Ingesting path: {}", options.path);
     }
 
-    let mut resolved_dim = target_dim;
-    if !backend.collection_exists(&options.collection).await? {
-        if OUTPUT.is_interactive {
-            eprintln!(
-                "Collection {} does not exist. Creating...",
-                options.collection
-            );
-        }
-        let dim = embedder.dimension().await?;
-        resolved_dim = Some(dim);
-        backend
-            .create_collection(
+    // Creates with a full genesis contract, or refuses if this machine's
+    // embedder would mix a second embedding space into an existing collection.
+    //
+    // Skipped for `--dry-run`, which answers "what would be ingested" and
+    // writes nothing. Requiring a writable target to answer that is backwards:
+    // it makes the one command that is safe to run against an unfamiliar
+    // collection fail, and it fails in a way that says nothing about the file
+    // selection the user actually asked about. It also creates the collection
+    // as a side effect, which a dry run must never do.
+    let resolved_dim = if options.dry_run {
+        None
+    } else {
+        Some(
+            ensure_write_target(
+                backend,
+                embedder,
                 &options.collection,
-                dim as u64,
                 options.quantization.clone(),
+                options.allow_quantization_delta,
+                target_dim,
+                Some(options.chunking_identity(&options.collection)),
             )
-            .await?;
-    } else if resolved_dim.is_none() {
-        if let Ok(info) = backend.get_collection_info(&options.collection).await {
-            resolved_dim = info.vector_size.map(|s| s as usize);
-        }
-    }
+            .await?,
+        )
+    };
+
+    // One tally for the whole run, shared with the embedding worker. Summarised
+    // once at the end rather than shouted per chunk — a wall of per-chunk
+    // warnings scrolls past, which is as good as silence.
+    let oversize = Arc::new(OversizeReport::new());
 
     let commit_sha = crate::git::get_head_sha(Path::new(&options.path)).unwrap_or(None);
     if let Some(ref sha) = commit_sha {
@@ -84,55 +274,64 @@ pub async fn ingest_path(
     };
 
     // --- Collection ID Resolution Logic ---
+    //
+    // Skipped entirely for `--dry-run`. This block exists to keep the local
+    // incremental-ingest state in step with the remote collection, and a dry
+    // run neither reads nor writes chunks, so there is nothing to keep in step.
+    // It also assumes the collection exists (`ensure_write_target` created it),
+    // which is no longer true on the dry-run path, and it mutates
+    // `.vecdb/state.toml` — a side effect a dry run must not have.
     let collection_name = options.collection.clone();
 
-    // 1. Get or Create Remote ID
-    // We already ensured collection exists above.
-    let remote_id = match backend.get_collection_id(&collection_name).await? {
-        Some(id) => id,
-        None => {
-            // Collection exists but has no ID (legacy or just created without ID).
-            // set_collection_id is best-effort: if it fails (e.g. dimension unknown on a
-            // freshly created collection), we fall back to a local-only UUID and warn.
-            // The worst case is a full re-scan on the next ingest — never data corruption.
-            let new_id = uuid::Uuid::new_v4().to_string();
-            if let Err(e) = backend.set_collection_id(&collection_name, &new_id).await {
-                if OUTPUT.is_interactive {
-                    eprintln!(
-                        "Warning: Could not persist collection ID for '{}': {}. \
+    if !options.dry_run {
+        // 1. Get or Create Remote ID
+        // We already ensured collection exists above.
+        let remote_id = match backend.get_collection_id(&collection_name).await? {
+            Some(id) => id,
+            None => {
+                // Collection exists but has no ID (legacy or just created without ID).
+                // set_collection_id is best-effort: if it fails (e.g. dimension unknown on a
+                // freshly created collection), we fall back to a local-only UUID and warn.
+                // The worst case is a full re-scan on the next ingest — never data corruption.
+                let new_id = uuid::Uuid::new_v4().to_string();
+                if let Err(e) = backend.set_collection_id(&collection_name, &new_id).await {
+                    if OUTPUT.is_interactive {
+                        eprintln!(
+                            "Warning: Could not persist collection ID for '{}': {}. \
                          Next ingest will perform a full scan.",
-                        collection_name, e
+                            collection_name, e
+                        );
+                    }
+                }
+                new_id
+            }
+        };
+
+        // 2. Check Local State
+        let local_id = state.get_collection_id(&collection_name);
+
+        // 3. Reconcile
+        if local_id.as_ref() != Some(&remote_id) {
+            if OUTPUT.is_interactive {
+                if local_id.is_some() {
+                    eprintln!("Collection ID mismatch (Remote: {}, Local: {:?}). Assuming collection was recreated.", remote_id, local_id);
+                    eprintln!(
+                        "Cleaning up stale tracking data for '{}'...",
+                        collection_name
+                    );
+                } else {
+                    eprintln!(
+                        "Initializing tracking for collection '{}' (ID: {})...",
+                        collection_name, remote_id
                     );
                 }
             }
-            new_id
+
+            // This clears the files map for THIS collection and sets the new ID
+            state.clear_collection(&collection_name, remote_id.clone());
+            // Force save immediately to lock in the new ID
+            state.save(root_path)?;
         }
-    };
-
-    // 2. Check Local State
-    let local_id = state.get_collection_id(&collection_name);
-
-    // 3. Reconcile
-    if local_id.as_ref() != Some(&remote_id) {
-        if OUTPUT.is_interactive {
-            if local_id.is_some() {
-                eprintln!("Collection ID mismatch (Remote: {}, Local: {:?}). Assuming collection was recreated.", remote_id, local_id);
-                eprintln!(
-                    "Cleaning up stale tracking data for '{}'...",
-                    collection_name
-                );
-            } else {
-                eprintln!(
-                    "Initializing tracking for collection '{}' (ID: {})...",
-                    collection_name, remote_id
-                );
-            }
-        }
-
-        // This clears the files map for THIS collection and sets the new ID
-        state.clear_collection(&collection_name, remote_id.clone());
-        // Force save immediately to lock in the new ID
-        state.save(root_path)?;
     }
 
     let mut state_changed = false;
@@ -150,7 +349,10 @@ pub async fn ingest_path(
         }
 
         let options_arc = Arc::new(options);
-        let root_path = path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+        let root_path = path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf();
 
         // Apply extensions filter (if set)
         if let Some(ref exts) = options_arc.extensions {
@@ -179,15 +381,20 @@ pub async fn ingest_path(
         // Compute metadata hash and check state
         let rel_path = path.strip_prefix(&root_path).unwrap_or(&path).to_path_buf();
         let file_collection: String = if let Some(ref routes) = options_arc.vecdbrc_routes {
-            let match_path = options_arc.vecdbrc_root.as_ref().and_then(|root| {
-                path.strip_prefix(root).ok()
-            }).map(|p| p.to_string_lossy().to_string())
+            let match_path = options_arc
+                .vecdbrc_root
+                .as_ref()
+                .and_then(|root| path.strip_prefix(root).ok())
+                .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| rel_path.to_string_lossy().to_string());
 
-            let coll = crate::vecdbrc::resolve_route(
-                routes, &match_path, Some(&options_arc.collection)
-            ).0;
-            if coll.is_empty() { options_arc.collection.clone() } else { coll }
+            let coll =
+                crate::vecdbrc::resolve_route(routes, &match_path, Some(&options_arc.collection)).0;
+            if coll.is_empty() {
+                options_arc.collection.clone()
+            } else {
+                coll
+            }
         } else {
             options_arc.collection.clone()
         };
@@ -201,7 +408,9 @@ pub async fn ingest_path(
         }
 
         // Process the file
-        let compiled_rules: Vec<Regex> = options_arc.path_rules.iter()
+        let compiled_rules: Vec<Regex> = options_arc
+            .path_rules
+            .iter()
             .filter_map(|rule| Regex::new(&rule.pattern).ok())
             .collect();
 
@@ -211,24 +420,66 @@ pub async fn ingest_path(
         match process_single_file(
             path.clone(),
             rel_path.clone(),
-            detector.clone(),
-            parser_factory.clone(),
-            compiled_rules,
+            crate::ingestion::processor::FileProcessor {
+                detector: detector.clone(),
+                parser_factory: parser_factory.clone(),
+                rules: compiled_rules,
+            },
             options_arc.clone(),
             commit_sha.clone(),
-        ).await {
+            file_collection.clone(),
+        )
+        .await
+        {
             Ok(Some(mut chunks)) => {
+                // Guard and size the destination this file actually routed to.
+                //
+                // `resolved_dim` describes the primary target, which is only the
+                // right answer when routing is inactive. A routed file was
+                // previously embedded at the primary's dimension and written
+                // without any space check — the directory path guards routed
+                // destinations, so the single-file path must too.
+                let file_dim = if file_collection == options_arc.collection {
+                    resolved_dim
+                } else {
+                    Some(
+                        ensure_write_target(
+                            backend,
+                            embedder,
+                            &file_collection,
+                            options_arc.quantization.clone(),
+                            options_arc.allow_quantization_delta,
+                            target_dim,
+                            Some(options_arc.chunking_identity(&file_collection)),
+                        )
+                        .await?,
+                    )
+                };
+
+                // Before the upsert, so a chunk that is about to be rewritten is
+                // never a deletion candidate.
+                let stale_removed =
+                    purge_stale_for_document(backend, &file_collection, &chunks).await;
+
                 // Embed and flush
                 flush_chunks(
                     backend,
                     embedder,
                     &file_collection,
                     &mut chunks,
-                    options_arc.gpu_batch_size,
-                    resolved_dim,
-                    options_arc.max_chunk_size,
-                ).await?;
+                    &FlushParams {
+                        gpu_batch_size: options_arc.gpu_batch_size,
+                        target_dim: file_dim,
+                        max_chunk_bytes: Some(options_arc.chunking_for(&file_collection).ceiling()),
+                        on_oversize: options_arc.on_oversize,
+                    },
+                    &oversize,
+                )
+                .await?;
                 files_processed = 1;
+                if stale_removed > 0 {
+                    eprintln!("Removed {stale_removed} superseded chunk(s) for this file.");
+                }
             }
             Ok(None) => {
                 eprintln!("Skipping: file not processable");
@@ -239,7 +490,11 @@ pub async fn ingest_path(
             }
         }
 
-        if state_changed {
+        // Guarded for the same reason the ID-resolution block above is: a dry
+        // run must not mutate `.vecdb/state.toml`. Writing it here made the
+        // NEXT real ingest treat every file as already-ingested and skip it —
+        // a dry run silently cancelling the run it was previewing.
+        if state_changed && !options_arc.dry_run {
             state.touch_collection(&file_collection);
             let _ = state.save(&root_path);
         }
@@ -248,10 +503,26 @@ pub async fn ingest_path(
             "Ingestion Summary: Scanned {}, Processed {}, Skipped {}",
             1, files_processed, files_skipped
         );
+        if let Some(summary) = oversize.summary(options_arc.on_oversize) {
+            eprintln!("warning: {summary}");
+        }
         return Ok(());
     }
 
     // Directory or glob - use walker with filters
+    //
+    // The fallback is announced, not silent. It is the only path by which a walk
+    // honours a file the operator never pointed at, so the run has to say so.
+    let gitignore = discovery::resolve_gitignore(&options);
+    if gitignore.via_fallback && OUTPUT.is_interactive {
+        eprintln!(
+            "note: no .vectorignore found (checked {}/.vectorignore and ~/.vectorignore) \
+             — falling back to .gitignore for this walk.\n\
+             \x20     .gitignore is a build-artifact list, not an indexing policy. Add a \
+             .vectorignore to say what should actually be indexed.",
+            options.path
+        );
+    }
     let builder = build_walker(&options);
     let pb = if OUTPUT.is_interactive {
         eprintln!("Scanning files...");
@@ -283,7 +554,25 @@ pub async fn ingest_path(
         }
     }
 
+    // Points dropped because the file that wrote them has since changed.
+    // Reported at the end: a re-ingest that silently rewrites half a collection
+    // should say so.
+    let mut stale_removed: usize = 0;
+
     let mut chunks_buffer: Vec<crate::types::Chunk> = Vec::new();
+    // Which collection the buffered chunks belong to.
+    //
+    // The buffer accumulates across files, and with `.vecdbrc` routing active
+    // consecutive files may target different collections. Without tracking the
+    // owner, a flush tags the batch with whatever file happened to arrive next —
+    // and `try_join_next` returns tasks in completion order, so which collection
+    // a chunk landed in was decided by a race. Files were silently written to the
+    // wrong collection roughly half the time.
+    //
+    // With no routes every file resolves to the same name, so this is simply
+    // `Some(collection_name)` throughout and the routed and unrouted paths need
+    // no branching between them.
+    let mut buffered_coll: Option<String> = None;
     let batch_size = 20;
 
     let mut files_scanned = 0;
@@ -300,32 +589,66 @@ pub async fn ingest_path(
     // Pipeline Channel: Decouples parsing from embedding
     // When routing is active, each message carries its target collection.
     // Without routing, all messages use the options.collection default.
-    let has_routes = options_arc.vecdbrc_routes.is_some();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, Vec<crate::types::Chunk>)>(10);
 
     // Dedicated Embedding Worker (routing-aware)
     let backend_embed = backend.clone();
     let embedder_embed = embedder.clone();
     let gpu_batch_size = options_arc.gpu_batch_size;
-    let max_chunk_size = options_arc.max_chunk_size;
+    // Resolved per destination inside the worker, like the dimension — see
+    // `route_chunking`. Chunking is a property of where the chunk is going.
+    let options_for_worker = options_arc.clone();
+    let allow_quantization_delta = options_arc.allow_quantization_delta;
+    let quantization = options_arc.quantization.clone();
+    let on_oversize = options_arc.on_oversize;
+    let oversize_worker = oversize.clone();
     let embedding_handle = tokio::spawn(async move {
+        // Dimension per destination, not per run.
+        //
+        // `ensure_write_target` returns the dimension the *named* collection is
+        // actually built at. Routed ingest fans across collections that need not
+        // share one: same model truncated to different Matryoshka widths passes
+        // the space guard by design. Embedding every route at the primary
+        // target's dimension therefore produced vectors of the wrong width for
+        // every destination but the first.
+        //
+        // Cached because the guard reads the genesis point on every call, and the
+        // worker is invoked once per batch, not once per collection.
+        let mut route_dims: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+
         while let Some((coll, mut batch)) = rx.recv().await {
-            // Auto-create collection if it doesn't exist (routed collections may be new)
-            if !backend_embed.collection_exists(&coll).await? {
-                if crate::output::OUTPUT.is_interactive {
-                    eprintln!("Creating collection '{}' for routed files...", coll);
+            // Routed destinations get the same guard as the primary target —
+            // a .vecdbrc route is not a reason to skip the space check.
+            let route_dim = match route_dims.get(&coll) {
+                Some(dim) => *dim,
+                None => {
+                    let dim = ensure_write_target(
+                        &backend_embed,
+                        &embedder_embed,
+                        &coll,
+                        quantization.clone(),
+                        allow_quantization_delta,
+                        target_dim,
+                        Some(options_for_worker.chunking_identity(&coll)),
+                    )
+                    .await?;
+                    route_dims.insert(coll.clone(), dim);
+                    dim
                 }
-                let dim = embedder_embed.dimension().await?;
-                backend_embed.create_collection(&coll, dim as u64, None).await?;
-            }
+            };
             flush_chunks(
                 &backend_embed,
                 &embedder_embed,
                 &coll,
                 &mut batch,
-                gpu_batch_size,
-                resolved_dim,
-                max_chunk_size,
+                &FlushParams {
+                    gpu_batch_size,
+                    target_dim: Some(route_dim),
+                    max_chunk_bytes: Some(options_for_worker.chunking_for(&coll).ceiling()),
+                    on_oversize,
+                },
+                &oversize_worker,
             )
             .await?;
         }
@@ -351,8 +674,10 @@ pub async fn ingest_path(
                         let path_str = path.to_string_lossy().to_string();
                         if !allowlist.iter().any(|allowed| {
                             path_str == *allowed
-                                || path_str.ends_with(&format!("/{}", allowed.trim_start_matches("./")))
-                                || path_str.ends_with(&format!("\\{}", allowed.trim_start_matches("./")))
+                                || path_str
+                                    .ends_with(&format!("/{}", allowed.trim_start_matches("./")))
+                                || path_str
+                                    .ends_with(&format!("\\{}", allowed.trim_start_matches("./")))
                         }) {
                             files_skipped += 1;
                             continue;
@@ -360,8 +685,11 @@ pub async fn ingest_path(
                     }
 
                     let stripped = path.strip_prefix(root_path).unwrap_or(&path);
-                    let canonical_root = std::fs::canonicalize(root_path).unwrap_or_else(|_| root_path.to_path_buf());
-                    let project_dir_name = canonical_root.file_name().unwrap_or_else(|| std::ffi::OsStr::new(""));
+                    let canonical_root = std::fs::canonicalize(root_path)
+                        .unwrap_or_else(|_| root_path.to_path_buf());
+                    let project_dir_name = canonical_root
+                        .file_name()
+                        .unwrap_or_else(|| std::ffi::OsStr::new(""));
                     let rel_path = if project_dir_name.is_empty() {
                         stripped.to_path_buf()
                     } else {
@@ -369,28 +697,38 @@ pub async fn ingest_path(
                     };
 
                     // Determine target collection via .vecdbrc routing (if active)
-                    let file_collection: String = if let Some(ref routes) = options_arc.vecdbrc_routes {
-                        let match_path = options_arc.vecdbrc_root.as_ref().and_then(|root| {
-                            path.strip_prefix(root).ok()
-                        }).map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_else(|| rel_path.to_string_lossy().to_string());
+                    let file_collection: String =
+                        if let Some(ref routes) = options_arc.vecdbrc_routes {
+                            let match_path = options_arc
+                                .vecdbrc_root
+                                .as_ref()
+                                .and_then(|root| path.strip_prefix(root).ok())
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_else(|| rel_path.to_string_lossy().to_string());
 
-                        let coll = crate::vecdbrc::resolve_route(
-                            routes, &match_path, Some(&options_arc.collection)
-                        ).0;
-                        // Fall back to options collection if route returned empty
-                        let effective_coll = if coll.is_empty() {
-                            options_arc.collection.clone()
+                            let coll = crate::vecdbrc::resolve_route(
+                                routes,
+                                &match_path,
+                                Some(&options_arc.collection),
+                            )
+                            .0;
+                            // Fall back to options collection if route returned empty
+                            let effective_coll = if coll.is_empty() {
+                                options_arc.collection.clone()
+                            } else {
+                                coll
+                            };
+                            if OUTPUT.is_interactive {
+                                eprintln!(
+                                    "  → '{}' → collection '{}'",
+                                    rel_path.display(),
+                                    effective_coll
+                                );
+                            }
+                            effective_coll
                         } else {
-                            coll
+                            options_arc.collection.clone()
                         };
-                        if OUTPUT.is_interactive {
-                            eprintln!("  → '{}' → collection '{}'", rel_path.display(), effective_coll);
-                        }
-                        effective_coll
-                    } else {
-                        options_arc.collection.clone()
-                    };
 
                     if let Ok(meta_hash) = crate::state::compute_file_metadata_hash(&path) {
                         if !state.update_file(&file_collection, rel_path.clone(), meta_hash.clone())
@@ -437,11 +775,14 @@ pub async fn ingest_path(
                         match process_single_file(
                             path,
                             rel_path,
-                            detector,
-                            parser_factory,
-                            rules,
+                            crate::ingestion::processor::FileProcessor {
+                                detector,
+                                parser_factory,
+                                rules,
+                            },
                             options_ref,
                             commit_sha,
+                            coll_for_task.clone(),
                         )
                         .await
                         {
@@ -466,22 +807,31 @@ pub async fn ingest_path(
             match res {
                 Ok(Ok(Some((coll, mut file_chunks)))) => {
                     files_processed += 1;
-                    if has_routes && !chunks_buffer.is_empty() {
-                        // When routing, flush buffer per-collection to avoid mixing
-                        // different collections in the same batch
+                    stale_removed += purge_stale_for_document(backend, &coll, &file_chunks).await;
+
+                    // A batch belongs to the collection whose chunks are in it,
+                    // not to the file that arrived next. Flush under the owner
+                    // before switching.
+                    if buffered_coll.as_deref().is_some_and(|b| b != coll) {
+                        let owner = buffered_coll
+                            .take()
+                            .unwrap_or_else(|| collection_name.clone());
                         let batch = std::mem::take(&mut chunks_buffer);
-                        if (tx.send((coll.clone(), batch)).await).is_err() {
+                        if (tx.send((owner, batch)).await).is_err() {
                             break 'discovery_loop;
                         }
                     }
+                    buffered_coll = Some(coll.clone());
                     chunks_buffer.append(&mut file_chunks);
 
                     if chunks_buffer.len() >= batch_size {
-                        let coll_name = if has_routes { coll.clone() } else { collection_name.clone() };
+                        let owner = buffered_coll
+                            .clone()
+                            .unwrap_or_else(|| collection_name.clone());
                         let batch = std::mem::take(&mut chunks_buffer);
-                        if (tx.send((coll_name, batch)).await).is_err() {
-                             // Background worker failed. Break to catch the real error below.
-                             break 'discovery_loop;
+                        if (tx.send((owner, batch)).await).is_err() {
+                            // Background worker failed. Break to catch the real error below.
+                            break 'discovery_loop;
                         }
                     }
 
@@ -515,18 +865,27 @@ pub async fn ingest_path(
         match res {
             Ok(Ok(Some((coll, mut file_chunks)))) => {
                 files_processed += 1;
-                if has_routes && !chunks_buffer.is_empty() {
-                    let coll_name = if has_routes { coll.clone() } else { collection_name.clone() };
+                stale_removed += purge_stale_for_document(backend, &coll, &file_chunks).await;
+
+                // Same ownership rule as the discovery-loop drain above.
+                if buffered_coll.as_deref().is_some_and(|b| b != coll) {
+                    let owner = buffered_coll
+                        .take()
+                        .unwrap_or_else(|| collection_name.clone());
                     let batch = std::mem::take(&mut chunks_buffer);
-                    if (tx.send((coll_name, batch)).await).is_err() {
+                    if (tx.send((owner, batch)).await).is_err() {
                         break 'parsing_finish;
                     }
                 }
+                buffered_coll = Some(coll.clone());
                 chunks_buffer.append(&mut file_chunks);
+
                 if chunks_buffer.len() >= batch_size {
-                    let coll_name = if has_routes { coll.clone() } else { collection_name.clone() };
+                    let owner = buffered_coll
+                        .clone()
+                        .unwrap_or_else(|| collection_name.clone());
                     let batch = std::mem::take(&mut chunks_buffer);
-                    if (tx.send((coll_name, batch)).await).is_err() {
+                    if (tx.send((owner, batch)).await).is_err() {
                         break 'parsing_finish;
                     }
                 }
@@ -555,18 +914,22 @@ pub async fn ingest_path(
         }
     }
 
-
-
     // Flush last batch
     if !chunks_buffer.is_empty() {
-        let _ = tx.send((collection_name.clone(), chunks_buffer)).await;
+        // The final batch belongs to the last collection written to, not to the
+        // CLI fallback. This unconditionally used `collection_name`, so with
+        // routing active the tail of every ingest landed in the wrong place.
+        let owner = buffered_coll
+            .clone()
+            .unwrap_or_else(|| collection_name.clone());
+        let _ = tx.send((owner, chunks_buffer)).await;
     }
 
     // Signal completion to embedding worker
     drop(tx);
-    embedding_handle.await
+    embedding_handle
+        .await
         .map_err(|e| anyhow::anyhow!("Embedding background task panicked: {}", e))??;
-
 
     if let Some(ref j_id) = job_id {
         if let Some(ref r) = job_registry {
@@ -574,7 +937,8 @@ pub async fn ingest_path(
         }
     }
 
-    if state_changed {
+    // See the single-file path: a dry run previews, it does not record.
+    if state_changed && !options_arc.dry_run {
         state.touch_collection(&collection_name);
         if let Err(e) = state.save(root_path) {
             let msg = format!("Warning: Failed to save ingestion state: {}", e);
@@ -594,6 +958,15 @@ pub async fn ingest_path(
         "Ingestion Summary: Scanned {}, Processed {}, Skipped {}",
         files_scanned, files_processed, files_skipped
     );
+    if stale_removed > 0 {
+        eprintln!("Removed {stale_removed} superseded chunk(s) from edited files.");
+    }
+
+    // Reported after the counts, so "Processed 40" is never the last word when
+    // some of those 40 lost content to the ceiling.
+    if let Some(summary) = oversize.summary(options_arc.on_oversize) {
+        eprintln!("warning: {summary}");
+    }
 
     Ok(())
 }
@@ -606,8 +979,8 @@ pub async fn ingest_memory(
     content: &str,
     metadata: std::collections::HashMap<String, serde_json::Value>,
     collection: &str,
-    chunk_size: Option<usize>,
-    max_chunk_size: Option<usize>,
+    target_chunk_size: Option<usize>,
+    max_chunk_bytes: Option<usize>,
     chunk_overlap: Option<usize>,
     quantization: Option<crate::config::QuantizationType>,
     target_dim: Option<usize>,
@@ -617,8 +990,10 @@ pub async fn ingest_memory(
         collection: collection.to_string(),
         vecdbrc_routes: None,
         vecdbrc_root: None,
-        chunk_size: chunk_size.unwrap_or(512),
-        max_chunk_size,
+        target_chunk_size: target_chunk_size.unwrap_or(512),
+        max_chunk_bytes,
+        on_oversize: Default::default(),
+        route_chunking: Default::default(),
         chunk_overlap: chunk_overlap.unwrap_or(50),
         respect_gitignore: false,
         ignore_vectorignore: false,
@@ -635,6 +1010,7 @@ pub async fn ingest_memory(
         max_concurrent_requests: 4,
         gpu_batch_size: 2,
         quantization,
+        allow_quantization_delta: false,
     };
 
     let mut chunks = process_content(
@@ -643,33 +1019,42 @@ pub async fn ingest_memory(
         Path::new("memory"),
         &metadata,
         FileType::Text,
+        collection,
     )
     .await?;
 
-    let mut resolved_dim = target_dim;
-    if !backend.collection_exists(collection).await? {
-        eprintln!("Collection {} does not exist. Creating...", collection);
-        let dim = embedder.dimension().await?;
-        resolved_dim = Some(dim);
-        backend
-            .create_collection(collection, dim as u64, options.quantization.clone())
-            .await?;
-    } else if resolved_dim.is_none() {
-        if let Ok(info) = backend.get_collection_info(collection).await {
-            resolved_dim = info.vector_size.map(|s| s as usize);
-        }
-    }
+    let resolved_dim = Some(
+        ensure_write_target(
+            backend,
+            embedder,
+            collection,
+            options.quantization.clone(),
+            options.allow_quantization_delta,
+            target_dim,
+            Some(options.chunking_identity(collection)),
+        )
+        .await?,
+    );
 
+    let oversize = OversizeReport::new();
     flush_chunks(
         backend,
         embedder,
         collection,
         &mut chunks,
-        options.gpu_batch_size,
-        resolved_dim,
-        max_chunk_size,
+        &FlushParams {
+            gpu_batch_size: options.gpu_batch_size,
+            target_dim: resolved_dim,
+            max_chunk_bytes,
+            on_oversize: options.on_oversize,
+        },
+        &oversize,
     )
     .await?;
+
+    if let Some(summary) = oversize.summary(options.on_oversize) {
+        eprintln!("warning: {summary}");
+    }
 
     Ok(())
 }

@@ -441,82 +441,6 @@ proptest! {
 
 }
 
-#[cfg(test)]
-mod unit_tests {
-    use super::*;
-
-    #[test]
-    fn test_generators_produce_valid_data() {
-        // Test that our generators produce valid data
-        let mut runner = proptest::test_runner::TestRunner::default();
-
-        // Test file type generator
-        let file_type = arbitrary_file_type()
-            .new_tree(&mut runner)
-            .unwrap()
-            .current();
-        assert_ne!(file_type, FileType::Unknown);
-
-        // Test element type generator
-        let element_type = arbitrary_element_type()
-            .new_tree(&mut runner)
-            .unwrap()
-            .current();
-        assert_ne!(element_type, ElementType::Unknown);
-
-        // Test document metadata generator
-        let metadata = arbitrary_document_metadata()
-            .new_tree(&mut runner)
-            .unwrap()
-            .current();
-        assert!(metadata.line_count > 0);
-        assert!(metadata.size > 0);
-
-        // Test document element generator
-        let element = arbitrary_document_element()
-            .new_tree(&mut runner)
-            .unwrap()
-            .current();
-        assert!(element.line_start > 0);
-        assert!(element.line_end >= element.line_start);
-        assert!(!element.content.is_empty());
-    }
-
-    #[test]
-    fn test_element_counting() {
-        let elements = vec![
-            DocumentElement::new(
-                ElementType::Function,
-                Some("f1".to_string()),
-                "content".to_string(),
-                1,
-                1,
-            ),
-            DocumentElement::new(
-                ElementType::Function,
-                Some("f2".to_string()),
-                "content".to_string(),
-                2,
-                2,
-            ),
-            DocumentElement::new(
-                ElementType::Struct,
-                Some("s1".to_string()),
-                "content".to_string(),
-                3,
-                3,
-            ),
-        ];
-
-        let mut counts = HashMap::new();
-        count_elements_recursive(&elements, &mut counts);
-
-        assert_eq!(counts.get(&ElementType::Function), Some(&2));
-        assert_eq!(counts.get(&ElementType::Struct), Some(&1));
-        assert_eq!(counts.get(&ElementType::Class), None);
-    }
-} // End of proptest! macro
-
 /// Helper function to count elements recursively
 fn count_elements_recursive(
     elements: &[DocumentElement],
@@ -664,7 +588,24 @@ fn validate_elements_preserved(
     Ok(())
 }
 
-/// Helper function to validate line number consistency
+/// Validate line number consistency **of a serde round-trip**.
+///
+/// ⚠ THIS CANNOT CATCH A PARSER BUG, DESPITE WHAT ITS ASSERTIONS SAY.
+///
+/// Its input is built by `arbitrary_document_element()`, which *generates*
+/// `line_start` in `1usize..100usize` and hands it straight to
+/// `DocumentElement::new`. So `line_start > 0` is guaranteed by the fixture,
+/// not by anything under test, and no parser is ever invoked here. This checks
+/// that serialization preserves numbers — a real property, but not the one the
+/// message below sounds like.
+///
+/// That gap shipped v1.1.0 with `line_start` 0-indexed for Python, Go and YAML
+/// while Rust, C, C++, CUDA and Bash were 1-indexed. Grepping for "1-based"
+/// found this assertion and made the invariant look covered.
+///
+/// The real coverage lives in `tier1_line_index_convention.rs`, which parses
+/// actual source and compares reported lines against the file. Do not add
+/// parser-correctness assertions here; add them there.
 fn validate_line_number_consistency(
     json_obj: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), proptest::test_runner::TestCaseError> {
@@ -766,3 +707,79 @@ fn validate_element_schema_consistency(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn test_generators_produce_valid_data() {
+        // Test that our generators produce valid data
+        let mut runner = proptest::test_runner::TestRunner::default();
+
+        // Test file type generator
+        let file_type = arbitrary_file_type()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+        assert_ne!(file_type, FileType::Unknown);
+
+        // Test element type generator
+        let element_type = arbitrary_element_type()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+        assert_ne!(element_type, ElementType::Unknown);
+
+        // Test document metadata generator
+        let metadata = arbitrary_document_metadata()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+        assert!(metadata.line_count > 0);
+        assert!(metadata.size > 0);
+
+        // Test document element generator
+        let element = arbitrary_document_element()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+        assert!(element.line_start > 0);
+        assert!(element.line_end >= element.line_start);
+        assert!(!element.content.is_empty());
+    }
+
+    #[test]
+    fn test_element_counting() {
+        let elements = vec![
+            DocumentElement::new(
+                ElementType::Function,
+                Some("f1".to_string()),
+                "content".to_string(),
+                1,
+                1,
+            ),
+            DocumentElement::new(
+                ElementType::Function,
+                Some("f2".to_string()),
+                "content".to_string(),
+                2,
+                2,
+            ),
+            DocumentElement::new(
+                ElementType::Struct,
+                Some("s1".to_string()),
+                "content".to_string(),
+                3,
+                3,
+            ),
+        ];
+
+        let mut counts = HashMap::new();
+        count_elements_recursive(&elements, &mut counts);
+
+        assert_eq!(counts.get(&ElementType::Function), Some(&2));
+        assert_eq!(counts.get(&ElementType::Struct), Some(&1));
+        assert_eq!(counts.get(&ElementType::Class), None);
+    }
+} // End of proptest! macro

@@ -120,6 +120,7 @@ fn generate_file_content(file_type: FileType) -> BoxedStrategy<Vec<u8>> {
         FileType::Text => generate_text_content().boxed(),
         FileType::Html => generate_html_content().boxed(),
         FileType::Toml => generate_toml_content().boxed(),
+        FileType::Yaml => generate_yaml_content().boxed(),
         FileType::Unknown => generate_unknown_content().boxed(),
     }
 }
@@ -136,24 +137,36 @@ fn generate_toml_content() -> impl Strategy<Value = Vec<u8>> {
     ]
 }
 
+/// Generate realistic YAML content
+fn generate_yaml_content() -> impl Strategy<Value = Vec<u8>> {
+    prop_oneof![
+        Just(
+            "version: \"3.9\"\nservices:\n  qdrant:\n    image: qdrant/qdrant"
+                .as_bytes()
+                .to_vec()
+        ),
+        Just("key: value\nnumber: 123\nenabled: true".as_bytes().to_vec()),
+    ]
+}
+
 /// Generate realistic Rust source code
 fn generate_rust_content() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![
         // Simple function
         Just("fn main() {\n    println!(\"Hello, world!\");\n}".as_bytes().to_vec()),
-        
+
         // Struct with implementation
         Just("struct Point {\n    x: f64,\n    y: f64,\n}\n\nimpl Point {\n    fn new(x: f64, y: f64) -> Self {\n        Point { x, y }\n    }\n}".as_bytes().to_vec()),
-        
+
         // Enum with match
         Just("enum Color {\n    Red,\n    Green,\n    Blue,\n}\n\nfn describe_color(color: Color) -> &'static str {\n    match color {\n        Color::Red => \"red\",\n        Color::Green => \"green\",\n        Color::Blue => \"blue\",\n    }\n}".as_bytes().to_vec()),
-        
+
         // Trait definition
         Just("trait Display {\n    fn fmt(&self) -> String;\n}\n\nimpl Display for i32 {\n    fn fmt(&self) -> String {\n        format!(\"{}\", self)\n    }\n}".as_bytes().to_vec()),
-        
+
         // Generic function with lifetimes
         Just("fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {\n    if x.len() > y.len() {\n        x\n    } else {\n        y\n    }\n}".as_bytes().to_vec()),
-        
+
         // Module with use statements
         Just("use std::collections::HashMap;\nuse std::fs::File;\n\nmod utils {\n    pub fn helper() -> i32 {\n        42\n    }\n}".as_bytes().to_vec()),
     ]
@@ -164,16 +177,16 @@ fn generate_python_content() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![
         // Simple function
         Just("def hello_world():\n    print(\"Hello, world!\")\n\nif __name__ == \"__main__\":\n    hello_world()".as_bytes().to_vec()),
-        
+
         // Class definition
         Just("class Point:\n    def __init__(self, x, y):\n        self.x = x\n        self.y = y\n    \n    def distance(self, other):\n        return ((self.x - other.x)**2 + (self.y - other.y)**2)**0.5".as_bytes().to_vec()),
-        
+
         // Function with decorators
         Just("from functools import wraps\n\ndef decorator(func):\n    @wraps(func)\n    def wrapper(*args, **kwargs):\n        return func(*args, **kwargs)\n    return wrapper\n\n@decorator\ndef example():\n    pass".as_bytes().to_vec()),
-        
+
         // List comprehension and imports
         Just("import os\nimport sys\n\ndef process_files(directory):\n    return [f for f in os.listdir(directory) if f.endswith('.py')]".as_bytes().to_vec()),
-        
+
         // Exception handling
         Just("try:\n    with open('file.txt', 'r') as f:\n        content = f.read()\nexcept FileNotFoundError:\n    print(\"File not found\")\nexcept Exception as e:\n    print(f\"Error: {e}\")".as_bytes().to_vec()),
     ]
@@ -184,13 +197,13 @@ fn generate_markdown_content() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![
         // Basic document structure
         Just("# Title\n\n## Introduction\n\nThis is a paragraph with **bold** and *italic* text.\n\n### Code Example\n\n```rust\nfn main() {\n    println!(\"Hello!\");\n}\n```\n\n## Conclusion\n\nThat's all!".as_bytes().to_vec()),
-        
+
         // Lists and links
         Just("# Project README\n\n## Features\n\n- Feature 1\n- Feature 2\n  - Nested item\n  - Another nested item\n\n## Links\n\n[Documentation](https://example.com)\n[GitHub](https://github.com/example/repo)".as_bytes().to_vec()),
-        
+
         // Tables
         Just("# Data\n\n| Name | Age | City |\n|------|-----|------|\n| Alice | 30 | NYC |\n| Bob | 25 | LA |\n\n> This is a blockquote\n> with multiple lines.".as_bytes().to_vec()),
-        
+
         // Mixed content
         Just("# API Documentation\n\n## Overview\n\nThis API provides access to user data.\n\n### Authentication\n\n```bash\ncurl -H \"Authorization: Bearer token\" https://api.example.com\n```\n\n#### Response\n\n```json\n{\n  \"status\": \"success\",\n  \"data\": []\n}\n```".as_bytes().to_vec()),
     ]
@@ -201,13 +214,13 @@ fn generate_c_content() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![
         // Simple program
         Just("#include <stdio.h>\n\nint main() {\n    printf(\"Hello, world!\\n\");\n    return 0;\n}".as_bytes().to_vec()),
-        
+
         // Function with struct
         Just("#include <stdlib.h>\n\ntypedef struct {\n    int x;\n    int y;\n} Point;\n\nPoint* create_point(int x, int y) {\n    Point* p = malloc(sizeof(Point));\n    p->x = x;\n    p->y = y;\n    return p;\n}".as_bytes().to_vec()),
-        
+
         // Header guards
         Just("#ifndef UTILS_H\n#define UTILS_H\n\nvoid utility_function(void);\n\n#endif /* UTILS_H */".as_bytes().to_vec()),
-        
+
         // Preprocessor macros
         Just("#define MAX(a, b) ((a) > (b) ? (a) : (b))\n#define PI 3.14159\n\nint calculate(int a, int b) {\n    return MAX(a, b) * PI;\n}".as_bytes().to_vec()),
     ]
@@ -218,10 +231,10 @@ fn generate_cpp_content() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![
         // Class with constructor
         Just("#include <iostream>\n\nclass Point {\npublic:\n    Point(double x, double y) : x_(x), y_(y) {}\n    double distance() const { return sqrt(x_*x_ + y_*y_); }\nprivate:\n    double x_, y_;\n};".as_bytes().to_vec()),
-        
+
         // Template function
         Just("#include <vector>\n\ntemplate<typename T>\nT max_element(const std::vector<T>& vec) {\n    T max_val = vec[0];\n    for (const auto& elem : vec) {\n        if (elem > max_val) max_val = elem;\n    }\n    return max_val;\n}".as_bytes().to_vec()),
-        
+
         // Namespace and using
         Just("namespace math {\n    const double PI = 3.14159;\n    \n    double area(double radius) {\n        return PI * radius * radius;\n    }\n}\n\nusing namespace math;".as_bytes().to_vec()),
     ]
@@ -232,7 +245,7 @@ fn generate_cuda_content() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![
         // Simple kernel
         Just("__global__ void add_kernel(float* a, float* b, float* c, int n) {\n    int idx = blockIdx.x * blockDim.x + threadIdx.x;\n    if (idx < n) {\n        c[idx] = a[idx] + b[idx];\n    }\n}".as_bytes().to_vec()),
-        
+
         // Device function
         Just("__device__ float square(float x) {\n    return x * x;\n}\n\n__global__ void compute(float* data, int n) {\n    int idx = threadIdx.x;\n    if (idx < n) {\n        data[idx] = square(data[idx]);\n    }\n}".as_bytes().to_vec()),
     ]
@@ -243,10 +256,10 @@ fn generate_go_content() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![
         // Simple program
         Just("package main\n\nimport \"fmt\"\n\nfunc main() {\n    fmt.Println(\"Hello, world!\")\n}".as_bytes().to_vec()),
-        
+
         // Struct with methods
         Just("package main\n\ntype Point struct {\n    X, Y float64\n}\n\nfunc (p Point) Distance() float64 {\n    return math.Sqrt(p.X*p.X + p.Y*p.Y)\n}\n\nfunc NewPoint(x, y float64) *Point {\n    return &Point{X: x, Y: y}\n}".as_bytes().to_vec()),
-        
+
         // Interface
         Just("package shapes\n\ntype Shape interface {\n    Area() float64\n    Perimeter() float64\n}\n\ntype Rectangle struct {\n    Width, Height float64\n}\n\nfunc (r Rectangle) Area() float64 {\n    return r.Width * r.Height\n}".as_bytes().to_vec()),
     ]
@@ -257,10 +270,10 @@ fn generate_bash_content() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![
         // Simple script with shebang
         Just("#!/bin/bash\n\necho \"Hello, world!\"\nls -la\necho \"Done\"".as_bytes().to_vec()),
-        
+
         // Function and variables
         Just("#!/usr/bin/env bash\n\nfunction backup_files() {\n    local source=\"$1\"\n    local dest=\"$2\"\n    cp -r \"$source\" \"$dest\"\n}\n\nSOURCE_DIR=\"/home/user\"\nBACKUP_DIR=\"/backup\"\nbackup_files \"$SOURCE_DIR\" \"$BACKUP_DIR\"".as_bytes().to_vec()),
-        
+
         // Conditional and loops
         Just("#!/bin/bash\n\nfor file in *.txt; do\n    if [[ -f \"$file\" ]]; then\n        echo \"Processing $file\"\n        wc -l \"$file\"\n    fi\ndone".as_bytes().to_vec()),
     ]
@@ -406,6 +419,12 @@ fn generate_file_path(file_type: FileType) -> BoxedStrategy<PathBuf> {
             Just(PathBuf::from("Cargo.toml")),
             Just(PathBuf::from("config.toml")),
             Just(PathBuf::from("Pipfile")),
+        ]
+        .boxed(),
+        FileType::Yaml => prop_oneof![
+            Just(PathBuf::from("docker-compose.yaml")),
+            Just(PathBuf::from(".github/workflows/ci.yml")),
+            Just(PathBuf::from("manifest.yaml")),
         ]
         .boxed(),
         FileType::Unknown => prop_oneof![

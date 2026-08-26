@@ -19,10 +19,14 @@ import tempfile
 import shutil
 from pathlib import Path
 
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import bin_path
+
 # Use test config
 TEST_CONFIG = os.environ.get("VECDB_CONFIG", "tests/fixtures/config.toml")
 PROJECT_ROOT = Path(__file__).parent.parent
-VECDB_BIN = os.environ.get("VECDB_BIN", str(PROJECT_ROOT / "target" / "debug" / "vecdb"))
+VECDB_BIN = os.environ.get("VECDB_BIN", bin_path("vecdb"))
 
 def log(msg, status="INFO"):
     use_colors = sys.stderr.isatty()

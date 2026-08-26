@@ -26,6 +26,7 @@ fn test_all_parsers_have_fixtures() {
             FileType::Html => "html",
             FileType::Text => "text",
             FileType::Toml => "toml",
+            FileType::Yaml => "yaml",
             FileType::Json => "json",
             _ => panic!(
                 "New parser type {:?} added without updating compliance test mapping!",
@@ -58,7 +59,7 @@ fn test_all_parsers_have_fixtures() {
 
         // Run compliance check on each fixture
         let rt = Runtime::new().unwrap();
-        let parser = create_parser(parser_type.clone())
+        let parser = create_parser(parser_type)
             .unwrap_or_else(|e| panic!("Failed to create parser for {:?}: {}", parser_type, e));
 
         println!(

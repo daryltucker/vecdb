@@ -6,7 +6,7 @@ import time
 
 def run_test():
     TEST_DIR = "tests/fixtures/inc_test_repo"
-    COLLECTION = "inc_test"
+    COLLECTION = "test_inc"
     
     # Clean up
     if os.path.exists(TEST_DIR):
@@ -47,7 +47,8 @@ def run_test():
         
         if "Processed 2" not in res1.stderr: 
              # file1.txt, ignored.txt processed.
-             # .gitignore and .vectorignore are skipped by the 'ignore' walker when active.
+             # .gitignore is NOT consulted: it is a build-artifact list, not an
+             # indexing policy. .vectorignore is the knob that governs indexing.
              # vector_ignored.txt skipped by .vectorignore.
              print("FAILURE: Run 1 should process exactly 2 files (file1, ignored.txt).")
              print(f"Actual Output: {res1.stderr}")

@@ -18,20 +18,34 @@ When you search for *"install on ubuntu"*:
 3.  **Result**: You often get Windows installation guides because the "Install" signal overwhelms the "Ubuntu" signal. The specificity is "diluted."
 
 **The Solution**: Smart Routing.
-Instead of hoping the embedding model understands "Ubuntu", we detect the keyword `ubuntu` in your query and apply a **Hard Filter**:
+Instead of hoping the embedding model understands "Ubuntu", you state the constraint and `vecdb` applies a **Hard Filter**:
 `search("install", filter={ platform: "linux" })`
 
 Now, the vector search ONLY runs against Linux documents. The Windows documents might as well not exist.
 
-## Smart Routing (Auto-Detection)
-`vecdb` includes a **Dynamic Router** that listens to specific metadata keys (configured in `config.toml`).
+## Smart Routing (`key:value` qualifiers)
+`vecdb` includes a **Dynamic Router** that recognizes specific metadata keys (configured in `config.toml`).
 
-If your query contains a value that matches a known facet (e.g., you type "python"), `vecdb` automatically applies the filter `language=python`.
+Opt in with `--smart`. Scoping is then **written into the query, never inferred from it**:
+
+```bash
+vecdb search "setup instructions platform:windows" --smart
+```
 
 ### How it works
-1.  **Discovery**: `vecdb` checks what values exist in your database for configured keys.
-2.  **Matching**: When you search, it checks if any of those values appear in your query (using precise whole-word matching).
-3.  **Filtering**: If a match is found (e.g., "rust"), it locks the search to that subset.
+1.  **Parse**: Tokens of the exact form `key:value`, where `key` is a configured
+    routing key, are lifted out of the query and become filters.
+2.  **Strip**: The qualifier is removed from the text before embedding. Leaving
+    `platform:windows` in would pollute the vector with tokens you meant as
+    metadata, not as meaning.
+3.  **Validate**: The value is checked against what actually exists in the
+    collection. An unknown value is an **error listing the valid values** — not
+    an empty result set, which is indistinguishable from "no answer here".
+4.  **Report**: The filters that were applied come back in `applied_filters`, so
+    you can always see how your search was narrowed.
+
+Everything else is left alone: bare words, URLs (`https://…`), and `key:value`
+pairs whose key is not a configured routing key all stay in the query text.
 
 **Example**:
 ```bash
@@ -39,10 +53,28 @@ If your query contains a value that matches a known facet (e.g., you type "pytho
 # doc1: { content: "...", metadata: { platform: "windows" } }
 # doc2: { content: "...", metadata: { platform: "linux" } }
 
-vecdb search "setup on windows"
-# Router detects "windows" -> Applies filter: platform="windows"
-# Only doc1 is searched.
+vecdb search "setup platform:windows" --smart
+# → filter platform="windows"; embeds "setup"; only doc1 is searched.
+# → applied_filters: {"platform": "windows"}
+
+vecdb search "how do I set up windows" --smart
+# → NO filter. "windows" is prose, not a qualifier. Both docs are searched.
 ```
+
+### Why qualifiers instead of auto-detection
+
+> **Changed in the 2026-234 release.** Earlier versions scanned the query for any
+> bare word matching a known facet value and filtered on it automatically.
+
+That was removed because it silently answered a different question than the one
+asked. `"how do I parse rust files"` became `language=rust`, hiding every result
+in every other language, with no way to see it had happened and no way to turn
+it off. Worse, it was invisible: the caller saw a plausible, short result list
+and concluded the corpus was thin.
+
+Explicit qualifiers are predictable, greppable, reportable, and trivially
+disabled (omit `--smart`, or pass `--no-smart`). A filter you did not ask for is
+not a convenience.
 
 ## Smart Ingestion (Path Parsing)
 While Facets are powerful, manually tagging files with `vecdb ingest -m year=2025` is tedious. 
@@ -98,7 +130,17 @@ If you have docs tagged `platform=ubuntu` and docs tagged `platform=linux`, they
 *Tip: Use the Refinement Strategy. Tag everything as components of a larger whole if you want them searchable together.*
 
 ### Q: I typed "win", why didn't it match "Windows"?
-**Safety.** We use "Word Boundary" matching. We don't want "formatting" to match "for". You must type the full facet value.
+**Values are matched exactly.** `platform:win` is not `platform:windows`. A
+prefix match would silently widen or narrow your search depending on what else
+is in the collection. Unknown values produce an error listing the valid ones, so
+you will never have to guess.
 
 ### Q: Can I turn this off?
-**Yes.** You can disable Smart Routing per query or globally by removing keys from `config.toml`.
+**It is off by default.** Qualifier parsing only runs with `--smart`. Pass
+`--no-smart` to be explicit, or remove keys from `config.toml` to disable a key
+globally.
+
+### Q: How do I know whether a filter was applied?
+Read `applied_filters` in the response. It is always present, and it is empty
+when nothing was filtered. If a result list looks surprisingly short, check it
+before concluding the collection is missing content.

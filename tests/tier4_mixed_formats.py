@@ -34,9 +34,18 @@ import json
 import time
 import tempfile
 import shutil
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib_envelope import search_results
+
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import bin_path
+
 
 DEFAULT_TEST_GRPC_PORT = 6336
-COLLECTION_NAME = "tier4_mixed_formats"
+COLLECTION_NAME = "test_tier4_mixed_formats"
 
 # Use a subset of cuda-samples that has good format diversity
 # Samples/2_Concepts_and_Techniques has .cu, .cpp, .h, .doc, .pdf, .ppm, .bin
@@ -83,13 +92,19 @@ class Tier4MixedFormats(unittest.TestCase):
         cls.config_path = os.path.join(cls.test_dir, "config.toml")
         with open(cls.config_path, "w") as f:
             f.write(f"""
+[backend.local]
+kind = "fastembed"
+
+[embedder.default]
+backend = "local"
+model = "all-minilm-l6-v2"
+
 [profiles.default]
+embedder = "default"
 qdrant_url = "http://localhost:{cls.grpc_port}"
 collection_name = "{COLLECTION_NAME}"
-embedder_type = "local"
-embedding_model = "default"
 accept_invalid_certs = true
-chunk_size = 512
+target_chunk_size = 512
 """)
 
         # Build
@@ -97,7 +112,7 @@ chunk_size = 512
             ["cargo", "build", "-p", "vecdb-server"],
             check=True, capture_output=True, cwd=cls.root,
         )
-        cls.server_bin = os.path.join(cls.root, "target/debug/vecdb-server")
+        cls.server_bin = os.path.join(cls.root, bin_path("vecdb-server"))
 
     @classmethod
     def tearDownClass(cls):
@@ -213,7 +228,8 @@ chunk_size = 512
                 }
             })
             self.assertNotIn("error", res)
-            content = json.loads(res["result"]["content"][0]["text"])
+            content = search_results(json.loads(res["result"]["content"][0]["text"]),
+                                     context="mcp search_vectors")
             self.assertGreater(len(content), 0, "No results for CUDA query")
 
             top_files = [r.get("metadata", {}).get("source", "") for r in content[:3]]
@@ -237,7 +253,8 @@ chunk_size = 512
                     "limit": 20,
                 }
             })
-            content = json.loads(res["result"]["content"][0]["text"])
+            content = search_results(json.loads(res["result"]["content"][0]["text"]),
+                                     context="mcp search_vectors")
 
             # Check that no result references a binary file
             binary_exts = ('.bin', '.ppm', '.bmp', '.doc', '.docx', '.pdf', '.png', '.yuv')

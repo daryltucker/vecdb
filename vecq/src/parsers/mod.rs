@@ -10,7 +10,7 @@
 //   - Must provide consistent interface across all parser implementations
 //   - Must enable easy addition of new language parsers
 //   - Must maintain parser isolation for independent development
-//   
+//
 //   Implementation-discovered:
 //   - Requires careful module organization for clean compilation
 //   - Must handle conditional compilation for optional parsers
@@ -20,19 +20,19 @@
 // IMPLEMENTATION RULES:
 //   1. Each language parser gets its own module file
 //      Rationale: Enables independent development and testing of parsers
-//   
+//
 //   2. All parsers must implement the Parser trait consistently
 //      Rationale: Ensures uniform interface for parser registry
-//   
+//
 //   3. Use feature flags for optional language support
 //      Rationale: Reduces compilation time when only subset of languages needed
-//   
+//
 //   4. Re-export parser implementations for convenient access
 //      Rationale: Simplifies usage from other modules
-//   
+//
 //   5. Provide parser factory functions for easy instantiation
 //      Rationale: Hides implementation details from users
-//   
+//
 //   Critical:
 //   - DO NOT break Parser trait compatibility across implementations
 //   - DO NOT create circular dependencies between parser modules
@@ -40,12 +40,12 @@
 //
 // USAGE:
 //   use vecq::parsers::{MarkdownParser, RustParser, PythonParser};
-//   
+//
 //   // Create parser instances
 //   let markdown_parser = MarkdownParser::new();
 //   let rust_parser = RustParser::new();
 //   let python_parser = PythonParser::new();
-//   
+//
 //   // Or use factory functions
 //   let parser = vecq::parsers::create_parser(FileType::Rust)?;
 //
@@ -58,7 +58,7 @@
 //   5. Update create_parser() factory function
 //   6. Add comprehensive tests in tests/unit/parsers/
 //   7. Update documentation and examples
-//   
+//
 //   When modifying parser interface:
 //   1. Update ALL parser implementations consistently
 //   2. Update factory functions and re-exports
@@ -106,10 +106,13 @@ pub mod bash;
 
 pub mod javascript;
 
-pub mod text;
 pub mod html;
-pub mod toml;
 pub mod json;
+pub(crate) mod json_spans;
+pub mod text;
+pub mod toml;
+pub mod yaml;
+pub(crate) mod yaml_spans;
 
 // Re-export parser implementations
 pub use markdown::MarkdownParser;
@@ -129,35 +132,36 @@ pub use bash::BashParser;
 
 pub use javascript::JavaScriptParser;
 
-pub use text::TextParser;
 pub use html::HtmlParser;
-pub use toml::TomlParser;
 pub use json::JsonParser;
+pub use text::TextParser;
+pub use toml::TomlParser;
+pub use yaml::YamlParser;
 
 /// Create a parser instance for the specified file type
 pub fn create_parser(file_type: FileType) -> VecqResult<Box<dyn Parser>> {
     match file_type {
-
         FileType::Markdown => Ok(Box::new(MarkdownParser::new())),
         FileType::Rust => Ok(Box::new(RustParser::new())),
-        
+
         FileType::Python => Ok(Box::new(PythonParser::new())),
-        
+
         FileType::C => Ok(Box::new(CParser::new())),
-        
+
         FileType::Cpp => Ok(Box::new(CppParser::new())),
-        
+
         FileType::Cuda => Ok(Box::new(CudaParser::new())),
-        
+
         FileType::Go => Ok(Box::new(GoParser::new())),
-        
+
         FileType::Bash => Ok(Box::new(BashParser::new())),
-        
+
         FileType::Text => Ok(Box::new(TextParser::new())),
         FileType::Html => Ok(Box::new(HtmlParser::new())),
         FileType::Toml => Ok(Box::new(TomlParser::new())),
+        FileType::Yaml => Ok(Box::new(YamlParser::new())),
         FileType::Json => Ok(Box::new(JsonParser::new())),
-        
+
         _ => Err(VecqError::UnsupportedFileType {
             file_type: file_type.to_string(),
         }),
@@ -166,28 +170,26 @@ pub fn create_parser(file_type: FileType) -> VecqResult<Box<dyn Parser>> {
 
 /// Get list of available parsers (considering feature flags)
 pub fn available_parsers() -> Vec<FileType> {
-    let mut parsers = vec![
-        FileType::Markdown,
-        FileType::Rust,
-    ];
-    
+    let mut parsers = vec![FileType::Markdown, FileType::Rust];
+
     parsers.push(FileType::Python);
-    
+
     parsers.push(FileType::C);
-    
+
     parsers.push(FileType::Cpp);
-    
+
     parsers.push(FileType::Cuda);
-    
+
     parsers.push(FileType::Go);
-    
+
     parsers.push(FileType::Bash);
-    
+
     parsers.push(FileType::Text);
     parsers.push(FileType::Html);
     parsers.push(FileType::Toml);
+    parsers.push(FileType::Yaml);
     parsers.push(FileType::Json);
-    
+
     parsers
 }
 
@@ -285,10 +287,10 @@ mod tests {
     fn test_parser_creation() {
         let markdown_parser = create_parser(FileType::Markdown);
         assert!(markdown_parser.is_ok());
-        
+
         let rust_parser = create_parser(FileType::Rust);
         assert!(rust_parser.is_ok());
-        
+
         let unknown_parser = create_parser(FileType::Unknown);
         assert!(unknown_parser.is_err());
     }
@@ -300,13 +302,13 @@ mod tests {
         let info = markdown_info.unwrap();
         assert_eq!(info.name, "Markdown Parser");
         assert!(!info.supported_features.is_empty());
-        
+
         let rust_info = get_parser_info(FileType::Rust);
         assert!(rust_info.is_some());
         let info = rust_info.unwrap();
         assert_eq!(info.name, "Rust Parser");
         assert!(info.supported_features.contains(&"Functions".to_string()));
-        
+
         let unknown_info = get_parser_info(FileType::Unknown);
         assert!(unknown_info.is_none());
     }

@@ -23,7 +23,7 @@ pub async fn ingest_history(
     repo_path: &str,
     git_ref: &str,
     collection: &str,
-    chunk_size: usize,
+    target_chunk_size: usize,
     quantization: Option<crate::config::QuantizationType>,
     target_dim: Option<usize>,
 ) -> Result<()> {
@@ -46,19 +46,23 @@ pub async fn ingest_history(
     }
 
     // 2. Configure Options
-    // Note: We bypass gitignore for history usually, as we want exactly what was in that commit.
-    // However, if the user had ignores back then, arguably we should respect them?
-    // For "Time Travel", usually we want source code only.
-    // Let's enable gitignore respect if the .gitignore exists in that version.
+    //
+    // History ingestion indexes exactly what was in that commit. A checkout of
+    // an old ref carries that ref's `.gitignore`, and honouring it would make
+    // the indexed content vary with a file that describes build artifacts
+    // rather than indexing intent — the same reason `.gitignore` is never
+    // consulted implicitly anywhere else. `.vectorignore` remains in force.
     let options = IngestionOptions {
         path: sandbox.path().to_string_lossy().to_string(),
         collection: collection.to_string(),
         vecdbrc_routes: None,
         vecdbrc_root: None,
-        chunk_size,
-        max_chunk_size: None, // History ingestion usually relies on standard chunking, no hard limit enforced yet
+        target_chunk_size,
+        on_oversize: Default::default(),
+        route_chunking: Default::default(),
+        max_chunk_bytes: None, // History ingestion usually relies on standard chunking, no hard limit enforced yet
         chunk_overlap: 50,
-        respect_gitignore: true,
+        respect_gitignore: false,
         ignore_vectorignore: false,
         strategy: "recursive".to_string(),
         tokenizer: "cl100k_base".to_string(),
@@ -73,6 +77,7 @@ pub async fn ingest_history(
         max_concurrent_requests: 4,
         gpu_batch_size: 2,
         quantization,
+        allow_quantization_delta: false,
     };
 
     // 3. Ingest
@@ -88,7 +93,15 @@ pub async fn ingest_history(
     // Quick Fix: We'll accept the sandbox path for now to prove the "Time Travel" capability.
     // The "Right Way" is to refactor `ingest_path` to take `logical_root`.
     // Let's proceed with standard ingestion first.
-    ingest_path(backend, embedder, detector, parser_factory, options, target_dim).await?;
+    ingest_path(
+        backend,
+        embedder,
+        detector,
+        parser_factory,
+        options,
+        target_dim,
+    )
+    .await?;
 
     if OUTPUT.is_interactive {
         eprintln!("Time Travel Ingestion Complete. Sandbox will be dropped.");

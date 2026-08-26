@@ -18,7 +18,15 @@ Version: 1.0.3
 - **Semantic Mapping**: Finds code concepts (e.g., "auth implementation") rather than exact strings.
 - **Workflow**: Always search before reading large files.
 - **Tips**:
-    - Use `smart=true` for automatic filtering by language or version.
+    - Use `smart=true` to enable `key:value` qualifiers in the query
+      (e.g. `"parse errors language:rust"`). Off by default; qualifiers are
+      never inferred from ordinary prose. Whatever was applied comes back in
+      `applied_filters`.
+    - Use `limit` to control result count (default 10). If `result_count`
+      equals `limit`, the list was TRUNCATED — raise it rather than assuming
+      the corpus is exhausted.
+    - Use `min_score` to threshold. It is applied by the vector store before
+      the limit, so it never silently shortens a full page.
     - Use specific queries like "how is the login hash calculated" rather than just "login".
 
 ### 2. Job Status (`status`)

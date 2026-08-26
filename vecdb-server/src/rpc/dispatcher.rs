@@ -4,7 +4,7 @@
 use crate::core_registry::CoreRegistry;
 use crate::rpc::resources;
 use crate::rpc::tools;
-use crate::rpc::types::{JsonRpcError, JsonRpcRequest, json_rpc_error};
+use crate::rpc::types::{json_rpc_error, JsonRpcError, JsonRpcRequest};
 use schemars::schema_for;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -31,7 +31,8 @@ pub async fn handle_request(
             resources::handle_resources_read(registry, config, req, active_profile_name).await
         }
         "tools/call" => {
-            tools::handle_tools_call(registry, config, req, allow_local_fs, active_profile_name).await
+            tools::handle_tools_call(registry, config, req, allow_local_fs, active_profile_name)
+                .await
         }
         _ => Err(json_rpc_error(
             -32601,
@@ -43,14 +44,10 @@ pub async fn handle_request(
 /// Handle MCP initialization
 fn handle_initialize() -> Result<Value, JsonRpcError> {
     let version = env!("CARGO_PKG_VERSION");
-    let git_hash = std::process::Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .current_dir("/home/daryl/Projects/NRG/vecdb-mcp")
-        .output()
-        .ok()
-        .and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).trim().to_string()) } else { None })
-        .unwrap_or_else(|| "unknown".to_string());
-    
+    // Build-time stamp; this runs on every MCP initialize, and spawning a
+    // subprocess per handshake to answer a constant is not worth it.
+    let git_hash = vecdb_common::revision();
+
     Ok(json!({
         "protocolVersion": "2025-11-25",
         "serverInfo": {
@@ -87,7 +84,7 @@ fn handle_tools_list() -> Result<Value, JsonRpcError> {
         "tools": [
             {
                 "name": "search_vectors",
-                "description": "Semantic search against vector collections. Returns chunks with content, metadata, and relevance scores.\n\nExample: search_vectors(collection='docs', query='authentication implementation')\n\nWorkflow: Call list_collections first if unsure which collection to query.\nTip: Use specific queries for better results ('implement CORS' vs 'security').",
+                "description": "Semantic search against a vector collection.\n\nExample: search_vectors(collection='docs', query='authentication implementation')\n\nReturns an object: {collection, query, limit, min_score, applied_filters, result_count, results[]}. Each result has content, metadata (path, line_start, line_end), and score.\n\nReading the response:\n- result_count == limit means the list was CUT OFF. There may be more; re-run with a higher limit.\n- applied_filters is non-empty only when smart=true parsed a qualifier. If results look narrower than expected, check it.\n- An empty results[] with a non-empty applied_filters or a min_score means the corpus was narrowed, NOT that it is empty.\n\nWorkflow: Call list_collections first if unsure which collection to query.\nTip: Prefer specific queries ('implement CORS preflight' over 'security'). Semantic search rewards phrasing that resembles the target text, not keywords.",
                 "inputSchema": to_json(search_schema)?
             },
             {

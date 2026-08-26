@@ -43,8 +43,7 @@ impl Backend for MockBackend {
         &self,
         _c: &str,
         _v: &[f32],
-        _l: u64,
-        _f: Option<serde_json::Value>,
+        _p: vecdb_core::backend::SearchParams,
     ) -> Result<Vec<SearchResult>> {
         let store = self.storage.lock().unwrap();
         Ok(store
@@ -68,6 +67,10 @@ impl Backend for MockBackend {
             .collect())
     }
 
+    async fn delete_stale_points(&self, _c: &str, _d: &str, _k: &[String]) -> Result<usize> {
+        Ok(0)
+    }
+
     async fn list_collections(&self) -> Result<Vec<String>> {
         Ok(vec!["docs".to_string()])
     }
@@ -78,6 +81,8 @@ impl Backend for MockBackend {
             vector_count: Some(100),
             vector_size: Some(3),
             quantization: None,
+            vectors_on_disk: None,
+            payload_on_disk: None,
         })
     }
 
@@ -100,6 +105,38 @@ impl Backend for MockBackend {
     }
     async fn list_tasks(&self) -> anyhow::Result<Vec<vecdb_core::types::TaskInfo>> {
         Ok(vec![])
+    }
+
+    async fn write_genesis(
+        &self,
+        _c: &str,
+        _m: &vecdb_core::types::GenesisMetadata,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn read_genesis(&self, _c: &str) -> anyhow::Result<vecdb_core::types::CollectionGenesis> {
+        // Mirror MockEmbedder::identity so the space guard sees a matching
+        // contract. `present: false` would (correctly) make every ingest here
+        // fail as "not created by vecdb".
+        Ok(vecdb_core::types::CollectionGenesis {
+            collection_id: Some("mock-collection".to_string()),
+            model: vecdb_core::types::ModelIdentity {
+                name: "mock-embedder".to_string(),
+                digest: Some("mock:test-double".to_string()),
+                architecture: Some("mock".to_string()),
+                family: Some("mock".to_string()),
+                parameter_size: Some("0".to_string()),
+                quantization_level: Some("none".to_string()),
+                embedding_length: None,
+                context_length: Some(8192),
+            },
+            dimension: None,
+            distance: Some("Cosine".to_string()),
+            created_at: None,
+            vecdb_version: Some("test".to_string()),
+            vecdb_revision: None,
+            chunking: None,
+        })
     }
 }
 
@@ -127,5 +164,21 @@ impl Embedder for MockEmbedder {
 
     fn model_name(&self) -> String {
         "mock-model".to_string()
+    }
+
+    async fn identity(&self) -> anyhow::Result<vecdb_core::types::ModelIdentity> {
+        // Shared sentinel: every test double is one embedding space, so the
+        // compatibility guard passes and these tests exercise what they are
+        // actually about. Guard behaviour has its own dedicated tests.
+        Ok(vecdb_core::types::ModelIdentity {
+            name: "mock-embedder".to_string(),
+            digest: Some("mock:test-double".to_string()),
+            architecture: Some("mock".to_string()),
+            family: Some("mock".to_string()),
+            parameter_size: Some("0".to_string()),
+            quantization_level: Some("none".to_string()),
+            embedding_length: None,
+            context_length: Some(8192),
+        })
     }
 }

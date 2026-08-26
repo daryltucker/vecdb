@@ -5,11 +5,15 @@ import subprocess
 import time
 import psutil
 
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import find_bin
+
 def log(msg):
     print(f"[MiniTest] {msg}")
 
 def main():
-    cli_bin = "target/release/vecdb"
+    cli_bin = find_bin("vecdb")
     lua_file = "tests/fixtures/external/lua-5.4.6/src/lapi.c"
     
     if not os.path.exists(lua_file):

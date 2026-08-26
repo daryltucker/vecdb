@@ -20,20 +20,26 @@ pub struct SnapshotArgs {
     pub collection: Option<String>, // Optional override
 }
 
-pub async fn run(args: SnapshotArgs, config: &Config, profile_name: Option<&str>) -> anyhow::Result<()> {
-    let profile = config.resolve_profile(profile_name, args.collection.as_deref())?;
-    let display_profile = &profile.resolved_profile_name;
+pub async fn run(
+    args: SnapshotArgs,
+    config: &Config,
+    profile_name: Option<&str>,
+    overrides: vecdb_core::config::Overrides<'_>,
+) -> anyhow::Result<()> {
+    let resolution = config.resolve_with(profile_name, args.collection.as_deref(), overrides)?;
+    let display_profile = resolution.profile_name.clone();
+    let display_profile = display_profile.as_str();
 
     let collection_name = args
         .collection
         .as_deref()
-        .or(profile.default_collection_name.as_deref())
+        .or(resolution.collection.as_deref())
         .ok_or_else(|| anyhow::anyhow!(
             "No collection specified. Use -c <name>, or point a collection to profile \"{}\" in config.",
             display_profile
         ))?;
 
-    let manager = vecdb_core::snapshot::SnapshotManager::new(&profile.qdrant_url)?;
+    let manager = vecdb_core::snapshot::SnapshotManager::new(&resolution.qdrant_url)?;
 
     if args.create {
         if OUTPUT.is_interactive {

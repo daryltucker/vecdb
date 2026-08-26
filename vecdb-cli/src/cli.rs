@@ -8,9 +8,21 @@ use vecdb_core::config::Config;
 #[command(about = "Vector Database Project CLI", long_about = None)]
 #[command(after_help = "See `vecdb man --agent` for Agent Interface documentation.")]
 pub struct Cli {
-    /// Profile to use from config.toml
+    // One flag per config layer: WHICH (profile) / WHAT (embedder) / WHERE
+    // (backend). Overriding a layer with a flag beats redefining it in config,
+    // which is how two definitions of the same embedder drift apart.
+    /// Profile to use from config.toml — WHICH embedder and store
     #[arg(long, global = true)]
     pub profile: Option<String>,
+
+    /// Override the profile's embedder — WHAT model, and how it is tuned
+    #[arg(long, global = true)]
+    pub embedder: Option<String>,
+
+    /// Run the resolved embedder on a different backend — WHERE it executes.
+    /// Same model and tuning; only the host changes.
+    #[arg(long, global = true)]
+    pub backend: Option<String>,
 
     /// Force JSON output
     #[arg(long, short = 'j', global = true)]
@@ -27,18 +39,16 @@ pub struct Cli {
 pub async fn run() -> anyhow::Result<()> {
     // Build Version String
     let app_version = env!("CARGO_PKG_VERSION");
-    
-    // Try to get git hash
-    let git_hash = std::process::Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .current_dir("/home/daryl/Projects/NRG/vecdb-mcp")
-        .output()
-        .ok()
-        .and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).trim().to_string()) } else { None })
-        .unwrap_or_else(|| "unknown".to_string());
-    
+
+    // Stamped at build time by vecdb-common/build.rs. Reading it from `git` at
+    // runtime reported whatever was checked out then, not what this binary is.
+    let git_hash = vecdb_common::revision();
+
     let ort_version = vecdb_core::get_ort_version();
-    let long_version = format!("vecdb v{} (git:{})\nONNX v{}", app_version, git_hash, ort_version);
+    let long_version = format!(
+        "vecdb v{} (git:{})\nONNX v{}",
+        app_version, git_hash, ort_version
+    );
 
     // We manually build the command to inject the version
     let long_version_static: &'static str = Box::leak(long_version.into_boxed_str());
@@ -65,6 +75,10 @@ pub async fn run() -> anyhow::Result<()> {
     // Load Configuration
     let mut config = Config::load()?;
     let profile_arg = cli.profile.as_deref();
+    let overrides = vecdb_core::config::Overrides {
+        embedder: cli.embedder.as_deref(),
+        backend: cli.backend.as_deref(),
+    };
 
     let format = resolve_format_flags(cli.json, cli.markdown);
 
@@ -80,75 +94,64 @@ pub async fn run() -> anyhow::Result<()> {
             println!("   Default Profile: {}", config.default_profile);
             println!("   Edit this file to configure your profiles and keys.");
         }
-        Commands::Ingest(args) => commands::ingest::run(args, &config, profile_arg).await?,
+        Commands::Ingest(args) => {
+            commands::ingest::run(args, &config, profile_arg, overrides).await?
+        }
         Commands::Search(args) => {
-            commands::search::run(args, &config, profile_arg, format).await?
+            commands::search::run(args, &config, profile_arg, overrides, format).await?
         }
         Commands::List => commands::list::run(&config, profile_arg, format).await?,
         Commands::Status(args) => {
-            commands::status::run(args, &config, profile_arg, format).await?
+            commands::status::run(args, &config, profile_arg, overrides, format).await?
         }
         Commands::Delete(args) => {
-            let profile =
-                config.resolve_profile(profile_arg, args.collection.as_deref())?;
-                
+            let resolution =
+                config.resolve_with(profile_arg, args.collection.as_deref(), overrides)?;
+
             if args.all {
-                let is_local = profile.qdrant_url.contains("localhost") 
-                    || profile.qdrant_url.contains("127.0.0.1") 
-                    || profile.qdrant_url.contains("0.0.0.0");
+                let is_local = resolution.qdrant_url.contains("localhost")
+                    || resolution.qdrant_url.contains("127.0.0.1")
+                    || resolution.qdrant_url.contains("0.0.0.0");
                 if !is_local {
                     anyhow::bail!(
                         "Bulk deletion (--all) is restricted to local backends to prevent accidental data loss on remote systems ({}). \
-                        To delete a remote collection, please specify it by name.", 
-                        profile.qdrant_url
+                        To delete a remote collection, please specify it by name.",
+                        resolution.qdrant_url
                     );
                 }
             }
 
             // Delete only needs the backend (Qdrant) — no embedder required.
             // Set VECDB_SKIP_PROBE to prevent LocalEmbedder from eagerly loading the ONNX model.
-            unsafe { std::env::set_var("VECDB_SKIP_PROBE", "true"); }
-            use crate::vecq_adapter::VecqParserFactory;
+            unsafe {
+                std::env::set_var("VECDB_SKIP_PROBE", "true");
+            }
             use std::sync::Arc;
+            use vecdb_core::parsers::vecq_adapter::VecqParserFactory;
             use vecq::detection::HybridDetector;
             let file_detector = Arc::new(HybridDetector::new());
             let parser_factory = Arc::new(VecqParserFactory);
 
-            let _core = vecdb_core::Core::new(
-                &profile.qdrant_url,
-                &profile.ollama_url,
-                &config.resolve_embedding_model(&profile),
-                profile.accept_invalid_certs,
-                &profile.embedder_type,
-                Some(config.fastembed_cache_path.clone()),
-                config.resolve_local_use_gpu(args.collection.as_deref()),
-                profile.qdrant_api_key.clone(),
-                profile.ollama_api_key.clone(),
-                config.smart_routing_keys.clone(),
-                config.ingestion.path_rules.clone(),
-                config.ingestion.max_concurrent_requests,
-                config.resolve_gpu_batch_size(&profile, args.collection.as_deref()),
-                profile.num_ctx,
+            let services = vecdb_core::CoreServices::from_config(
+                &config,
                 file_detector.clone(),
                 parser_factory.clone(),
-            )
-            .await?;
+            );
+            let _core = vecdb_core::Core::new(&resolution, services).await?;
             commands::delete::run(args, &config).await?;
         }
         Commands::Snapshot(args) => {
-            commands::snapshot::run(args, &config, profile_arg).await?
+            commands::snapshot::run(args, &config, profile_arg, overrides).await?
         }
         Commands::Man(args) => commands::man::run(args)?,
-        Commands::Config(args) => commands::config::run(args, &mut config)?,
+        Commands::Config(args) => commands::config::run(args, &mut config, profile_arg, overrides)?,
         Commands::Optimize(args) => {
-            commands::optimize::run(args, &config, profile_arg).await?
+            commands::optimize::run(args, &config, profile_arg, overrides).await?
         }
         Commands::History(args) => {
-            commands::history::run(args, &config, profile_arg).await?
+            commands::history::run(args, &config, profile_arg, overrides).await?
         }
-        Commands::EnableUsages(args) => {
-            commands::enable_usages::run(args).await?
-        }
+        Commands::EnableUsages(args) => commands::enable_usages::run(args).await?,
     }
 
     Ok(())

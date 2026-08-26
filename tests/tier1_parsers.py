@@ -5,8 +5,12 @@ import subprocess
 import sys
 import time
 
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import bin_path
+
 # --- Configuration ---
-BINARY_PATH = "./target/debug/vecdb"
+BINARY_PATH = bin_path("vecdb")
 TEST_DIR = "tests/tier1_parsers_test_env"
 
 def run_command(cmd, check=True):

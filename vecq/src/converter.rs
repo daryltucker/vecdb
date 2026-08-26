@@ -10,7 +10,7 @@
 //   - Must preserve all structural information including line numbers and metadata
 //   - Must support hierarchical document structures with nested elements
 //   - Must enable jq-compatible querying of all document types
-//   
+//
 //   Implementation-discovered:
 //   - Requires serde_json for JSON serialization and manipulation
 //   - Must handle large documents efficiently without memory issues
@@ -20,19 +20,19 @@
 // IMPLEMENTATION RULES:
 //   1. All JSON outputs must include common metadata fields (file_type, path, line_count)
 //      Rationale: Enables consistent querying patterns across all document types
-//   
+//
 //   2. Use snake_case for all JSON field names consistently
 //      Rationale: Matches jq conventions and provides predictable query syntax
-//   
+//
 //   3. Preserve exact line numbers for all structural elements
 //      Rationale: Required for grep compatibility and source location tracking
-//   
+//
 //   4. Use consistent element type names across languages where possible
 //      Rationale: Enables cross-language queries like "find all functions"
-//   
+//
 //   5. Schema registry must support versioning for backward compatibility
 //      Rationale: Allows schema evolution without breaking existing queries
-//   
+//
 //   Critical:
 //   - DO NOT change existing JSON field names without migration plan
 //   - DO NOT lose structural information during conversion
@@ -41,14 +41,14 @@
 // USAGE:
 //   use vecq::converter::{JsonConverter, UnifiedJsonConverter, SchemaRegistry};
 //   use vecq::types::{ParsedDocument, FileType};
-//   
+//
 //   // Create converter with schema registry
 //   let mut registry = SchemaRegistry::new();
 //   let converter = UnifiedJsonConverter::new(registry);
-//   
+//
 //   // Convert document to JSON
 //   let json_value = converter.convert(parsed_document)?;
-//   
+//
 //   // Query with jq syntax
 //   let functions = jq::run(".functions[] | .name", &json_value)?;
 //
@@ -60,7 +60,7 @@
 //   4. Add JSON schema validation tests
 //   5. Update property tests to include new file type
 //   6. Document new schema in design document
-//   
+//
 //   When modifying existing schemas:
 //   1. Increment schema version number
 //   2. Add backward compatibility handling for old versions
@@ -141,8 +141,15 @@ impl Schema {
     }
 
     /// Add an attribute definition for an element type
-    pub fn with_attribute_definition(mut self, element_type: ElementType, attribute: String) -> Self {
-        self.attribute_definitions.entry(element_type).or_default().push(attribute);
+    pub fn with_attribute_definition(
+        mut self,
+        element_type: ElementType,
+        attribute: String,
+    ) -> Self {
+        self.attribute_definitions
+            .entry(element_type)
+            .or_default()
+            .push(attribute);
         self
     }
 
@@ -156,7 +163,10 @@ impl Schema {
 
     /// Get attributes for an element type
     pub fn get_attributes(&self, element_type: ElementType) -> Vec<String> {
-        self.attribute_definitions.get(&element_type).cloned().unwrap_or_default()
+        self.attribute_definitions
+            .get(&element_type)
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -264,10 +274,10 @@ impl SchemaRegistry {
         self.register_bash_schema();
         self.register_text_schema();
         self.register_toml_schema();
+        self.register_yaml_schema();
         self.register_html_schema();
         self.register_json_schema();
     }
-
 
     fn register_c_cpp_schemas(&mut self) {
         // C schema
@@ -342,6 +352,18 @@ impl SchemaRegistry {
         self.register(toml_schema);
     }
 
+    /// YAML shares TOML's shape deliberately: both are nested configuration,
+    /// so `.tables[]` and `.entries[]` mean the same thing in both and a query
+    /// written for one works on the other.
+    fn register_yaml_schema(&mut self) {
+        let yaml_schema = Schema::new("1.0".to_string(), FileType::Yaml)
+            .with_required_field("tables".to_string())
+            .with_required_field("entries".to_string())
+            .with_element_mapping(ElementType::Block, "tables".to_string())
+            .with_element_mapping(ElementType::Variable, "entries".to_string());
+        self.register(yaml_schema);
+    }
+
     fn register_html_schema(&mut self) {
         let html_schema = Schema::new("1.0".to_string(), FileType::Html)
             .with_required_field("elements".to_string())
@@ -361,7 +383,6 @@ impl SchemaRegistry {
     }
 }
 
-
 /// Unified JSON converter that handles all file types
 pub struct UnifiedJsonConverter {
     schema_registry: SchemaRegistry,
@@ -371,9 +392,9 @@ pub struct UnifiedJsonConverter {
 impl UnifiedJsonConverter {
     /// Create a new unified JSON converter
     pub fn new(schema_registry: SchemaRegistry) -> Self {
-        Self { 
+        Self {
             schema_registry,
-            context_lines: 0, 
+            context_lines: 0,
         }
     }
 
@@ -389,7 +410,12 @@ impl UnifiedJsonConverter {
     }
 
     /// Convert document element to JSON value
-    fn convert_element(&self, element: &DocumentElement, crumbtrail: &str, doc: &ParsedDocument) -> Value {
+    fn convert_element(
+        &self,
+        element: &DocumentElement,
+        crumbtrail: &str,
+        doc: &ParsedDocument,
+    ) -> Value {
         let mut obj = Map::new();
 
         // Basic element information
@@ -400,7 +426,7 @@ impl UnifiedJsonConverter {
         obj.insert("content".to_string(), json!(element.content));
         obj.insert("line_start".to_string(), json!(element.line_start));
         obj.insert("line_end".to_string(), json!(element.line_end));
-        
+
         if !crumbtrail.is_empty() {
             obj.insert("crumbtrail".to_string(), json!(crumbtrail));
         }
@@ -411,7 +437,7 @@ impl UnifiedJsonConverter {
             if !context_before.is_empty() {
                 obj.insert("context_before".to_string(), json!(context_before));
             }
-            
+
             let context_after = doc.get_context_after(element.line_end, self.context_lines);
             if !context_after.is_empty() {
                 obj.insert("context_after".to_string(), json!(context_after));
@@ -424,21 +450,28 @@ impl UnifiedJsonConverter {
         }
 
         // Children handled by group_elements_by_type for now to avoid double recursion complexity here
-        // or we can add them here if needed. 
+        // or we can add them here if needed.
 
         Value::Object(obj)
     }
 
     /// Group elements by type for structured output
-    fn group_elements_by_type(&self, elements: &[DocumentElement], parent_path: String, doc: &ParsedDocument) -> HashMap<String, Vec<Value>> {
+    fn group_elements_by_type(
+        &self,
+        elements: &[DocumentElement],
+        parent_path: String,
+        doc: &ParsedDocument,
+    ) -> HashMap<String, Vec<Value>> {
         let mut grouped: HashMap<String, Vec<Value>> = HashMap::new();
 
         for element in elements {
             // Use schema for the document's file type
-            let field_name = self.schema_registry.get_schema(doc.file_type())
+            let field_name = self
+                .schema_registry
+                .get_schema(doc.file_type())
                 .unwrap_or_else(|_| self.schema_registry.get_schema(FileType::Text).unwrap()) // Fallback
                 .get_element_field(element.element_type);
-            
+
             // Build current path
             let current_path = if let Some(name) = &element.name {
                 if parent_path.is_empty() {
@@ -451,11 +484,12 @@ impl UnifiedJsonConverter {
             };
 
             let mut json_element = self.convert_element(element, &parent_path, doc);
-            
+
             // Recursively process children
             if !element.children.is_empty() {
-                let children_grouped = self.group_elements_by_type(&element.children, current_path.clone(), doc);
-                
+                let children_grouped =
+                    self.group_elements_by_type(&element.children, current_path.clone(), doc);
+
                 // Merge children's flattened lists into the main grouped list
                 for (k, mut v) in children_grouped {
                     grouped.entry(k).or_default().append(&mut v);
@@ -464,19 +498,16 @@ impl UnifiedJsonConverter {
 
             // check if json_element is an object (it should be)
             if let Value::Object(ref mut map) = json_element {
-                 if !element.children.is_empty() {
-                     let mut children_arr = Vec::new();
-                     for child in &element.children {
-                         children_arr.push(self.convert_element(child, &current_path, doc));
-                     }
-                     map.insert("children".to_string(), Value::Array(children_arr));
-                 }
+                if !element.children.is_empty() {
+                    let mut children_arr = Vec::new();
+                    for child in &element.children {
+                        children_arr.push(self.convert_element(child, &current_path, doc));
+                    }
+                    map.insert("children".to_string(), Value::Array(children_arr));
+                }
             }
 
-            grouped
-                .entry(field_name)
-                .or_default()
-                .push(json_element);
+            grouped.entry(field_name).or_default().push(json_element);
         }
 
         grouped
@@ -500,15 +531,16 @@ impl UnifiedJsonConverter {
 impl JsonConverter for UnifiedJsonConverter {
     fn convert(&self, document: ParsedDocument) -> VecqResult<Value> {
         let schema = self.schema_registry.get_schema(document.file_type())?;
-        
+
         let mut result = Map::new();
 
         // Add metadata
         result.insert("metadata".to_string(), self.create_metadata_json(&document));
 
         // Group elements by type according to schema - pass empty string for root
-        let grouped_elements = self.group_elements_by_type(&document.elements, String::new(), &document);
-        
+        let grouped_elements =
+            self.group_elements_by_type(&document.elements, String::new(), &document);
+
         // Add grouped elements to result
         for (field_name, elements) in grouped_elements {
             result.insert(field_name, Value::Array(elements));
@@ -530,7 +562,7 @@ impl JsonConverter for UnifiedJsonConverter {
 
     fn validate_schema(&self, json: &Value, file_type: FileType) -> VecqResult<()> {
         let schema = self.schema_registry.get_schema(file_type)?;
-        
+
         let obj = json.as_object().ok_or_else(|| {
             VecqError::json_error("JSON must be an object".to_string(), None::<std::io::Error>)
         })?;
@@ -548,7 +580,10 @@ impl JsonConverter for UnifiedJsonConverter {
         // Validate metadata structure
         if let Some(metadata) = obj.get("metadata") {
             let metadata_obj = metadata.as_object().ok_or_else(|| {
-                VecqError::json_error("Metadata must be an object".to_string(), None::<std::io::Error>)
+                VecqError::json_error(
+                    "Metadata must be an object".to_string(),
+                    None::<std::io::Error>,
+                )
             })?;
 
             let required_metadata_fields = ["file_type", "path", "line_count"];
@@ -600,34 +635,36 @@ mod tests {
     #[test]
     fn test_schema_registry() {
         let registry = SchemaRegistry::new();
-        
+
         let rust_schema = registry.get_schema(FileType::Rust).unwrap();
         assert_eq!(rust_schema.version, "1.0");
         assert_eq!(rust_schema.file_type, FileType::Rust);
-        assert!(rust_schema.required_fields.contains(&"functions".to_string()));
+        assert!(rust_schema
+            .required_fields
+            .contains(&"functions".to_string()));
     }
 
     #[test]
     fn test_json_conversion() {
         let converter = UnifiedJsonConverter::with_default_schemas();
         let document = create_test_document();
-        
+
         let json = converter.convert(document).unwrap();
-        
+
         // Check structure
         assert!(json.is_object());
         let obj = json.as_object().unwrap();
-        
+
         assert!(obj.contains_key("metadata"));
         assert!(obj.contains_key("functions"));
         assert!(obj.contains_key("structs"));
-        
+
         // Check functions array
         let functions = obj.get("functions").unwrap().as_array().unwrap();
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0]["name"], "main");
         assert_eq!(functions[0]["line_start"], 1);
-        
+
         // Check structs array
         let structs = obj.get("structs").unwrap().as_array().unwrap();
         assert_eq!(structs.len(), 1);
@@ -640,22 +677,24 @@ mod tests {
         let converter = UnifiedJsonConverter::with_default_schemas();
         let document = create_test_document();
         let json = converter.convert(document).unwrap();
-        
+
         // Valid JSON should pass validation
         assert!(converter.validate_schema(&json, FileType::Rust).is_ok());
-        
+
         // Invalid JSON should fail validation
         let invalid_json = json!({
             "metadata": {},
             // Missing required fields
         });
-        assert!(converter.validate_schema(&invalid_json, FileType::Rust).is_err());
+        assert!(converter
+            .validate_schema(&invalid_json, FileType::Rust)
+            .is_err());
     }
 
     #[test]
     fn test_element_conversion() {
         let converter = UnifiedJsonConverter::with_default_schemas();
-        
+
         let element = DocumentElement::new(
             ElementType::Function,
             Some("test_func".to_string()),
@@ -671,13 +710,13 @@ mod tests {
             6,
             6,
         ));
-        
+
         // Need dummy doc for context
         let metadata = DocumentMetadata::new(PathBuf::from("test.rs"), 0);
         let doc = ParsedDocument::new(metadata);
 
         let json = converter.convert_element(&element, "", &doc);
-        
+
         assert_eq!(json["type"], "function");
         assert_eq!(json["name"], "test_func");
         assert_eq!(json["line_start"], 5);

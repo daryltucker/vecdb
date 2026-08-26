@@ -4,256 +4,315 @@ This document provides a complete reference for configuring `vecdb`.
 
 ## Quick Start
 
-Copy this minimal configuration to `~/.config/vecdb/config.toml`:
+Copy this to `~/.config/vecdb/config.toml`:
 
 ```toml
-# Minimal Configuration - Works out of the box!
 default_profile = "default"
 
-[profiles.default]
-qdrant_url = "http://localhost:6334"
+[backend.local]
+kind = "fastembed"
 
-[collections.docs]
-name = "docs"
-profile = "default"
+[embedder.default]
+backend = "local"
+model = "all-minilm-l6-v2"
+
+[profiles.default]
+embedder = "default"
+qdrant_url = "http://localhost:6334"
 ```
 
-That's it! The local embedder is enabled by default, so no external services are required (except Qdrant).
+That is the whole thing — the local embedder needs no external services (except
+Qdrant).
 
-> **Note:** `default_collection_name` on profiles is optional. The recommended pattern is for **collections to reference profiles** (via `profile = "..."`) rather than profiles referencing collections. This lets you reuse a single profile across many collections.
+### The three layers
 
----
+Configuration is split by *what a thing actually is*, so one setting can never
+silently apply to something it does not describe:
+
+| Layer | Answers | Contains |
+|---|---|---|
+| `[backend.<name>]` | **WHERE** a model runs | connection only — `kind`, `url`, credentials |
+| `[embedder.<name>]` | **WHAT** model, **HOW** tuned | `backend`, `model`, `num_ctx`, batch size, `dimension` |
+| `[profiles.<name>]` | **WHICH** embedder + **WHICH** store | `embedder`, `qdrant_url`, chunking overrides |
+
+The split exists because one Ollama instance serves many models. Two embedders
+may share one backend:
+
+```toml
+[backend.blade]
+kind = "ollama"
+url  = "http://blade.lan:11434"
+
+[embedder.small]
+backend = "blade"
+model   = "qwen3-embedding:0.6b-q8_0"
+num_ctx = 16384
+
+[embedder.large]
+backend = "blade"          # same instance
+model   = "qwen3-embedding:4b-q8_0"
+num_ctx = 8192
+```
+
+**Backend names are free-form** — `kind` says what it is, so the name need not
+repeat it. Dots must be quoted: `[backend."ollama.blade"]` is a backend named
+`ollama.blade`, while `[backend.ollama.blade]` is a *nested table* and will not
+parse.
+
+Every reference is validated when the config loads, so a typo in `embedder = `
+or `backend = ` is reported immediately, naming what exists.
+
+To see what any of it resolves to, and where each value came from:
+
+```
+vecdb config show -c <collection>
+```
+
+### Overriding a layer for one run
+
+Each layer has a flag, so a single run can change one without redefining it:
+
+| Flag | Overrides | Changes |
+|---|---|---|
+| `--profile <name>` | WHICH | embedder *and* store |
+| `--embedder <name>` | WHAT + HOW | the model and its tuning; store unchanged |
+| `--backend <name>` | WHERE | the host only — model, `num_ctx` and batch unchanged |
+
+The motivating case is two machines filling one collection in parallel, because
+a single embed host becomes everyone's queue:
+
+```bash
+# terminal 1 — this repo, on the embedder's own backend
+vecdb --profile code ingest -c code ./
+
+# terminal 2 — another repo, same collection, different GPU
+vecdb --profile code --backend blade ingest -c code ./
+```
+
+This is safe only because `--backend` cannot change what a vector *is*. Both
+runs use the same model and the same tuning, so both write into the same
+embedding space — and that is verified rather than assumed: the collection
+records the model's **weight digest**, and a run whose digest or dimension
+disagrees is refused (see *Model identity*, below).
+
+Two things it deliberately will not do:
+
+- **Cross a `kind`.** Only the knobs matching a backend's `kind` are consulted,
+  so pointing an Ollama-tuned embedder at a `fastembed` backend would discard
+  `num_ctx` and `batch_inputs` and embed at defaults you never chose. That is an
+  error naming `--embedder` as the way to do it deliberately.
+- **Blame the wrong thing.** An unknown `--backend` reports the flag, not the
+  `[embedder.*]` table, which is correct and would otherwise be audited for
+  nothing.
+
+`vecdb list` ignores both flags by design: it resolves every profile to
+enumerate *stores*, so an embedder override across all of them is meaningless.
+
+`config show` reports an override as its source, so the effective value never
+points at a table that does not explain it:
+
+```
+embedder   baby_qwen  (qwen3-embedding:0.6b-q8_0 on backend blade — ollama)
+           backend  selected by --backend (model and tuning unchanged)
+```
 
 ## Full Configuration Example
 
 ```toml
 # ~/.config/vecdb/config.toml
-# Full Configuration with all options
 
 default_profile = "default"
+fastembed_cache_path = "~/.config/vecdb/fastembed_cache"
+smart_routing_keys = ["source_type", "language"]
 
-# ═══════════════════════════════════════════════════════════
-# GLOBAL SETTINGS
-# ═══════════════════════════════════════════════════════════
+# ═══ BACKENDS — where models run ═══════════════════════════════
+[backend.local]
+kind = "fastembed"                  # in-process ONNX, no endpoint
 
-# Local embedding model (shared across ALL profiles with embedder_type="local")
-# Only ONE local model can be loaded per process
-local_embedding_model = "bge-micro-v2"
+[backend.blade]
+kind = "ollama"
+url  = "http://blade.lan:11434"
+# api_key = "..."
+# accept_invalid_certs = true       # staging / self-signed
 
-# Use GPU for local embeddings if available (Requires CUDA-enabled build)
+# ═══ EMBEDDERS — what model, how tuned ═════════════════════════
+[embedder.micro]
+backend    = "local"
+model      = "all-minilm-l6-v2"
+use_gpu    = false                  # fastembed only
+batch_rows = 2                      # ONNX rows per inference
 
-# ══════════════════════════════════════════════════════════
-# SERVER SETTINGS
-# ══════════════════════════════════════════════════════════
+[embedder.code]
+backend      = "blade"
+model        = "qwen3-embedding:0.6b-q8_0"
+num_ctx      = 16384                # ollama only — the EFFECTIVE ceiling
+batch_inputs = 8                    # inputs per /api/embed request
+# dimension  = 1024                 # Matryoshka truncation (irreversible)
 
-| Setting | Type | Default | Description |
-|---------|------|---------|-------------|
-| `soft_idle_secs` | u64 | `600` | After this many seconds without use, release the embedder's loaded model. Set to 0 to disable soft eviction. |
-| `deep_idle_secs` | u64 | `3600` | After this many seconds without use, drop the cache entry and (in stdio mode) exit the subprocess. Set to 0 to disable deep eviction. Should be greater than `soft_idle_secs`. |
-| `idle_check_interval_secs` | u64 | `60` | How often the watchdog wakes up to evaluate idle entries. |
-| `idle_eviction_enabled` | bool | `true` | Master switch — if false, no watchdog is spawned. |
-
-local_use_gpu = true
-
-# ═══════════════════════════════════════════════════════════
-# PROFILES - Connection + model presets. Collection-agnostic.
-# ═══════════════════════════════════════════════════════════
+# ═══ PROFILES — which embedder, which store ════════════════════
 [profiles.default]
-qdrant_url = "http://localhost:6334"        # Qdrant gRPC endpoint
-embedder_type = "local"                     # "local" (built-in) or "ollama"
-accept_invalid_certs = false                # Set true for self-signed certs
+embedder     = "micro"
+qdrant_url   = "http://localhost:6334"
+quantization = "none"
 
-# Tier 2: Remote Ollama, high-quality model
 [profiles.high]
+embedder   = "code"
 qdrant_url = "http://localhost:6334"
-ollama_url = "https://ollama.example.com"
-embedder_type = "ollama"
-embedding_model = "Qwen3-Embedding-4B-Q8_0:latest"
-accept_invalid_certs = true
-num_ctx = 8192
+target_chunk_size = 12000
 
-# ═══════════════════════════════════════════════════════════
-# COLLECTIONS - Data stores. Each points to a profile.
-#   Collections CAN override any profile field.
-#   This is the recommended way to bind models to collections.
-# ═══════════════════════════════════════════════════════════
+# ═══ COLLECTIONS — overrides ═══════════════════════════════════
 [collections.docs]
-name = "docs"
-description = "General project documentation"
-profile = "default"                         # Inherit from "default" profile
+name    = "docs"
+profile = "high"
 
 [collections.docs-lts]
-name = "docs-lts"
-description = "High quality, long-term embeddings on remote Qdrant"
-profile = "high"                            # Inherit from "high" profile
-qdrant_url = "https://qdrant.example.com"  # Override: use remote Qdrant
-chunk_size = 2048
-max_chunk_size = 3072
-chunk_overlap = 256
+name       = "docs-lts"
+profile    = "high"
+embedder   = "micro"                        # different model, same profile
+qdrant_url = "https://qdrant.example.com"   # different store
+target_chunk_size = 2048
 
-# Legacy Aliases (Simple redirects)
 [collection_aliases]
 b = "brain"
 
-
-# ═══════════════════════════════════════════════════════════
-# INGESTION - Document processing settings
-# ═══════════════════════════════════════════════════════════
+# ═══ INGESTION — chunking policy ═══════════════════════════════
 [ingestion]
-default_strategy = "recursive"              # "recursive" or "code_aware"
-chunk_size = 512                            # Target tokens per chunk
-chunk_overlap = 50                          # Overlap between chunks
-tokenizer = "cl100k_base"                   # "cl100k_base" (GPT-4) or "char"
-max_concurrent_requests = 4                 # Parallel file processing tasks
-gpu_batch_size = 2                          # GPU embedding batch size
+default_strategy = "recursive"
+target_chunk_size       = 512
+chunk_overlap    = 50
+tokenizer        = "cl100k_base"
+on_oversize      = "split"
+max_concurrent_requests = 4
 
-# Pattern-based overrides (glob patterns)
 [ingestion.overrides."*.rs"]
-strategy = "code_aware"
-chunk_size = 1024
-
-[ingestion.overrides."*.md"]
-strategy = "recursive"
-chunk_size = 800
+target_chunk_size = 1024
 ```
 
----
+> Source files do not take a `strategy`. Anything vecq can parse is split along
+> its AST by the parser — one chunk per function, struct or class — and no
+> chunker is consulted at all. `strategy` governs only files with no structural
+> parser.
 
 ## Configuration Reference
 
+<!-- BEGIN GENERATED CONFIG REFERENCE -->
+<!-- Generated by `cargo run -p xtask -- gen-config-docs`. DO NOT EDIT BY HAND. -->
+<!-- Source of truth: the doc comments in vecdb-core/src/config.rs -->
+
 ### Top-Level Options
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `default_profile` | string | `"default"` | Profile to use when `-p` not specified |
-| `local_embedding_model` | string | `"bge-micro-v2"` | **Global**: Embedding model for ALL profiles with `embedder_type="local"`. Only **ONE** local model can be loaded per process. |
-| `embedding_model` | string | `"nomic-embed-text"` | **Global**: Default embedding model for remote embedders (e.g., `ollama`) if not explicitly specified in the profile. |
-| `local_use_gpu` | bool | `false` | **Global**: Use GPU for local embeddings if available. Requires `cuda` feature flag. |
-| `fastembed_cache_path` | string | `~/.config/vecdb/fastembed_cache` | Path for `local` embedder model cache |
-| `smart_routing_keys` | array | `["source_type", "language"]` | Keys to use for Smart Routing / Facet Auto-Detection. |
-| `server` | table | See below | **Global**: Server-side runtime tuning (only consulted by `vecdb-server`; CLI commands ignore it). |
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `backend` | table | no | Where models run. Connection details only, reusable by many embedders. — Names are free-form; `kind` says what it is, so the name need not repeat it. Dots are allowed if quoted — `[backend."ollama.blade"]` — but a bare `[backend.ollama.blade]` is a *nested* TOML table and will not parse. |
+| `collection_aliases` | table | no | Simple aliases: short_name -> collection key |
+| `collections` | table | no | Collection-level overrides. |
+| `default_profile` | string | no | Profile used when `--profile` is not given. |
+| `embedder` | table | no | Which model, and how it is tuned. Each references a backend. — This is the unit the storage layer already treats as primary: genesis records model name, digest, architecture, parameter size, quantization and dimension, and the space guard holds every write to that identity. Naming it here means config can finally refer to the thing the database tracks. |
+| `fastembed_cache_path` | string | no | Where fastembed caches downloaded models. Genuinely global — it is a disk location, not a property of any one embedder. |
+| `ingestion` | `IngestionConfig` | no | Chunking and discovery policy. Applies to every profile — it describes how documents are cut up, which is independent of which model embeds them. |
+| `profiles` | table | no | Which embedder to use, and which vector store to write to. |
+| `server` | `ServerConfig` | no | Server-side runtime tuning (idle eviction, watchdog cadence). Only consulted by `vecdb-server`; CLI commands ignore it. |
+| `smart_routing_keys` | array | no | Keys to use for Smart Routing (Facet Auto-Detection). |
 
-#### Server Options (`[server]`)
+#### Backend Options (`[backend.<name>]`)
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `soft_idle_secs` | u64 | `600` | After this many seconds without use, release the embedder's loaded model. Set to 0 to disable soft eviction. |
-| `deep_idle_secs` | u64 | `3600` | After this many seconds without use, drop the cache entry and (in stdio mode) exit the subprocess. Set to 0 to disable deep eviction. Should be greater than `soft_idle_secs`. |
-| `idle_check_interval_secs` | u64 | `60` | How often the watchdog wakes up to evaluate idle entries. |
-| `idle_eviction_enabled` | bool | `true` | Master switch — if false, no watchdog is spawned. |
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `kind` | `BackendKind` | **yes** | `"ollama"` or `"fastembed"`. Decides which embedder knobs apply. |
+| `accept_invalid_certs` | boolean | no | Accept invalid TLS certificates (staging / self-signed endpoints). |
+| `api_key` | string | no | Bearer token, for an authenticated proxy in front of the endpoint. |
+| `url` | string | no | Endpoint. Required for `ollama`, meaningless for `fastembed`. |
+
+#### Embedder Options (`[embedder.<name>]`)
+
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `backend` | string | **yes** | Name of the `[backend.*]` entry this runs on. |
+| `model` | string | **yes** | Model identifier, in the backend's namespace — an Ollama tag, or a fastembed model id. |
+| `batch_inputs` | integer | no | Inputs per `/api/embed` request. **Ollama only.** — Not the same knob as `batch_rows`: this is array length over HTTP, and it fails as a request timeout. |
+| `batch_rows` | integer | no | Rows per ONNX inference. **fastembed only.** — Not the same knob as `batch_inputs`: this is in-process, and it fails as an OOM. |
+| `dimension` | integer | no | Matryoshka truncation target. Omit for the model's native width. — Irreversible once a collection is written at it — the genesis record pins it and the space guard enforces it. |
+| `num_ctx` | integer | no | Context window to request, in tokens. **Ollama only.** — This is the effective ceiling, and it is not what the model declares. Measured 2026-236: `qwen3-embedding:0.6b-q8_0` declares `context_length = 32768`, but with no `options` the server refused input at ~4086 tokens — Ollama's default `num_ctx` of 4096. The same input at ~12258 tokens succeeded with `num_ctx = 16384`. So `/api/embed` honours this, and `context_length` is only the maximum it will accept. — Used exactly as written. Never derived over, never clamped. |
+| `use_gpu` | boolean | no | Use GPU for local inference. **fastembed only.** |
 
 ### Profile Options (`[profiles.<name>]`)
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `qdrant_url` | string | `"http://localhost:6334"` | Qdrant gRPC endpoint URL |
-| `default_collection_name` | string | `null` | **Optional** fallback collection when `-c` is not specified. Prefer using `profile =` on the collection instead. |
-| `embedder_type` | string | `"local"` | Embedding backend: `"local"` or `"ollama"` |
-| `ollama_url` | string | `"http://localhost:11434"` | Ollama API URL (only for `embedder_type = "ollama"`) |
-| `embedding_model` | string | `null` | Optional embedding model override. If set on a `local` profile, a warning will be displayed and this field will be ignored. |
-| `accept_invalid_certs` | bool | `false` | Accept invalid TLS certificates |
-| `qdrant_api_key` | string | `null` | Optional API Key for Qdrant authentication |
-| `ollama_api_key` | string | `null` | Optional API Key for Ollama proxy authentication |
-| `quantization` | string | `null` | "scalar", "binary", or "none" |
-| `chunk_size` | integer | `null` | Override ingestion chunk size |
-| `chunk_overlap` | integer | `null` | Override chunk overlap |
-| `max_chunk_size` | integer | `null` | Override max chunk size |
-| `gpu_batch_size` | integer | `null` | Override GPU batch size |
-| `num_ctx` | integer | `null` | Override Ollama context window size |
-
-### Embedder Types
-
-| Type | Model | Dimensions | Requirements |
-|------|-------|------------|--------------|
-| `local` | AllMiniLM-L6-v2 | 384 | None (ONNX built-in, ~30MB download) |
-| `ollama` | configurable | varies | Ollama server running + model pulled |
-
-**Recommendation**: Use `local` for development and portability. Use `ollama` when you need larger/custom models.
-
-### Collection Profiles (`[collections.<name>]`)
- 
-Define named collections with specific configurations that override the active profile.
- 
-```toml
-# Recommended pattern: collection → profile
-[collections.brain]
-name = "agent_memory_v1"        # Actual Qdrant collection name
-profile = "default"             # Inherit connection + model from "default" profile
-description = "My agent's memory"
-chunk_size = 512                # Collection-specific chunk size
-
-# A collection can target a different Qdrant instance than its profile
-[collections.docs-lts]
-name = "docs-lts"
-profile = "high"                # High-quality remote Ollama model
-qdrant_url = "https://qdrant.example.com"  # But store on remote Qdrant
-chunk_size = 2048
-
-[collection_aliases]            # Simple redirects
-b = "brain"
-```
-
-Usage:
-- `vecdb search -c brain "query"` — resolves "brain" → uses `agent_memory_v1` with `default` profile
-- `vecdb search -c b "query"` — alias redirects to "brain", same result
-- `vecdb ingest ./ -c docs-lts` — uses `high` profile's model, stores on remote Qdrant
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `embedder` | string | **yes** | Name of the `[embedder.*]` entry to use. |
+| `chunk_overlap` | integer | no | Override `[ingestion].chunk_overlap` for this profile. |
+| `default_collection_name` | string | no | Default collection when `-c` is not given. |
+| `max_chunk_bytes` | integer | no | Override the byte ceiling above which a chunk is re-split. Unset derives from `target_chunk_size`; it must never sit below it. |
+| `qdrant_api_key` | string | no | API key for Qdrant authentication. |
+| `qdrant_url` | string | no | Qdrant endpoint for collections under this profile. |
+| `quantization` | `QuantizationType` | no | Default quantization for collections created under this profile. |
+| `target_chunk_size` | integer | no | Override `[ingestion].target_chunk_size` for this profile. Counted in whatever `tokenizer` counts — tokens under the default `cl100k_base`. |
 
 #### Collection Profile Options (`[collections.<name>]`)
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `name` | string | **REQUIRED** | Actual Qdrant collection name |
-| `description` | string | `null` | Optional description for listing |
-| `profile` | string | `null` | Base profile to inherit from (e.g., `"high"`). Recommended way to bind a collection to its model. |
-| `qdrant_url` | string | `null` | Override Qdrant URL (e.g., point to a remote instance for this collection only) |
-| `embedder_type` | string | `null` | Override active profile's embedder type |
-| `embedding_model`| string | `null` | Override active profile's embedding model |
-| `ollama_url` | string | `null` | Override Ollama URL |
-| `qdrant_api_key` | string | `null` | Override Qdrant API Key |
-| `ollama_api_key` | string | `null` | Override Ollama API Key |
-| `num_ctx` | integer | `null` | Override Ollama context window size |
-| `chunk_size` | integer | `null` | Override ingestion chunk size |
-| `max_chunk_size` | integer | `null` | Override max chunk size |
-| `chunk_overlap` | integer | `null` | Override chunk overlap |
-| `use_gpu` | bool | `null` | Override `local_use_gpu` for this collection |
-| `gpu_batch_size` | integer | `null` | Override GPU batch size |
-| `quantization` | string | `null` | "scalar", "binary", or "none" (See Quantization below) |
-
-> **Warning:** Changing the `embedder_type` or `embedding_model` for an existing collection will likely break searches due to vector dimension mismatches (e.g., 384 vs 768). If you change the model, you must delete and re-ingest the collection.
-
-### Quantization Options
-
-You can reduce memory usage (RAM) by quantizing vectors. This is configured per-collection or in a profile.
-
-| Type | Description | Memory Usage | Precision Loss |
-|------|-------------|--------------|----------------|
-| `none` | Default Float32 vectors | 100% (Baseline) | None |
-| `scalar` | **Int8 Quantization** | ~25% (4x smaller) | Very Low (<1%) |
-| `binary` | **1-bit Quantization** | ~3% (32x smaller) | Moderate |
-
-**Configuration:**
-Set `quantization = "scalar"` in your `[profile]` or `[collection]` block.
-Or use the CLI: `vecdb config set-quantization <collection> scalar`.
-
-**Applying Changes:**
-Changing the config does *not* immediately re-index existing vectors. You must run:
-```bash
-vecdb optimize <collection_name>
-```
-
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `name` | string | **yes** | The actual Qdrant collection name. |
+| `chunk_overlap` | integer | no | Override the chunk overlap for this collection. |
+| `description` | string | no | Free-text note shown by `vecdb list`. |
+| `embedder` | string | no | Override: use a different embedder for this collection. |
+| `max_chunk_bytes` | integer | no | Override the byte ceiling above which a chunk is re-split. |
+| `profile` | string | no | Profile to inherit from. |
+| `qdrant_api_key` | string | no | Override the profile's Qdrant API key. |
+| `qdrant_url` | string | no | Override: a different Qdrant instance. |
+| `quantization` | `QuantizationType` | no | Vector quantization for this collection: `"scalar"`, `"binary"` or `"none"`. Fixed when the collection is created. |
+| `target_chunk_size` | integer | no | Override the chunk target for this collection. Baked into the vectors at ingest — changing it later means a re-ingest. |
 
 ### Ingestion Options (`[ingestion]`)
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `default_strategy` | string | `"recursive"` | Chunking strategy |
-| `chunk_size` | integer | `512` | Target tokens/chars per chunk |
-| `max_chunk_size` | integer | `null` | Hard limit for chunk size |
-| `chunk_overlap` | integer | `50` | Overlap between adjacent chunks |
-| `respect_gitignore` | bool | `false` | Always respect .gitignore files |
-| `tokenizer` | string | `"cl100k_base"` | Tokenizer for splitting |
-| `max_concurrent_requests` | integer | `4` | Max parallel file processing tasks |
-| `gpu_batch_size` | integer | `2` | Max GPU embedding batch size (OOM protection) |
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `allow_embed_truncation` | boolean | no | Permit the embedder to silently cut chunks that exceed the model context. — Off by default. A truncated embed succeeds in every observable way — right shape, clean upsert — while the tail of the chunk is simply gone, and only a re-ingest restores it. Refusing turns that into an oversized-chunk error that names the file, which is a problem you can act on. |
+| `chunk_overlap` | integer | no | How much adjacent chunks overlap, in the same unit as `target_chunk_size`. Overlap preserves context across a boundary at the cost of duplication. |
+| `default_strategy` | string | no | Chunking strategy for files with no structural parser: `"recursive"` (token-accurate splitting), `"semantic"` (alias for it), or `"simple"` (fixed-width). Rejected at load time if it is anything else. — This does not govern source code. A file whose type vecq recognises is split along its AST by the parser, per element, and no chunker runs at all — so AST-aware chunking is automatic and is not something a strategy selects. The retired `"code_aware"` value promised exactly that and could not deliver it. |
+| `gpu_batch_size` | integer | no | GPU Concurrency: Batch size for GPU embedding (None = auto calculate optimal size) |
+| `max_chunk_bytes` | integer | no | Hard limit for acceptable chunk size |
+| `max_concurrent_requests` | integer | no | Concurrency Limit: Max number of file processing tasks running in parallel |
+| `on_oversize` | `OversizePolicy` | no | What to do with a chunk that exceeds the resolved ceiling: `"split"` or `"skip"`. Defaults to `split`. |
+| `overrides` | table | no | Per-glob overrides, e.g. `[ingestion.overrides."*.rs"]`. Lets source files chunk differently from prose without a separate collection. |
+| `path_rules` | array | no | Path parsing rules for metadata extraction Path parsing rules for metadata extraction |
+| `respect_gitignore` | boolean | no | Consult `.gitignore` when walking. **Off, and stays off.** — `.gitignore` is a build-artifact list, not an indexing policy, and the two disagree constantly. `.vectorignore` is the knob that governs indexing. This is an escape hatch for people driving the system who expect git semantics — it is never the default and never inferred. |
+| `target_chunk_size` | integer | no | Target chunk size, counted in whatever `tokenizer` counts — **tokens** under the default `cl100k_base`, not bytes. Compare `max_chunk_bytes`. |
+| `tokenizer` | string | no | What `target_chunk_size` and `chunk_overlap` are counted in: — * `"cl100k_base"` (default) — GPT-4 tokens. * `"bytes"` — raw bytes, snapped to the nearest UTF-8 boundary. Fastest. Was spelled `"char"`, which it never was. * anything else — characters, via the text splitter's `Characters` sizer. — Whatever this counts, `max_chunk_bytes` still counts bytes. |
+
+#### Server Options (`[server]`)
+
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `deep_idle_secs` | integer | no | After this many seconds without use, drop the cache entry and (in stdio mode) exit the subprocess. Set to 0 to disable deep eviction. Should be greater than `soft_idle_secs`; if not, deep wins. |
+| `idle_check_interval_secs` | integer | no | How often the watchdog wakes up to evaluate idle entries. |
+| `idle_eviction_enabled` | boolean | no | Master switch — if false, no watchdog is spawned. |
+| `soft_idle_secs` | integer | no | After this many seconds without use, release the embedder's loaded model. Set to 0 to disable soft eviction. |
+
+<!-- END GENERATED CONFIG REFERENCE -->
+
+#### `target_chunk_size` vs `max_chunk_bytes` — different units, on purpose
+
+These two are **not denominated in the same unit**, and the difference matters:
+
+| Key | Unit | Where it is enforced |
+|-----|------|----------------------|
+| `target_chunk_size` | whatever `tokenizer` counts — **tokens** under the default `cl100k_base` | the chunker, when deciding where to split |
+| `max_chunk_bytes` | **bytes** (`String::len()`) | the oversize guard, after chunking |
+
+A ceiling below the target it protects is not a safety net — it is a second
+chunking pass. Every full-size chunk trips it and gets re-split by
+`FixedWidthChunker`, which discards the AST boundaries structural chunking exists to
+produce. Nothing about the search results reveals this happened, and only a
+re-ingest undoes it.
+
+Concretely: at `target_chunk_size = 6144` tokens, real source code chunks weigh **~32 KB**
+(measured, ~5.2 bytes/token). A `max_chunk_bytes` of 6000 or 8192 therefore fires
+on essentially everything. Leave `max_chunk_bytes` unset unless you have measured
+your corpus — the derived default (`target_chunk_size × 6`) is chosen to clear real
+content with headroom.
+
+If a chunk does exceed the ceiling, vecdb now says so, naming the file.
 
 #### Smart Ingestion (Path Parsing)
 You can configure `path_rules` to extract metadata from file paths (e.g., years, versions).
@@ -264,7 +323,17 @@ See [VECTOR_FACETS.md](VECTOR_FACETS.md) for details and [TRAINING_GOLD.md](inte
 | Strategy | Description | Best For |
 |----------|-------------|----------|
 | `recursive` | Token-accurate recursive splitting | Prose, documentation, mixed content |
-| `code_aware` | AST-aware splitting via `vecq` | Source code (functions, structs) |
+| `semantic` | Alias for `recursive` | — |
+| `simple` | Fixed-width splitting | Files with no useful structure |
+
+These apply **only to files vecq cannot parse**. Source code is chunked along
+its AST by the parser regardless of this setting.
+
+`code_aware` was removed. It selected a chunker that could never run — the
+parser path wins whenever a parser exists, and vecq claims every recognised file
+type — so it promised AST-aware chunking while delivering nothing. AST-aware
+chunking is automatic and always on. A config still setting it is refused at
+load with an explanation rather than silently falling back.
 
 #### Tokenizers
 
@@ -279,8 +348,7 @@ Override settings for files matching glob patterns:
 
 ```toml
 [ingestion.overrides."*.py"]
-strategy = "code_aware"
-chunk_size = 800
+target_chunk_size = 800
 chunk_overlap = 100
 ```
 
@@ -346,11 +414,20 @@ If you are running Qdrant behind a reverse proxy (like Nginx or Traefik), you **
       - "traefik.http.services.qdrant-grpc.loadbalancer.server.scheme=h2c"
 ```
 
-### Switching from Ollama to Local
-Change your profile:
+### Switching from Ollama to local
+
+Point the profile at a different embedder — one line, and both definitions can
+stay in the file:
+
 ```toml
 [profiles.default]
-embedder_type = "local"  # Was: "ollama"
+embedder = "micro"      # was "qwen4b"
 ```
 
-**Note**: Existing embeddings may not be compatible when switching embedding models. Consider creating a new collection.
+**This changes the embedding space.** A collection records the model that wrote
+it in its genesis point, and the space guard refuses a write from a different
+model rather than mixing two spaces in one collection. Switching means a new
+collection, or a re-ingest of the existing one.
+
+`vecdb list` shows which model wrote each collection, and
+`vecdb config show -c <collection>` shows which embedder you would write with.

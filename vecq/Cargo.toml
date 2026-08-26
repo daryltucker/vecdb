@@ -28,12 +28,17 @@ cuda-parser = []
 go-parser = []
 bash-parser = []
 javascript-parser = []
-natural-language = []
 property-testing = []
 
 [dependencies]
 # Shared utilities
 vecdb-common = { workspace = true }
+json5 = { workspace = true }
+serde_yaml_ng = { workspace = true }
+# Event parser used ONLY for source positions: serde_yaml_ng discards them, so
+# without this every YAML node reported the whole document as its line range.
+# Already in the tree via syntect; see parsers/yaml_spans.rs.
+yaml-rust = "0.4.5"
 
 # Core dependencies
 serde.workspace = true
@@ -97,9 +102,41 @@ predicates = "3.1.4"
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/vecdb-{ target }.tar.gz"
 pkg-fmt = "tgz"
+# Binaries sit at the ARCHIVE ROOT — release.yml does `cd dist && tar -czvf ... *`.
+#
+# binstall already resolved this correctly WITHOUT this key: it walks a list of
+# candidate directories, none of which exist here, so the prefix comes out empty
+# and it lands on the root. Confirmed in the field across seven Raspberry Pis.
+#
+# Set explicitly anyway, because the fallback when bin-dir resolution fails is
+# `compile` — a silent switch to building from source. On the machines this path
+# exists to serve, that turns a 30-second install into a multi-day one, with no
+# error to explain it. Explicit means a future archive-layout change fails loudly
+# instead.
+bin-dir = "{ bin }{ binary-ext }"
+
+# Never silently compile.
+#
+# binstall's default fallback when it cannot find a prebuilt artifact is
+# `compile` — it quietly switches to `cargo install` and starts building. This
+# project pulls in ONNX Runtime; on the ARM boards this path exists to serve,
+# that turns a 30-second install into days, and the only signal is that the
+# command has not returned yet.
+#
+# Refuse instead. A missing artifact for your target is a fact worth an error:
+# either CI did not build it (32-bit Raspberry Pi OS, musl and FreeBSD have no
+# artifact) or the release is broken, and both deserve to be said out loud.
+#
+# Deliberate source builds are still available two ways, neither of which can
+# happen by accident:
+#     cargo install --git <repo> --locked vecdb-cli
+#     cargo binstall --strategies crate-meta-data,compile --git <repo> vecdb-cli
+# (a `--strategies` flag on the command line overrides this key entirely)
+disabled-strategies = ["compile"]
 
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
 pkg-url = "{ repo }/releases/download/v{ version }/vecdb-{ target }.zip"
 pkg-fmt = "zip"
+bin-dir = "{ bin }{ binary-ext }"
 
 

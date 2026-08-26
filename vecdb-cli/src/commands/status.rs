@@ -4,11 +4,11 @@
  *   Displays current configuration, connectivity, and collection stats.
  */
 
-use crate::vecq_adapter::VecqParserFactory;
 use clap::Args;
 use std::sync::Arc;
 use termimad::{crossterm::style::Color, MadSkin};
 use vecdb_core::config::Config;
+use vecdb_core::parsers::vecq_adapter::VecqParserFactory;
 use vecq::detection::HybridDetector;
 
 #[derive(Args, Debug)]
@@ -22,33 +22,21 @@ pub async fn run(
     args: StatusArgs,
     config: &Config,
     profile_name_opt: Option<&str>,
+    overrides: vecdb_core::config::Overrides<'_>,
     format: vecdb_common::output::OutputFormat,
 ) -> anyhow::Result<()> {
-    let profile_name = profile_name_opt.unwrap_or(&config.default_profile);
-    let profile = config.get_profile(Some(profile_name))?;
+    let resolution = config.resolve_with(profile_name_opt, None, overrides)?;
+    let profile_name = resolution.profile_name.clone();
 
     let file_detector = Arc::new(HybridDetector::new());
     let parser_factory = Arc::new(VecqParserFactory);
 
-    let core_result = vecdb_core::Core::new(
-        &profile.qdrant_url,
-        &profile.ollama_url,
-        &config.resolve_embedding_model(profile),
-        profile.accept_invalid_certs,
-        &profile.embedder_type,
-        Some(config.fastembed_cache_path.clone()),
-        config.resolve_local_use_gpu(None),
-        profile.qdrant_api_key.clone(),
-        profile.ollama_api_key.clone(),
-        config.smart_routing_keys.clone(),
-        config.ingestion.path_rules.clone(),
-        config.ingestion.max_concurrent_requests,
-        config.resolve_gpu_batch_size(profile, None),
-        profile.num_ctx,
+    let services = vecdb_core::CoreServices::from_config(
+        config,
         file_detector.clone(),
         parser_factory.clone(),
-    )
-    .await;
+    );
+    let core_result = vecdb_core::Core::new(&resolution, services).await;
 
     let job_registry = vecdb_core::jobs::JobRegistry::new().ok();
     let local_jobs = job_registry
@@ -60,12 +48,14 @@ pub async fn run(
         use serde_json::json;
         let mut status = json!({
             "profile": profile_name,
-            "qdrant_url": profile.qdrant_url,
+            "qdrant_url": resolution.qdrant_url,
             "embedder": {
-                "type": profile.embedder_type,
-                "model": config.resolve_embedding_model(profile)
+                "type": resolution.backend.kind.to_string(),
+                "model": resolution.embedder.model,
+                "name": resolution.embedder_name,
+                "backend": resolution.backend_name
             },
-            "ollama_url": if profile.embedder_type == "ollama" { Some(&profile.ollama_url) } else { None },
+            "ollama_url": if resolution.is_ollama() { Some(resolution.ollama_url()) } else { None },
             "connectivity": {
                 "qdrant": false,
                 "error": serde_json::Value::Null
@@ -87,7 +77,7 @@ pub async fn run(
                                     "name": c.name,
                                     "vector_count": c.vector_count,
                                     "vector_size": c.vector_size,
-                                    "is_active": profile.default_collection_name.as_deref() == Some(c.name.as_str())
+                                    "is_active": resolution.collection.as_deref() == Some(c.name.as_str())
                                 })
                             })
                             .collect();
@@ -98,8 +88,11 @@ pub async fn run(
                     }
                 }
 
-                if let Ok(tasks) = core.list_tasks().await {
-                    status["background_tasks"] = json!(tasks);
+                match core.list_tasks().await {
+                    Ok(tasks) => status["background_tasks"] = json!(tasks),
+                    // Reported, not omitted. A caller cannot tell an absent key
+                    // from an empty one, and "unavailable" is not "none".
+                    Err(e) => status["background_tasks_error"] = json!(e.to_string()),
                 }
             }
             Err(e) => {
@@ -146,14 +139,16 @@ pub async fn run(
 
     // Configuration Table
     skin.print_text(&format!("* **Profile**: `{}`", profile_name));
-    skin.print_text(&format!("* **Qdrant URL**: `{}`", profile.qdrant_url));
+    skin.print_text(&format!("* **Qdrant URL**: `{}`", resolution.qdrant_url));
     skin.print_text(&format!(
-        "* **Embedder**: `{}` ({})",
-        profile.embedder_type,
-        config.resolve_embedding_model(profile)
+        "* **Embedder**: `{}` — {} on backend `{}` ({})",
+        resolution.embedder_name,
+        resolution.embedder.model,
+        resolution.backend_name,
+        resolution.backend.kind
     ));
-    if profile.embedder_type == "ollama" {
-        skin.print_text(&format!("* **Ollama URL**: `{}`", profile.ollama_url));
+    if resolution.is_ollama() {
+        skin.print_text(&format!("* **Ollama URL**: `{}`", resolution.ollama_url()));
     }
 
     // Connectivity Check
@@ -165,7 +160,11 @@ pub async fn run(
 
             // Background Tasks (from Backend)
             skin.print_text("\n## Active Remote Tasks (Qdrant)");
-            if let Ok(tasks) = core.list_tasks().await {
+            let task_result = core.list_tasks().await;
+            if let Err(ref e) = task_result {
+                skin.print_text(&format!(" *Unavailable: {e}*"));
+            }
+            if let Ok(tasks) = task_result {
                 if tasks.is_empty() {
                     skin.print_text(" *No active remote tasks.*");
                 } else {
@@ -215,11 +214,12 @@ pub async fn run(
                         );
                         println!("{:-<15}-+-{:-<10}-+-{:-<10}-+-{:-<10}", "", "", "", "");
                         for c in collections {
-                            let active_str = if profile.default_collection_name.as_deref() == Some(c.name.as_str()) {
-                                "YES"
-                            } else {
-                                ""
-                            };
+                            let active_str =
+                                if resolution.collection.as_deref() == Some(c.name.as_str()) {
+                                    "YES"
+                                } else {
+                                    ""
+                                };
                             println!(
                                 "{:<15} | {:<10} | {:<10} | {:<10}",
                                 c.name,
@@ -261,8 +261,7 @@ pub async fn run(
         "* **Providers**: [{}]",
         providers_formatted.join(", ")
     ));
-    if !providers_formatted.iter().any(|p| p.contains("CUDA")) && config.resolve_local_use_gpu(None)
-    {
+    if !providers_formatted.iter().any(|p| p.contains("CUDA")) && resolution.use_gpu.value {
         skin.print_text("\n> [!WARNING]\n> CUDA provider missing but GPU requested!");
         skin.print_text("> See `docs/vecq/GPU.md` to install `libonnxruntime_providers_cuda.so`");
     }

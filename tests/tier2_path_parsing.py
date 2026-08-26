@@ -14,8 +14,15 @@ import subprocess
 import json
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib_envelope import search_results
+
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import bin_path
+
 # Setup
-VECDB_BIN = "./target/debug/vecdb"
+VECDB_BIN = bin_path("vecdb")
 TEST_DIR = "tests/run/tier2_path_parsing"
 CONFIG_PATH = os.path.join(TEST_DIR, "config.toml")
 CONTAINER_NAME = "qdrant-test"
@@ -88,11 +95,17 @@ def setup():
     config_content = """
 smart_routing_keys = ["year", "quarter"]
 
+[backend.local]
+kind = "fastembed"
+
+[embedder.default]
+backend = "local"
+model = "all-minilm-l6-v2"
+
 [profiles.default]
+embedder = "default"
 qdrant_url = "http://localhost:6336"
-embedding_model = "nomic-embed-text"
 default_collection_name = "test_path_parsing"
-embedder_type = "local"
 
 [[ingestion.path_rules]]
 # Matches: .../data/2025/Q1/strategy.txt
@@ -107,14 +120,14 @@ pattern = "(?P<year>\\\\d{4})/(?P<quarter>Q\\\\d)/.*"
 def run_search(query, smart=False):
     cmd = [VECDB_BIN, "search", query, "--json"]
     if smart:
-        cmd.extend(["--smart", "true"])
-        
+        cmd.append("--smart")
+
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"Search failed: {result.stderr}")
         sys.exit(1)
-        
-    return json.loads(result.stdout)
+
+    return search_results(json.loads(result.stdout), context=f"query={query!r}")
 
 def main():
     setup()
@@ -153,7 +166,7 @@ def main():
 
     print("\n--- Test 2: Smart Routing (2025) ---")
     # Query: "strategy 2025" should filter to year=2025
-    results_2025 = run_search("strategy 2025", smart=True)
+    results_2025 = run_search("year:2025 strategy", smart=True)
     
     if len(results_2025) != 1:
         print(f"FAIL: Expected 1 result for 2025, got {len(results_2025)}")
@@ -168,7 +181,7 @@ def main():
 
     print("\n--- Test 3: Smart Routing (2024) ---")
     # Query: "strategy 2024" should filter to year=2024
-    results_2024 = run_search("strategy 2024", smart=True)
+    results_2024 = run_search("year:2024 strategy", smart=True)
     
     if len(results_2024) != 1:
         print(f"FAIL: Expected 1 result for 2024, got {len(results_2024)}")

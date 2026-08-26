@@ -73,8 +73,9 @@ impl VecdbRc {
             if rc_path.exists() {
                 let content = std::fs::read_to_string(&rc_path)
                     .with_context(|| format!("Failed to read {}", rc_path.display()))?;
-                let rc: VecdbRc = toml::from_str(&content)
-                    .with_context(|| format!("Failed to parse {} (invalid TOML)", rc_path.display()))?;
+                let rc: VecdbRc = toml::from_str(&content).with_context(|| {
+                    format!("Failed to parse {} (invalid TOML)", rc_path.display())
+                })?;
                 return Ok(Some((rc_path, rc)));
             }
 
@@ -199,7 +200,10 @@ collection = "docs-lts"
 "#;
 
         let rc: VecdbRc = toml::from_str(toml_str).unwrap();
-        assert_eq!(rc.default.as_ref().unwrap().collection.as_deref(), Some("code"));
+        assert_eq!(
+            rc.default.as_ref().unwrap().collection.as_deref(),
+            Some("code")
+        );
         assert_eq!(rc.routes.len(), 2);
         assert_eq!(rc.routes[0].collection, "music");
         assert_eq!(rc.routes[1].collection, "docs-lts");
@@ -309,7 +313,8 @@ ignore_vector_ignore = true
         let project_root = tmp.path().join("a");
         let rc_path = project_root.join(".vecdbrc");
         let mut f = std::fs::File::create(&rc_path).unwrap();
-        f.write_all(b"[[routes]]\nglob = \"**\"\ncollection = \"found\"\n").unwrap();
+        f.write_all(b"[[routes]]\nglob = \"**\"\ncollection = \"found\"\n")
+            .unwrap();
 
         // Start from deep subdirectory
         let result = VecdbRc::discover(&subdir).unwrap();
@@ -333,7 +338,10 @@ ignore_vector_ignore = false
 "#;
 
         let rc: VecdbRc = toml::from_str(toml_str).unwrap();
-        assert_eq!(rc.matches_ignore_override("private/notes.txt"), Some("secret"));
+        assert_eq!(
+            rc.matches_ignore_override("private/notes.txt"),
+            Some("secret")
+        );
         assert_eq!(rc.matches_ignore_override("public/readme.md"), None);
         assert_eq!(rc.matches_ignore_override("other/file.txt"), None);
     }

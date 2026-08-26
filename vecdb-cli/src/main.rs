@@ -20,7 +20,6 @@
 
 mod cli;
 mod commands;
-mod vecq_adapter;
 
 // SAFETY: Jemalloc is configured as the global allocator for Linux targets to reduce fragmentation
 // in long-running async server workloads (ingestion/search).

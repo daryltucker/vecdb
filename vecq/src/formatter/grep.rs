@@ -1,6 +1,6 @@
+use super::{FormatOptions, OutputFormatter};
 use crate::error::VecqResult;
 use serde_json::Value;
-use super::{OutputFormatter, FormatOptions};
 use std::fmt::Write;
 
 /// Grep-compatible output formatter
@@ -32,7 +32,8 @@ impl GrepFormatter {
 
     /// Extract line number from element
     fn extract_line_number(&self, value: &Value) -> Option<usize> {
-        value.get("line_start")
+        value
+            .get("line_start")
             .and_then(|v| v.as_u64())
             .map(|n| n as usize)
     }
@@ -58,17 +59,14 @@ impl GrepFormatter {
 
     /// Format a single element in grep format
     fn format_element(&self, element: &Value, default_path: &str) -> String {
-        let file_path = self.extract_file_path(element)
+        let file_path = self
+            .extract_file_path(element)
             .unwrap_or_else(|| default_path.to_string());
         let line_number = self.extract_line_number(element).unwrap_or(1);
         let content = self.extract_content(element);
 
         // Clean content for single-line output
-        let clean_content = content
-            .lines()
-            .next()
-            .unwrap_or(&content)
-            .trim();
+        let clean_content = content.lines().next().unwrap_or(&content).trim();
 
         format!("{}:{}:{}", file_path, line_number, clean_content)
     }
@@ -131,10 +129,10 @@ mod tests {
                 "attributes": { "file_path": "src/main.rs" }
             }
         ]);
-        
+
         let options = FormatOptions::grep_compatible();
         let result = formatter.format(&data, &options).unwrap();
-        
+
         assert!(result.contains("src/main.rs:1:"));
         assert!(result.contains("main"));
     }
@@ -150,10 +148,10 @@ mod tests {
                 "file_path": "test.rs"
             }
         });
-        
+
         let options = FormatOptions::grep_compatible();
         let result = formatter.format(&data, &options).unwrap();
-        
+
         assert!(result.contains("test.rs:42:"));
         assert!(result.contains("test_func"));
     }

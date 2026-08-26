@@ -4,11 +4,15 @@ import json
 import subprocess
 import os
 
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import bin_path
+
 # Tier 1 Parity Verification Script
 # Purpose: Contract test for vecdb-mcp server
 # Scope: Verifies Schema Parity (CLI vs Server)
 
-SERVER_BIN = "target/debug/vecdb-server"
+SERVER_BIN = bin_path("vecdb-server")
 
 def log(msg, color=None):
     print(msg, file=sys.stderr)

@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 import subprocess
+import sys
 import os
 import shutil
 import time
 import json
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib_envelope import search_results
+
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from paths import bin_path
+
 # Configuration
-VECDB_BINARY = "./target/debug/vecdb"
-VECQ_BINARY = "./target/debug/vecq"
+VECDB_BINARY = bin_path("vecdb")
+VECQ_BINARY = bin_path("vecq")
 TEST_REPO_DIR = "tests_tmp_repo"
 
 def run_cmd(cmd, cwd=".", check=True):
@@ -56,29 +64,29 @@ def test_history_ingest():
 
     print("\n--- Ingesting Version 2 (Current) ---")
     # Standard ingest
-    run_cmd(f"{VECDB_BINARY} ingest {TEST_REPO_DIR} --collection history_test")
+    run_cmd(f"{VECDB_BINARY} ingest {TEST_REPO_DIR} --collection test_history")
     
     print("\n--- Ingesting Version 1 (Time Travel) ---")
     # Use absolute path for safety/clarity in test
     abs_repo_path = os.path.abspath(TEST_REPO_DIR)
-    run_cmd(f"{VECDB_BINARY} history ingest -r {rev1} {abs_repo_path} --collection history_test")
+    run_cmd(f"{VECDB_BINARY} history ingest -r {rev1} {abs_repo_path} --collection test_history")
 
     print("\n--- Verifying Results ---")
     # We search for "Version" which should appear in both
     # We expect 2 chunks, one matching V1 and one matching V2
     
     # Check V1 content
-    search_cmd_v1 = f"{VECDB_BINARY} search --json 'Version 1' --collection history_test"
+    search_cmd_v1 = f"{VECDB_BINARY} search --json 'Version 1' --collection test_history"
     out_v1 = run_cmd(search_cmd_v1).stdout
     print("V1 Search Output:", out_v1)
     
     # Check V2 content
-    search_cmd_v2 = f"{VECDB_BINARY} search --json 'Version 2' --collection history_test"
+    search_cmd_v2 = f"{VECDB_BINARY} search --json 'Version 2' --collection test_history"
     out_v2 = run_cmd(search_cmd_v2).stdout
     print("V2 Search Output:", out_v2)
     
-    results_v1 = json.loads(out_v1)
-    results_v2 = json.loads(out_v2)
+    results_v1 = search_results(json.loads(out_v1), context="test_history 'Version 1'")
+    results_v2 = search_results(json.loads(out_v2), context="test_history 'Version 2'")
     
     # Validation logic
     found_v1 = any("Version 1" in r['content'] for r in results_v1)

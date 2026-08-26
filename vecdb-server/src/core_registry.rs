@@ -19,7 +19,6 @@
 // Rationale documented in docs/planning/BUG_IDLE_VRAM_AND_RESOURCE_ISOLATION.md (E1).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,45 +26,54 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use tokio::sync::{watch, RwLock};
 
-use vecdb_common::FileTypeDetector;
-use vecdb_core::config::{Config, PathRule, Profile, ServerConfig};
-use vecdb_core::parsers::ParserFactory;
+use vecdb_core::config::Resolution;
+use vecdb_core::config::{Config, ServerConfig};
 use vecdb_core::Core;
+use vecdb_core::CoreServices;
 
 /// Identity key for a Core instance.
 ///
 /// Two resolved profiles that share the same key will share the same cached Core.
-/// Fields are the subset of Profile that actually affect which embedder and backend
-/// are constructed — tuning params like gpu_batch_size and num_ctx are excluded
-/// because they don't change the identity of the embedder or Qdrant instance.
+/// What makes two Cores interchangeable.
+///
+/// Deliberately the *store* plus the *embedder*, and nothing else. Chunking
+/// policy and batch sizes are per-request, not per-Core, so including them would
+/// fragment the cache without changing what gets constructed.
+///
+/// `num_ctx` IS part of the key. It was excluded when it looked like mere
+/// tuning, but it sets the effective context window — measured 2026-236, the
+/// same model refuses input at 4096 tokens and accepts it at 16384 depending
+/// only on this value. Two embedders differing in `num_ctx` behave differently
+/// and must not share a Core.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CoreKey {
     pub qdrant_url: String,
     pub qdrant_api_key: Option<String>,
-    pub embedder_type: String,
-    /// The effective embedding model name (after `config.resolve_embedding_model()` is applied).
-    pub embedding_model: String,
-    pub ollama_url: String,
-    pub ollama_api_key: Option<String>,
+    /// Backend identity: kind + endpoint + credentials.
+    pub backend_kind: String,
+    pub backend_url: Option<String>,
+    pub backend_api_key: Option<String>,
     pub accept_invalid_certs: bool,
-    pub local_use_gpu: bool,
+    /// Embedder identity: model, context window, and truncation target.
+    pub model: String,
+    pub num_ctx: Option<usize>,
+    pub dimension: Option<usize>,
+    pub use_gpu: Option<bool>,
 }
 
 impl CoreKey {
-    /// Build a CoreKey from a fully-resolved Profile + global Config.
-    /// Uses `config.resolve_embedding_model()` to handle the local/global model name split.
-    pub fn from_resolved(profile: &Profile, config: &Config) -> Self {
-        let embedding_model = config.resolve_embedding_model(profile);
-        let local_use_gpu = config.resolve_local_use_gpu(profile.default_collection_name.as_deref());
+    pub fn from_resolution(r: &Resolution) -> Self {
         Self {
-            qdrant_url: profile.qdrant_url.clone(),
-            qdrant_api_key: profile.qdrant_api_key.clone(),
-            embedder_type: profile.embedder_type.clone(),
-            embedding_model,
-            ollama_url: profile.ollama_url.clone(),
-            ollama_api_key: profile.ollama_api_key.clone(),
-            accept_invalid_certs: profile.accept_invalid_certs,
-            local_use_gpu,
+            qdrant_url: r.qdrant_url.clone(),
+            qdrant_api_key: r.qdrant_api_key.clone(),
+            backend_kind: r.backend.kind.to_string(),
+            backend_url: r.backend.url.clone(),
+            backend_api_key: r.backend.api_key.clone(),
+            accept_invalid_certs: r.backend.accept_invalid_certs,
+            model: r.embedder.model.clone(),
+            num_ctx: r.embedder.num_ctx,
+            dimension: r.embedder.dimension,
+            use_gpu: r.embedder.use_gpu,
         }
     }
 }
@@ -82,13 +90,20 @@ pub struct CoreEntry {
 
 impl CoreEntry {
     fn new(core: Arc<Core>) -> Self {
-        Self { core, last_used: AtomicU64::new(now_ms()) }
+        Self {
+            core,
+            last_used: AtomicU64::new(now_ms()),
+        }
     }
     fn touch(&self) {
         self.last_used.store(now_ms(), Ordering::Relaxed);
     }
-    pub fn core(&self) -> &Arc<Core> { &self.core }
-    pub fn last_used_ms(&self) -> u64 { self.last_used.load(Ordering::Relaxed) }
+    pub fn core(&self) -> &Arc<Core> {
+        &self.core
+    }
+    pub fn last_used_ms(&self) -> u64 {
+        self.last_used.load(Ordering::Relaxed)
+    }
 }
 
 fn now_ms() -> u64 {
@@ -99,41 +114,18 @@ fn now_ms() -> u64 {
 }
 
 /// Factory for constructing new Core instances on demand.
-/// Holds the global infrastructure that is shared across all Cores.
+///
+/// Holds only the process-wide services — the per-request half arrives as a
+/// `Resolution`. It previously duplicated every `CoreServices` field by hand,
+/// which meant adding one had to be remembered in two places.
 /// Not present in test registries — those use pre-built mock Cores.
 pub struct CoreFactory {
-    pub fastembed_cache_path: PathBuf,
-    pub smart_routing_keys: Vec<String>,
-    pub path_rules: Vec<PathRule>,
-    pub max_concurrent_requests: usize,
-    pub file_detector: Arc<dyn FileTypeDetector>,
-    pub parser_factory: Arc<dyn ParserFactory>,
+    pub services: CoreServices,
 }
 
 impl CoreFactory {
-    async fn create_core(&self, profile: &Profile, config: &Config) -> Result<Arc<Core>> {
-        let embedding_model = config.resolve_embedding_model(profile);
-        let gpu_batch_size = config.resolve_gpu_batch_size(profile, profile.default_collection_name.as_deref());
-        let local_use_gpu = config.resolve_local_use_gpu(profile.default_collection_name.as_deref());
-        let core = Core::new(
-            &profile.qdrant_url,
-            &profile.ollama_url,
-            &embedding_model,
-            profile.accept_invalid_certs,
-            &profile.embedder_type,
-            Some(self.fastembed_cache_path.clone()),
-            local_use_gpu,
-            profile.qdrant_api_key.clone(),
-            profile.ollama_api_key.clone(),
-            self.smart_routing_keys.clone(),
-            self.path_rules.clone(),
-            self.max_concurrent_requests,
-            gpu_batch_size,
-            profile.num_ctx,
-            self.file_detector.clone(),
-            self.parser_factory.clone(),
-        )
-        .await?;
+    async fn create_core(&self, resolution: &Resolution, _config: &Config) -> Result<Arc<Core>> {
+        let core = Core::new(resolution, self.services.clone()).await?;
         Ok(Arc::new(core))
     }
 }
@@ -189,12 +181,14 @@ impl CoreRegistry {
         let boot_key = cores.keys().next().cloned().unwrap_or(CoreKey {
             qdrant_url: String::new(),
             qdrant_api_key: None,
-            embedder_type: String::new(),
-            embedding_model: String::new(),
-            ollama_url: String::new(),
-            ollama_api_key: None,
+            backend_kind: String::new(),
+            backend_url: None,
+            backend_api_key: None,
             accept_invalid_certs: false,
-            local_use_gpu: false,
+            model: String::new(),
+            num_ctx: None,
+            dimension: None,
+            use_gpu: None,
         });
         let wrapped = cores
             .into_iter()
@@ -211,19 +205,20 @@ impl CoreRegistry {
 
     /// Return the boot Core (the Core initialized at server startup).
     ///
-    /// Used for operations that don't have collection context:
+    /// Used for operations that genuinely have no collection context:
     /// - `embed` (no target collection)
-    /// - `list_collections` (lists from boot Qdrant instance)
     /// - `get_job_status`
-    /// - `delete_collection` (see note below)
     ///
-    /// Note: delete_collection and list_collections only reach the boot Qdrant instance.
-    /// Collections on remote Qdrant instances require a full BackendRegistry (future work).
+    /// It is also the fallback for `delete_collection` when the collection's own
+    /// Core cannot be built. `delete_collection` and `list_collections` do NOT
+    /// depend on it otherwise: the former resolves the collection's own Core, and
+    /// the latter enumerates every distinct Qdrant endpoint in the config. Both
+    /// reach instances other than the boot one.
     pub async fn boot_core(&self, config: &Config) -> Result<Arc<Core>> {
-        let profile = config
-            .get_profile(Some(&self.boot_profile_name))
-            .or_else(|_| config.get_profile(None))?;
-        let key = CoreKey::from_resolved(profile, config);
+        let resolution = config
+            .resolve(Some(&self.boot_profile_name), None)
+            .or_else(|_| config.resolve(None, None))?;
+        let key = CoreKey::from_resolution(&resolution);
         let cores = self.cores.read().await;
         let entry = cores.get(&key).cloned().ok_or_else(|| {
             anyhow::anyhow!(
@@ -253,8 +248,8 @@ impl CoreRegistry {
         collection: Option<&str>,
         requested_profile: Option<&str>,
     ) -> Result<Arc<Core>> {
-        let profile = config.resolve_profile(requested_profile, collection)?;
-        let key = CoreKey::from_resolved(&profile, config);
+        let resolution = config.resolve(requested_profile, collection)?;
+        let key = CoreKey::from_resolution(&resolution);
 
         // Fast path: read lock
         {
@@ -269,17 +264,18 @@ impl CoreRegistry {
         // across the async Core::new() call (which may probe embedder over network).
         let factory = self.factory.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
-                "No Core found for profile '{}' (embedder: {}, model: {}, qdrant: {}) \
+                "No Core found for profile '{}' (embedder: {} = {} on {}, qdrant: {}) \
                  and no factory is available. \
                  This is a test registry — pre-seed it with the required Core.",
-                profile.resolved_profile_name,
-                profile.embedder_type,
-                config.resolve_embedding_model(&profile),
-                profile.qdrant_url,
+                resolution.profile_name,
+                resolution.embedder_name,
+                resolution.embedder.model,
+                resolution.backend_name,
+                resolution.qdrant_url,
             )
         })?;
 
-        let core = factory.create_core(&profile, config).await?;
+        let core = factory.create_core(&resolution, config).await?;
 
         // Insert under write lock, deferring to existing entry if we raced.
         let mut cores = self.cores.write().await;
@@ -315,8 +311,8 @@ impl CoreRegistry {
     ///
     /// This is used by list_collections to query all backends - it creates/retrieves
     /// a Core for each profile's Qdrant URL without needing collection context.
-    pub async fn get_core_for_profile(&self, profile: &Profile) -> Result<Arc<Core>> {
-        let key = CoreKey::from_resolved(profile, &self.config);
+    pub async fn get_core_for_resolution(&self, resolution: &Resolution) -> Result<Arc<Core>> {
+        let key = CoreKey::from_resolution(resolution);
 
         // Fast path: read lock
         {
@@ -328,11 +324,12 @@ impl CoreRegistry {
         }
 
         // Slow path: create Core
-        let factory = self.factory.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("No factory available (test registry)")
-        })?;
+        let factory = self
+            .factory
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No factory available (test registry)"))?;
 
-        let core = factory.create_core(profile, &self.config).await?;
+        let core = factory.create_core(resolution, &self.config).await?;
 
         let mut cores = self.cores.write().await;
         let entry = cores
@@ -360,9 +357,7 @@ pub fn start_watchdog(
 ) -> watch::Receiver<bool> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    if !cfg.idle_eviction_enabled
-        || (cfg.soft_idle_secs == 0 && cfg.deep_idle_secs == 0)
-    {
+    if !cfg.idle_eviction_enabled || (cfg.soft_idle_secs == 0 && cfg.deep_idle_secs == 0) {
         tracing::debug!("Idle-eviction watchdog disabled by config");
         return shutdown_rx;
     }

@@ -37,9 +37,16 @@ fn test_smart_ingestion_dry_run() {
     file.write_all(b"\x00\x01\x02\x03\xff\xfe").unwrap();
 
     // 2. Run CLI with --dry-run
+    //
+    // The collection is named explicitly. Without `-c` this inherited the
+    // config default, which is `docs` — a production collection name, and one
+    // that carries whatever embedding space a previous test left on it. Test
+    // collections must be `test_`-prefixed (docs/planning/TESTING.md).
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_vecdb"));
     cmd.arg("ingest")
         .arg(root.to_str().unwrap())
+        .arg("-c")
+        .arg("test_smart_ingestion")
         .arg("--dry-run");
 
     let assert = cmd.assert();

@@ -18,8 +18,8 @@ pub async fn handle_elements_command(matches: &ArgMatches) -> VecqResult<()> {
         if sub_matches.get_flag("json") {
             json = true;
         }
-        let ft =
-            super::args::validate_file_type(lang_name).map_err(|e| VecqError::ConfigError { message: e })?;
+        let ft = super::args::validate_file_type(lang_name)
+            .map_err(|e| VecqError::ConfigError { message: e })?;
         let schema = registry.get_schema(ft)?;
         let element = sub_matches.get_one::<String>("element");
 

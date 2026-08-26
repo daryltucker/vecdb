@@ -58,5 +58,5 @@ This guide provides high-level narrative "cookbooks" for the most common workflo
 
 ## 📚 Advanced Deep Dives
 For high-density technical recipes (Complexity analysis, Security auditing, etc.), see:
-*   [vecq Technical Recipes](file:///home/daryl/Projects/NRG/vecdb-mcp/docs/vecq/EXAMPLES.md)
-*   [Agent Manual](file:///home/daryl/Projects/NRG/vecdb-mcp/docs/AGENT_MANUAL.md)
+*   [vecq Technical Recipes](vecq/EXAMPLES.md)
+*   [Agent Manual](AGENT_MANUAL.md)

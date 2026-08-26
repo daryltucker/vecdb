@@ -12,6 +12,7 @@
  * MODULES:
  *   - output: TTY-aware output handling (OutputContext pattern)
  *   - input: Stdin-aware input handling (InputContext pattern)
+ *   - version: build-time git revision, stamped by build.rs
  */
 
 pub mod detection;
@@ -20,6 +21,7 @@ pub mod lines;
 pub mod logging;
 pub mod output;
 pub mod text;
+pub mod version;
 
 // Re-export commonly used items for ergonomics
 pub use detection::{FileType, FileTypeDetector, ParsingCapability};
@@ -27,3 +29,4 @@ pub use input::{InputContext, INPUT};
 pub use lines::LineCounter;
 pub use output::{OutputContext, OUTPUT};
 pub use text::stitch_text;
+pub use version::{revision, short_version, GIT_HASH};

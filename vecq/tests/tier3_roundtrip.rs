@@ -24,12 +24,12 @@ async fn verify_round_trip(
     let doc = parser
         .parse(source)
         .await
-        .expect(&format!("{} parsing failed", name));
+        .unwrap_or_else(|_| panic!("{name} parsing failed"));
 
     // 2. Generate
     let generated = generator
         .generate(&doc)
-        .expect(&format!("{} generation failed", name));
+        .unwrap_or_else(|_| panic!("{name} generation failed"));
 
     // 3. Verify
     if data_mode {

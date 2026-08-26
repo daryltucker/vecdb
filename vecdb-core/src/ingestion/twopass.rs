@@ -60,8 +60,8 @@ impl TwoPassIngestor {
                         .into_iter()
                         .collect(),
                     page_num: None,
-                    char_start: offset as usize,
-                    char_end: (offset as usize) + content.len(),
+                    byte_start: offset as usize,
+                    byte_end: (offset as usize) + content.len(),
                     start_line: None,
                     end_line: None,
                 }];

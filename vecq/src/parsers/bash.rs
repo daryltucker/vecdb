@@ -8,9 +8,12 @@
 
 use crate::error::{VecqError, VecqResult};
 use crate::parser::{Parser, ParserCapabilities, ParserConfig};
-use crate::types::{DocumentElement, DocumentMetadata, ElementType, FileType, ParsedDocument, BashAttributes, ElementAttributes};
-use std::collections::HashMap;
+use crate::types::{
+    BashAttributes, DocumentElement, DocumentMetadata, ElementAttributes, ElementType, FileType,
+    ParsedDocument,
+};
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Bash parser that extracts structural elements from Bash scripts
@@ -30,7 +33,11 @@ impl BashParser {
         Self { _config: config }
     }
 
-    fn extract_functions(&self, content: &str, tree: &tree_sitter::Tree) -> VecqResult<Vec<DocumentElement>> {
+    fn extract_functions(
+        &self,
+        content: &str,
+        tree: &tree_sitter::Tree,
+    ) -> VecqResult<Vec<DocumentElement>> {
         let mut functions = Vec::new();
         let root = tree.root_node();
         let mut cursor = root.walk();
@@ -54,7 +61,10 @@ impl BashParser {
         // function name { } or name() { }
         for child in node.children(&mut cursor) {
             if child.kind() == "word" {
-                name = child.utf8_text(content.as_bytes()).unwrap_or("").to_string();
+                name = child
+                    .utf8_text(content.as_bytes())
+                    .unwrap_or("")
+                    .to_string();
                 break;
             }
         }
@@ -63,18 +73,25 @@ impl BashParser {
             return None;
         }
 
-        Some(DocumentElement::new(
-            ElementType::Function,
-            Some(name),
-            node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
-            node.start_position().row + 1,
-            node.end_position().row + 1,
-        ).set_attributes(ElementAttributes::Bash(BashAttributes {
-            other: HashMap::new(),
-        })))
+        Some(
+            DocumentElement::new(
+                ElementType::Function,
+                Some(name),
+                node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
+                node.start_position().row + 1,
+                node.end_position().row + 1,
+            )
+            .set_attributes(ElementAttributes::Bash(BashAttributes {
+                other: HashMap::new(),
+            })),
+        )
     }
 
-    fn extract_variables(&self, content: &str, tree: &tree_sitter::Tree) -> VecqResult<Vec<DocumentElement>> {
+    fn extract_variables(
+        &self,
+        content: &str,
+        tree: &tree_sitter::Tree,
+    ) -> VecqResult<Vec<DocumentElement>> {
         let mut variables = Vec::new();
         let root = tree.root_node();
         let mut cursor = root.walk();
@@ -96,20 +113,28 @@ impl BashParser {
 
         for child in node.children(&mut cursor) {
             if child.kind() == "variable_name" {
-                name = Some(child.utf8_text(content.as_bytes()).unwrap_or("").to_string());
+                name = Some(
+                    child
+                        .utf8_text(content.as_bytes())
+                        .unwrap_or("")
+                        .to_string(),
+                );
                 break;
             }
         }
 
-        Some(DocumentElement::new(
-            ElementType::Variable,
-            name,
-            node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
-            node.start_position().row + 1,
-            node.end_position().row + 1,
-        ).set_attributes(ElementAttributes::Bash(BashAttributes {
-            other: HashMap::new(),
-        })))
+        Some(
+            DocumentElement::new(
+                ElementType::Variable,
+                name,
+                node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
+                node.start_position().row + 1,
+                node.end_position().row + 1,
+            )
+            .set_attributes(ElementAttributes::Bash(BashAttributes {
+                other: HashMap::new(),
+            })),
+        )
     }
 }
 
@@ -142,7 +167,8 @@ impl Parser for BashParser {
 
     async fn parse(&self, content: &str) -> VecqResult<ParsedDocument> {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_bash::LANGUAGE.into())
+        parser
+            .set_language(&tree_sitter_bash::LANGUAGE.into())
             .map_err(|e| VecqError::ParseError {
                 file: PathBuf::from("<string>"),
                 line: 0,
@@ -150,7 +176,8 @@ impl Parser for BashParser {
                 source: None,
             })?;
 
-        let tree = parser.parse(content, None)
+        let tree = parser
+            .parse(content, None)
             .ok_or_else(|| VecqError::ParseError {
                 file: PathBuf::from("<string>"),
                 line: 0,
@@ -168,7 +195,7 @@ impl Parser for BashParser {
         let mut doc = ParsedDocument::new(
             DocumentMetadata::new(PathBuf::from("file.sh"), content.len() as u64)
                 .with_line_count(content)
-                .with_file_type(FileType::Bash)
+                .with_file_type(FileType::Bash),
         );
         doc.elements = elements;
 
@@ -189,12 +216,14 @@ function hello {
 }
 "#;
         let result = parser.parse(content).await.unwrap();
-        
-        let functions: Vec<_> = result.elements.iter()
+
+        let functions: Vec<_> = result
+            .elements
+            .iter()
             .filter(|e| e.element_type == ElementType::Function)
             .collect();
-        
-        assert_eq!(functions.len ( ), 1);
+
+        assert_eq!(functions.len(), 1);
         assert_eq!(functions[0].name, Some("hello".to_string()));
     }
 
@@ -207,11 +236,13 @@ greet() {
 }
 "#;
         let result = parser.parse(content).await.unwrap();
-        
-        let functions: Vec<_> = result.elements.iter()
+
+        let functions: Vec<_> = result
+            .elements
+            .iter()
             .filter(|e| e.element_type == ElementType::Function)
             .collect();
-        
+
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0].name, Some("greet".to_string()));
     }
@@ -224,11 +255,13 @@ NAME="World"
 COUNT=42
 "#;
         let result = parser.parse(content).await.unwrap();
-        
-        let variables: Vec<_> = result.elements.iter()
+
+        let variables: Vec<_> = result
+            .elements
+            .iter()
             .filter(|e| e.element_type == ElementType::Variable)
             .collect();
-        
+
         assert_eq!(variables.len(), 2);
     }
 

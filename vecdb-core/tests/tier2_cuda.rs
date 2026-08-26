@@ -35,7 +35,7 @@ async fn test_cuda_initialization() -> Result<()> {
     println!("Running test embedding...");
     let vec = embedder.embed("Hello CUDA", None).await?;
     println!("Embedding generated, length: {}", vec.len());
-    assert!(vec.len() > 0);
+    assert!(!vec.is_empty());
 
     Ok(())
 }

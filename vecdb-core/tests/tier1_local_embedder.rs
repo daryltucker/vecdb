@@ -32,7 +32,7 @@ mod local_embedder_tests {
     async fn test_01_local_embedder_creation() {
         let embedder = get_embedder();
         // If we got here, creation succeeded
-        assert!(embedder.model_name().len() > 0);
+        assert!(!embedder.model_name().is_empty());
     }
 
     #[tokio::test]

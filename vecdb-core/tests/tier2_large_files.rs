@@ -28,8 +28,7 @@ impl vecdb_core::backend::Backend for MockBackend {
         &self,
         _: &str,
         _: &[f32],
-        _: u64,
-        _: Option<serde_json::Value>,
+        _p: vecdb_core::backend::SearchParams,
     ) -> anyhow::Result<Vec<vecdb_core::types::SearchResult>> {
         Ok(vec![])
     }
@@ -66,10 +65,21 @@ impl vecdb_core::backend::Backend for MockBackend {
             vector_count: None,
             vector_size: None,
             quantization: None,
+            vectors_on_disk: None,
+            payload_on_disk: None,
         })
     }
     async fn points_exists(&self, _: &str, _: Vec<String>) -> anyhow::Result<Vec<String>> {
         Ok(vec![])
+    }
+
+    async fn delete_stale_points(
+        &self,
+        _c: &str,
+        _d: &str,
+        _k: &[String],
+    ) -> anyhow::Result<usize> {
+        Ok(0)
     }
     async fn health_check(&self) -> anyhow::Result<()> {
         Ok(())
@@ -85,6 +95,38 @@ impl vecdb_core::backend::Backend for MockBackend {
     }
     async fn list_tasks(&self) -> anyhow::Result<Vec<vecdb_core::types::TaskInfo>> {
         Ok(vec![])
+    }
+
+    async fn write_genesis(
+        &self,
+        _c: &str,
+        _m: &vecdb_core::types::GenesisMetadata,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn read_genesis(&self, _c: &str) -> anyhow::Result<vecdb_core::types::CollectionGenesis> {
+        // Mirror MockEmbedder::identity so the space guard sees a matching
+        // contract. `present: false` would (correctly) make every ingest here
+        // fail as "not created by vecdb".
+        Ok(vecdb_core::types::CollectionGenesis {
+            collection_id: Some("mock-collection".to_string()),
+            model: vecdb_core::types::ModelIdentity {
+                name: "mock-embedder".to_string(),
+                digest: Some("mock:test-double".to_string()),
+                architecture: Some("mock".to_string()),
+                family: Some("mock".to_string()),
+                parameter_size: Some("0".to_string()),
+                quantization_level: Some("none".to_string()),
+                embedding_length: None,
+                context_length: Some(8192),
+            },
+            dimension: None,
+            distance: Some("Cosine".to_string()),
+            created_at: None,
+            vecdb_version: Some("test".to_string()),
+            vecdb_revision: None,
+            chunking: None,
+        })
     }
 }
 
@@ -108,6 +150,22 @@ impl vecdb_core::embedder::Embedder for MockEmbedder {
     }
     fn model_name(&self) -> String {
         "mock".to_string()
+    }
+
+    async fn identity(&self) -> anyhow::Result<vecdb_core::types::ModelIdentity> {
+        // Shared sentinel: every test double is one embedding space, so the
+        // compatibility guard passes and these tests exercise what they are
+        // actually about. Guard behaviour has its own dedicated tests.
+        Ok(vecdb_core::types::ModelIdentity {
+            name: "mock-embedder".to_string(),
+            digest: Some("mock:test-double".to_string()),
+            architecture: Some("mock".to_string()),
+            family: Some("mock".to_string()),
+            parameter_size: Some("0".to_string()),
+            quantization_level: Some("none".to_string()),
+            embedding_length: None,
+            context_length: Some(8192),
+        })
     }
 }
 
@@ -177,15 +235,17 @@ async fn test_large_file_bifurcation_ast() {
     let options = IngestionOptions {
         path: file_path.to_str().unwrap().to_string(),
         collection: "test_large_ast".to_string(),
-        chunk_size: 512,
-        max_chunk_size: Some(1000),
+        target_chunk_size: 512,
+        max_chunk_bytes: Some(1000),
+        on_oversize: Default::default(),
+        route_chunking: Default::default(),
         chunk_overlap: 50,
         respect_gitignore: false,
         ignore_vectorignore: false,
-    vecdbrc_routes: None,
-    vecdbrc_root: None,
+        vecdbrc_routes: None,
+        vecdbrc_root: None,
         strategy: "code_aware".to_string(),
-        tokenizer: "char".to_string(),
+        tokenizer: "bytes".to_string(),
         git_ref: None,
         extensions: None,
         excludes: None,
@@ -197,12 +257,14 @@ async fn test_large_file_bifurcation_ast() {
         max_concurrent_requests: 1,
         gpu_batch_size: 10,
         quantization: None,
+        allow_quantization_delta: false,
     };
 
     println!("Ingesting 60MB Rust file (AST/Code Path)...");
     let start = Instant::now();
     let result =
-        vecdb_core::ingestion::ingest_path(&backend, &embedder, &detector, &factory, options, None).await;
+        vecdb_core::ingestion::ingest_path(&backend, &embedder, &detector, &factory, options, None)
+            .await;
     let duration = start.elapsed();
 
     assert!(result.is_ok(), "Ingestion failed: {:?}", result.err());
@@ -244,15 +306,17 @@ async fn test_large_file_streaming_json() {
     let options = IngestionOptions {
         path: file_path.to_str().unwrap().to_string(),
         collection: "test_large_json".to_string(),
-        chunk_size: 512,
-        max_chunk_size: Some(1000),
+        target_chunk_size: 512,
+        max_chunk_bytes: Some(1000),
+        on_oversize: Default::default(),
+        route_chunking: Default::default(),
         chunk_overlap: 50,
         respect_gitignore: false,
         ignore_vectorignore: false,
-    vecdbrc_routes: None,
-    vecdbrc_root: None,
+        vecdbrc_routes: None,
+        vecdbrc_root: None,
         strategy: "recursive".to_string(),
-        tokenizer: "char".to_string(),
+        tokenizer: "bytes".to_string(),
         git_ref: None,
         extensions: None,
         excludes: None,
@@ -264,12 +328,14 @@ async fn test_large_file_streaming_json() {
         max_concurrent_requests: 1,
         gpu_batch_size: 10,
         quantization: None,
+        allow_quantization_delta: false,
     };
 
     println!("Ingesting 60MB JSON file (Streaming Path)...");
     let start = Instant::now();
     let result =
-        vecdb_core::ingestion::ingest_path(&backend, &embedder, &detector, &factory, options, None).await;
+        vecdb_core::ingestion::ingest_path(&backend, &embedder, &detector, &factory, options, None)
+            .await;
     let duration = start.elapsed();
 
     assert!(result.is_ok(), "Ingestion failed: {:?}", result.err());
