@@ -18,12 +18,15 @@ use vecdb_core::ingestion::IngestionOptions;
 
 fn options_at(path: &std::path::Path) -> IngestionOptions {
     IngestionOptions {
+        pack_target_bytes: None,
         path: path.to_string_lossy().to_string(),
         file_allowlist: None,
         project_root: None,
         collection: "test_gitignore_policy".to_string(),
         vecdbrc_routes: None,
         vecdbrc_root: None,
+        only_collection: None,
+        route_default_collection: None,
         target_chunk_size: 512,
         max_chunk_bytes: None,
         on_oversize: Default::default(),

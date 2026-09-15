@@ -41,11 +41,15 @@ from lib_envelope import search_results
 
 import sys, os as _os
 sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-from paths import bin_path
+from paths import bin_path, cuda_samples_dir
+from lib_stdio import drain_stderr
 
 DEFAULT_TEST_GRPC_PORT = 6336
 COLLECTION_NAME = "test_tier4_agent_workflow"
-CUDA_FIXTURE = "tests/fixtures/external/cuda-samples/Samples/2_Concepts_and_Techniques"
+
+# Resolved, not hardcoded — upstream moved `Samples/` to `cpp/` and this test
+# silently skipped while the gate reported OK. See paths.cuda_samples_dir.
+CUDA_FIXTURE = "2_Concepts_and_Techniques"
 
 
 class Tier4AgentWorkflow(unittest.TestCase):
@@ -57,13 +61,10 @@ class Tier4AgentWorkflow(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        cls.fixture_path = os.path.join(cls.root, CUDA_FIXTURE)
-
-        if not os.path.isdir(cls.fixture_path):
-            raise unittest.SkipTest(
-                f"Fixture not found: {cls.fixture_path}. "
-                "Run: bash tests/fixtures/init.sh"
-            )
+        # SystemExit (gate FAILURE) when absent, never SkipTest — a skip here
+        # reads as OK in the gate output, which is exactly how this test stayed
+        # dead. See cuda_samples_dir.
+        cls.fixture_path = str(cuda_samples_dir(CUDA_FIXTURE))
 
         cls.grpc_port = os.environ.get("VECDB_TEST_QDRANT_GRPC_PORT", DEFAULT_TEST_GRPC_PORT)
 
@@ -86,10 +87,6 @@ accept_invalid_certs = true
 target_chunk_size = 512
 """)
 
-        subprocess.run(
-            ["cargo", "build", "-p", "vecdb-server"],
-            check=True, capture_output=True, cwd=cls.root,
-        )
         cls.server_bin = os.path.join(cls.root, bin_path("vecdb-server"))
 
     @classmethod
@@ -116,6 +113,12 @@ target_chunk_size = 512
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=env,
         )
+        # Drain stderr continuously — see tests/lib_stdio.py. Undrained, the
+        # server blocks writing to a full stderr pipe and never replies on
+        # stdout, and the readline() below waits forever. Closing stderr in the
+        # `finally` (as this did) is far too late: the deadlock happens during
+        # the request, not at teardown.
+        drain_stderr(proc)
         try:
             init = json.dumps({"jsonrpc": "2.0", "method": "initialize", "id": 0}) + "\n"
             proc.stdin.write(init)
@@ -144,6 +147,8 @@ target_chunk_size = 512
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=env,
         )
+        # Drain stderr continuously — see tests/lib_stdio.py.
+        self._stderr = drain_stderr(self._proc)
         req = json.dumps({"jsonrpc": "2.0", "method": "initialize", "id": 0}) + "\n"
         self._proc.stdin.write(req)
         self._proc.stdin.flush()

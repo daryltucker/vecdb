@@ -23,7 +23,15 @@ pub async fn ingest_history(
     repo_path: &str,
     git_ref: &str,
     collection: &str,
-    target_chunk_size: usize,
+    // The DESTINATION's resolved chunk parameters, not a bare number.
+    //
+    // History writes into the same collection an ordinary ingest does, so it has
+    // to cut chunks the same way. It used to take a single `target_chunk_size`
+    // that the CLI hardcoded to 512 while discarding the resolution it had just
+    // computed, so `vecdb history ingest -c X` wrote X at a granularity nothing
+    // in the config mentioned. The chunking guard in `ensure_write_target` now
+    // refuses that outright, which is how it was found.
+    chunking: crate::ingestion::options::ChunkSpec,
     quantization: Option<crate::config::QuantizationType>,
     target_dim: Option<usize>,
 ) -> Result<()> {
@@ -53,15 +61,18 @@ pub async fn ingest_history(
     // rather than indexing intent — the same reason `.gitignore` is never
     // consulted implicitly anywhere else. `.vectorignore` remains in force.
     let options = IngestionOptions {
+        pack_target_bytes: chunking.pack_target_bytes,
         path: sandbox.path().to_string_lossy().to_string(),
         collection: collection.to_string(),
         vecdbrc_routes: None,
         vecdbrc_root: None,
-        target_chunk_size,
+        only_collection: None,
+        route_default_collection: None,
+        target_chunk_size: chunking.target_chunk_size,
         on_oversize: Default::default(),
         route_chunking: Default::default(),
-        max_chunk_bytes: None, // History ingestion usually relies on standard chunking, no hard limit enforced yet
-        chunk_overlap: 50,
+        max_chunk_bytes: chunking.max_chunk_bytes,
+        chunk_overlap: chunking.chunk_overlap,
         respect_gitignore: false,
         ignore_vectorignore: false,
         strategy: "recursive".to_string(),

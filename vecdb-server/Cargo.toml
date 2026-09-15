@@ -32,7 +32,9 @@ rustls = { workspace = true }
 
 
 [features]
-
+# BYO ONNX Runtime via ORT_DYLIB_PATH for GPUs the prebuilt dropped
+# (docs/GPU_LEGACY.md). Build with --features cuda-dynamic.
+cuda-dynamic = ["vecdb-core/cuda-dynamic"]
 
 [dev-dependencies]
 async-trait = { workspace = true }

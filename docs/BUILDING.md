@@ -29,11 +29,11 @@ pip install -r requirements.txt
 
 2.  **Build Release Binaries**:
     ```bash
-    # Standard CPU build
+    # Default build — CUDA support is ON (`cuda` is a default feature)
     cargo build --release
 
-    # GPU-enabled build (NVIDIA CUDA)
-    cargo build --release --features cuda
+    # CPU-only build (smaller, no ONNX CUDA provider)
+    cargo build --release --no-default-features
     ```
     *This compiles `vecdb` (CLI), `vecdb-server` (MCP), and `vecq`.*
 
@@ -46,11 +46,13 @@ pip install -r requirements.txt
 4.  **Install (Optional)**:
     You can install them to your `~/.cargo/bin` path:
     ```bash
-    ./install.sh
-    # Or manually:
+    make install          # also copies the CUDA provider libs — see GPU.md
+    # Or manually (no GPU provider libs):
     cargo install --path vecdb-cli
     cargo install --path vecdb-server
     ```
+    `./install.sh` is a contributor convenience wrapper around the same
+    `cargo install` calls; it does not set up GPU support.
 
 ## Cross-Compiling
 
@@ -69,13 +71,33 @@ To leverage an NVIDIA GPU for faster local embeddings:
 *   **NVIDIA Drivers**: Version 525+ recommended.
 *   **CUDA Toolkit**: Installed on the build machine (for linking) and runtime machine.
 *   **Linux**: Currently supported and tested on Linux.
+*   **A supported GPU**: compute capability 7.5, 8.0–8.9, or 9.0. Older
+    (Maxwell/Pascal/Volta) and newer (Blackwell) cards need
+    [`GPU_LEGACY.md`](GPU_LEGACY.md). See [`GPU.md`](GPU.md) for the matrix.
 
 ### Enabling at Build Time
-Add the `--features cuda` flag to any `cargo` command:
+Nothing to enable — `cuda` is a **default** feature of `vecdb-core`,
+`vecdb-cli` and `vecdb-server`. A plain `cargo build --release` is a CUDA
+build. Use `--no-default-features` to opt out.
+
+Because `cuda` is on by default, `--version` cannot tell you whether a binary
+is a CUDA build; check for the provider libraries instead (see `GPU.md`).
+
+### Choosing the CUDA major: `ORT_CUDA_VERSION`
+The prebuilt ONNX Runtime is fetched in a `cu12` or `cu13` flavour. They carry
+**identical GPU kernels** and differ only in which CUDA runtime they link
+(`libcudart.so.12` vs `.13`). Left unset, the `ort` crate infers it from the
+build machine's `CUDA_HOME` / `NV_CUDA_CUDART_VERSION` / `nvcc --version`,
+which makes the resulting binary's runtime requirement a property of your
+workstation rather than of the commit. Pin it:
+
 ```bash
-cargo check --features cuda
-cargo build --release --features cuda
+ORT_CUDA_VERSION=12 cargo build --release
 ```
+
+vecdb's `make` targets and release workflow pin `12`.
+`tests/tier2_ort_distribution.py` asserts what the built artifact actually
+links and which SMs it carries, so drift is caught rather than shipped.
 
 ### Enabling at Runtime
 Once built with CUDA support, enable it in your `config.toml`:
@@ -103,6 +125,40 @@ For faster incremental builds during development:
 cargo build
 ./target/debug/vecdb --help
 ```
+
+## Make targets
+
+```bash
+make check          # cargo check + clippy -D warnings
+make test-rust      # cargo test --workspace — fast, NOT the release gate
+make tests          # tests/run_all.sh — the release gate
+make doc            # cargo doc --no-deps --open
+
+make install                 # cargo install --path vecdb-cli --force
+make install-cuda-dynamic    # BYO-ONNX-Runtime machines — see docs/GPU_LEGACY.md
+
+make build          # Docker image
+make run            # Docker, interactive
+make run-stdio      # Docker, MCP stdio mode
+```
+
+Run a single Rust test:
+
+```bash
+cargo test -p vecdb-core test_model_selection_nomic_v15
+```
+
+> On a machine using the `cuda-dynamic` legacy-GPU build, `make install`
+> **overwrites it with a static build** and GPU embedding then fails with
+> `CUBLAS_STATUS_ARCH_MISMATCH`. Use `make install-cuda-dynamic` there.
+
+## Debug output
+
+| variable | effect |
+|---|---|
+| `VECDB_DEBUG=1` | `[LocalEmbedder]` thread diagnostics and other debug prints |
+| `RUST_LOG=debug` | tracing spans across the workspace |
+| `ORT_DYLIB_PATH` | overrides the `ort_dylib_path` config key (legacy-GPU builds) |
 
 ## Packaging & Assets
 

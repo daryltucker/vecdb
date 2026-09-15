@@ -41,6 +41,57 @@ impl RustParser {
         "private".to_string()
     }
 
+    /// Build a `DocumentElement` for a declaration whose only interesting
+    /// attributes are its name, visibility and doc-comment.
+    ///
+    /// `enum`, `trait`, `type`, `const`, `static`, `union` and `macro_rules!`
+    /// all share this shape. They were absent from the declaration walker until
+    /// day 240 — see `BUG_RUST_DECLARATION_COVERAGE-2026-241` in the docs repo.
+    /// Kinds needing more than this (functions carry a signature, impls a trait
+    /// and a type, modules a recursive body) keep their own arms.
+    fn simple_declaration(
+        &self,
+        node: &tree_sitter::Node,
+        source: &[u8],
+        element_type: ElementType,
+        pending_comments: &mut Vec<String>,
+    ) -> DocumentElement {
+        let name = node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(source).ok().map(|s| s.to_string()));
+
+        let mut element = DocumentElement::new(
+            element_type,
+            name,
+            node.utf8_text(source).unwrap_or("").to_string(),
+            node.start_position().row + 1,
+            node.end_position().row + 1,
+        );
+
+        let mut rust_attr = RustAttributes {
+            visibility: self.extract_visibility(node, source),
+            other: HashMap::new(),
+        };
+        rust_attr.other.insert(
+            "is_public".to_string(),
+            serde_json::Value::Bool(rust_attr.visibility.starts_with("pub")),
+        );
+
+        // Populate `other` *before* the move into ElementAttributes::Rust.
+        // Writing through `element.attributes` first and assigning after would
+        // discard the docstring — the bug the `struct_item` arm carried.
+        if !pending_comments.is_empty() {
+            rust_attr.other.insert(
+                "docstring".to_string(),
+                serde_json::Value::String(pending_comments.join("\n")),
+            );
+            pending_comments.clear();
+        }
+
+        element.attributes = ElementAttributes::Rust(rust_attr);
+        element
+    }
+
     fn extract_use_path(&self, node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
         // Find the path in the use declaration
         // Tree-sitter Rust grammar structure: use_declaration -> argument -> path/identifier
@@ -449,33 +500,17 @@ impl RustParser {
                     _current_scope = old_scope;
                     elements.push(element);
                 }
+                // Shares `simple_declaration` with the seven kinds below. It
+                // previously wrote `docstring` through `element.attributes` and
+                // then overwrote the whole field with a fresh `RustAttributes`,
+                // silently dropping every struct doc-comment.
                 "struct_item" => {
-                    let name = child
-                        .child_by_field_name("name")
-                        .and_then(|n| n.utf8_text(source).ok().map(|s| s.to_string()));
-
-                    let mut element = DocumentElement::new(
+                    elements.push(self.simple_declaration(
+                        &child,
+                        source,
                         ElementType::Struct,
-                        name.clone(),
-                        child.utf8_text(source).unwrap_or("").to_string(),
-                        child.start_position().row + 1,
-                        child.end_position().row + 1,
-                    );
-
-                    let rust_attr = RustAttributes {
-                        visibility: self.extract_visibility(&child, source),
-                        other: HashMap::new(),
-                    };
-
-                    if !pending_comments.is_empty() {
-                        element.attributes.insert_generic(
-                            "docstring".to_string(),
-                            serde_json::Value::String(pending_comments.join("\n")),
-                        );
-                        pending_comments.clear();
-                    }
-                    element.attributes = ElementAttributes::Rust(rust_attr);
-                    elements.push(element);
+                        pending_comments,
+                    ));
                 }
                 "mod_item" => {
                     let name = child
@@ -522,6 +557,28 @@ impl RustParser {
 
                     _current_scope = old_scope;
                     elements.push(element);
+                }
+                // The remaining seven declaration kinds. Each maps to an
+                // `ElementType` that already existed; only these arms and the
+                // converter mappings were missing.
+                "enum_item" | "trait_item" | "type_item" | "const_item" | "static_item"
+                | "union_item" | "macro_definition" => {
+                    let element_type = match kind {
+                        "enum_item" => ElementType::Enum,
+                        "trait_item" => ElementType::Trait,
+                        "type_item" => ElementType::TypeAlias,
+                        "const_item" => ElementType::Constant,
+                        "static_item" => ElementType::Variable,
+                        "union_item" => ElementType::Union,
+                        "macro_definition" => ElementType::Macro,
+                        _ => unreachable!("arm guarded by the pattern above"),
+                    };
+                    elements.push(self.simple_declaration(
+                        &child,
+                        source,
+                        element_type,
+                        pending_comments,
+                    ));
                 }
                 "use_declaration" => {
                     let text = child.utf8_text(source).unwrap_or("").to_string();

@@ -183,8 +183,31 @@ pub async fn flush_chunks(
                     active_max_chunk_bytes,
                 );
 
+                // DEBUG, NOT WARN — the per-chunk line is a diagnostic for
+                // chasing one file, and `OversizeReport` above is what the
+                // operator actually reads. That report was introduced to
+                // replace exactly these two statements (see its doc comment:
+                // "a wall of text that scrolls past, which is functionally the
+                // same as being silent"); the replacement landed and the
+                // originals were never removed, so both ran.
+                //
+                // At WARN this is not merely noisy, it HANGS THE MCP SERVER.
+                // Under the stdio transport, logs go to stderr while protocol
+                // responses go to stdout. A client that pipes stderr and reads
+                // it only after the response — the ordinary shape, and what
+                // tests/tier4_realistic_ingest.py does — lets the 64 KiB pipe
+                // buffer fill; the server then blocks forever in write(2) on
+                // stderr and never finishes the reply on stdout, while the
+                // client blocks reading stdout. Measured 2026-257 ingesting
+                // Lua 5.4.6: deadlocked after 1115 points, every thread idle.
+                //
+                // It takes a small-context model to trigger, which is the
+                // DEFAULT case, not an exotic one: all-minilm-l6-v2 has a
+                // 256-token window, so `model_byte_cap` clamps the ceiling to
+                // 896 bytes and ordinary C functions exceed it constantly —
+                // thousands of lines for one modest repository.
                 if on_oversize == crate::config::OversizePolicy::Skip {
-                    tracing::warn!(
+                    tracing::debug!(
                         document = %describe_source(&chunk),
                         chunk_bytes = chunk.content.len(),
                         max_chunk_bytes = active_max_chunk_bytes,
@@ -193,7 +216,7 @@ pub async fn flush_chunks(
                     continue;
                 }
 
-                tracing::warn!(
+                tracing::debug!(
                     document = %describe_source(&chunk),
                     chunk_bytes = chunk.content.len(),
                     max_chunk_bytes = active_max_chunk_bytes,

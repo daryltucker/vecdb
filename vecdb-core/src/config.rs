@@ -50,7 +50,13 @@ use std::path::PathBuf;
 const DEFAULT_PROFILE_NAME: &str = "default";
 const DEFAULT_QDRANT_URL: &str = "http://localhost:6334";
 const DEFAULT_LOCAL_MODEL: &str = "all-minilm-l6-v2";
-pub const DEFAULT_TARGET_CHUNK_SIZE: usize = 512;
+/// Must fit [`DEFAULT_LOCAL_MODEL`]'s window, which is the binding constraint.
+///
+/// That model accepts 256 tokens, so the previous 512 was `Impossible` on its
+/// own terms and its derived ceiling worse still. 192 leaves headroom:
+/// `192 * 1.15 = 220` against 256. **Raising this means raising the default
+/// model's window first.**
+pub const DEFAULT_TARGET_CHUNK_SIZE: usize = 192;
 const DEFAULT_CHUNK_OVERLAP: usize = 50;
 
 /// Fallback Ollama context window when a profile does not state one.
@@ -163,12 +169,17 @@ pub struct Resolution {
 
     pub qdrant_url: String,
     pub qdrant_api_key: Option<String>,
+    /// Name of the `[store.*]` entry that supplied `qdrant_url`, when one did.
+    /// `None` means an inline `qdrant_url` (or the built-in fallback) applied.
+    pub store: Option<String>,
     pub collection: Option<String>,
     pub quantization: Option<QuantizationType>,
 
     pub target_chunk_size: Resolved<usize>,
     pub chunk_overlap: Resolved<usize>,
     pub max_chunk_bytes: Resolved<usize>,
+    /// AST packing granularity — the knob that governs code and markdown.
+    pub pack_target_bytes: Resolved<usize>,
     pub on_oversize: Resolved<OversizePolicy>,
 
     /// Ollama only. Meaningless for fastembed, where the sequence limit is
@@ -189,6 +200,45 @@ impl Resolution {
     /// Endpoint for an Ollama backend. Empty for fastembed, which has none.
     pub fn ollama_url(&self) -> &str {
         self.backend.url.as_deref().unwrap_or("")
+    }
+
+    /// The model's usable context window in tokens, or `None` when it cannot be
+    /// known from config alone.
+    ///
+    /// Needs no network and no model: for Ollama the window is `num_ctx`, a knob
+    /// the operator sets and which is used exactly as written; for fastembed it
+    /// is baked into the ONNX graph and looked up by model name. `None` for an
+    /// unrecognised fastembed model means "cannot check", never "no limit".
+    pub fn context_tokens(&self) -> Option<usize> {
+        if self.is_ollama() {
+            Some(self.num_ctx.value)
+        } else {
+            crate::embedders::local::fastembed_context_length(&self.embedder.model)
+                .map(|n| n as usize)
+        }
+    }
+
+    /// `max_chunk_bytes`, clamped to what the model can actually embed.
+    ///
+    /// The oversize policy splits large chunks down to exactly this ceiling, so
+    /// a ceiling above the model's capacity makes the split parts *still* too
+    /// big — the split makes things worse, not better, and the run dies on input
+    /// it created itself.
+    ///
+    /// A method rather than a value computed at each call site because there are
+    /// three of them — `ingest`, `history ingest`, and the MCP tool — and two of
+    /// them did not clamp at all, so the same collection could be written with
+    /// two different ceilings depending on which command filled it.
+    ///
+    /// Clamped rather than rejected: `max_chunk_bytes` is usually derived, and
+    /// the derivation constant is generous on purpose, so erroring on any
+    /// derived ceiling above the window would reject the shipped defaults.
+    /// Capacity is a hard limit; the ceiling is a policy knob; policy yields.
+    pub fn effective_max_chunk_bytes(&self) -> usize {
+        match self.context_tokens() {
+            Some(ctx) => self.max_chunk_bytes.value.min(model_byte_cap(ctx)),
+            None => self.max_chunk_bytes.value,
+        }
     }
 }
 
@@ -255,10 +305,21 @@ pub struct Config {
     /// Where models run. Connection details only, reusable by many embedders.
     ///
     /// Names are free-form; `kind` says what it is, so the name need not repeat
-    /// it. Dots are allowed if quoted — `[backend."ollama.blade"]` — but a bare
-    /// `[backend.ollama.blade]` is a *nested* TOML table and will not parse.
+    /// it. Dots are allowed if quoted — `[backend."ollama.gpu"]` — but a bare
+    /// `[backend.ollama.gpu]` is a *nested* TOML table and will not parse.
     #[serde(default)]
     pub backend: HashMap<String, Backend>,
+
+    /// Where vectors persist. Connection details only, reusable by many
+    /// profiles.
+    ///
+    /// The storage counterpart of `[backend.*]`: a backend is where embedding
+    /// compute runs, a store is where the resulting vectors live. Deliberately
+    /// a separate table rather than a backend `kind` — the two have different
+    /// knobs and different failure modes, and reusing the word "backend" for
+    /// both is exactly the confusion this table exists to end.
+    #[serde(default)]
+    pub store: HashMap<String, Store>,
 
     /// Which model, and how it is tuned. Each references a backend.
     ///
@@ -296,6 +357,15 @@ pub struct Config {
     #[serde(default = "default_fastembed_cache_path")]
     pub fastembed_cache_path: PathBuf,
 
+    /// Path to `libonnxruntime.so` for `cuda-dynamic` builds (BYO ONNX
+    /// Runtime, docs/GPU_LEGACY.md). Applied to the `ORT_DYLIB_PATH`
+    /// environment variable at startup unless that variable is already set —
+    /// an explicit environment always wins. Genuinely global for the same
+    /// reason as `fastembed_cache_path`: it is a disk location, not a
+    /// property of any one embedder. Ignored by default (static-ORT) builds.
+    #[serde(default)]
+    pub ort_dylib_path: Option<PathBuf>,
+
     /// Keys to use for Smart Routing (Facet Auto-Detection).
     #[serde(default = "default_smart_routing_keys")]
     pub smart_routing_keys: Vec<String>,
@@ -329,8 +399,8 @@ impl std::fmt::Display for BackendKind {
 ///
 /// Deliberately carries no model and no tuning: one Ollama instance serves many
 /// models, and the whole point of Ollama is not being pinned to one. Conflating
-/// the two is what made a name like `ollama.blade.high` have to mean both "the
-/// blade instance" and "the high-quality setup on it".
+/// the two is what made a name like `ollama.gpu.high` have to mean both "the
+/// GPU instance" and "the high-quality setup on it".
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Backend {
     /// `"ollama"` or `"fastembed"`. Decides which embedder knobs apply.
@@ -344,6 +414,20 @@ pub struct Backend {
     /// Accept invalid TLS certificates (staging / self-signed endpoints).
     #[serde(default)]
     pub accept_invalid_certs: bool,
+}
+
+/// WHERE vectors persist.
+///
+/// Named once, referenced by profiles and collections via `store = "<name>"`.
+/// The inline `qdrant_url` / `qdrant_api_key` fields remain the anonymous
+/// spelling of the same thing; a level that sets both is a load-time error.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Store {
+    /// Qdrant endpoint.
+    pub url: String,
+    /// API key for Qdrant authentication.
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
 /// WHAT model, and HOW it is tuned.
@@ -469,6 +553,12 @@ pub struct CollectionConfig {
     #[serde(default)]
     pub embedder: Option<String>,
 
+    /// Override: persist this collection's vectors to a named `[store.*]`
+    /// instead of the profile's store. Exclusive with the inline
+    /// `qdrant_url`/`qdrant_api_key` below.
+    #[serde(default)]
+    pub store: Option<String>,
+
     /// Override: a different Qdrant instance.
     #[serde(default)]
     pub qdrant_url: Option<String>,
@@ -486,6 +576,13 @@ pub struct CollectionConfig {
     /// Override the byte ceiling above which a chunk is re-split.
     #[serde(default)]
     pub max_chunk_bytes: Option<usize>,
+    /// Override AST packing granularity, in non-whitespace characters.
+    ///
+    /// This — not `target_chunk_size` — governs chunk size for code, markdown,
+    /// JSON and YAML. `target_chunk_size` drives the generic chunker (used for
+    /// file types with no parser) and the derived byte ceiling.
+    #[serde(default)]
+    pub pack_target_bytes: Option<usize>,
 
     /// Vector quantization for this collection: `"scalar"`, `"binary"` or
     /// `"none"`. Fixed when the collection is created.
@@ -517,6 +614,22 @@ pub struct IngestionConfig {
     /// Overlap preserves context across a boundary at the cost of duplication.
     #[serde(default = "default_chunk_overlap")]
     pub chunk_overlap: usize,
+    /// Bytes to pack consecutive sibling AST elements up to, before emitting a
+    /// chunk. Defaults to 2048.
+    ///
+    /// This is the knob that decides retrieval granularity for every file vecq
+    /// can parse — which is most of them. `target_chunk_size` does not: no
+    /// chunker runs on a parsed file, so the parser's packing is the only thing
+    /// setting size. Before this existed, every AST element became its own
+    /// vector and `code` had a median chunk of 39 bytes against a 6000-token
+    /// target that was never once reached.
+    ///
+    /// Raise it for coarser, more contextual chunks; lower it for sharper,
+    /// more numerous ones. An element already larger than this is never split —
+    /// a function stays whole. Baked into the vectors at ingest: changing it
+    /// means a re-ingest.
+    #[serde(default = "default_pack_target_bytes")]
+    pub pack_target_bytes: usize,
     /// Consult `.gitignore` when walking. **Off, and stays off.**
     ///
     /// `.gitignore` is a build-artifact list, not an indexing policy, and the
@@ -580,6 +693,7 @@ impl Default for IngestionConfig {
             target_chunk_size: default_chunk_size(),
             max_chunk_bytes: None,
             chunk_overlap: default_chunk_overlap(),
+            pack_target_bytes: default_pack_target_bytes(),
             respect_gitignore: false,
             on_oversize: None,
             allow_embed_truncation: false,
@@ -618,6 +732,24 @@ fn default_chunk_size() -> usize {
 
 fn default_chunk_overlap() -> usize {
     DEFAULT_CHUNK_OVERLAP
+}
+
+/// Packing target for AST elements, in bytes.
+///
+/// 2048 was chosen by measurement, not taste: against `vecdb-core/src` it moves
+/// the median chunk from 178 to 1,402 bytes and cuts sub-50-byte fragments from
+/// 32.8% to 1.5%; against the markdown in `docs/vecdb` it moves the median from
+/// 69 to 1,853 and cuts them from 41.3% to 1.4%. Larger targets keep buying
+/// context but start merging unrelated sections; this sits just under the point
+/// where sibling paragraphs stop being about the same thing.
+/// AST packing granularity, in non-whitespace characters.
+///
+/// Deliberately conservative: this is a PACKING target, and overshooting costs
+/// retrieval precision while undershooting only costs vector count.
+pub const DEFAULT_PACK_TARGET_BYTES: usize = 2048;
+
+fn default_pack_target_bytes() -> usize {
+    2048
 }
 
 fn default_tokenizer() -> String {
@@ -756,6 +888,50 @@ pub fn check_chunk_fit(target_chunk_size: usize, num_ctx: usize) -> ChunkFit {
     ChunkFit::Ok
 }
 
+/// The fewest bytes a token can plausibly represent, for capacity checks.
+///
+/// Measured against a long-context embedding model by feeding it increasing
+/// prefixes of ordinary prose until it refused: the boundary sits near 3.5–3.9
+/// bytes per token. A capacity ceiling wants the pessimistic end.
+///
+/// Deliberately smaller than [`BYTES_PER_CHUNK_UNIT`], which converts a token
+/// *target* into a byte ceiling and is generous on purpose. Because the two
+/// differ, a derived ceiling can exceed what the model accepts — which is why
+/// [`model_byte_cap`] exists.
+pub const MIN_BYTES_PER_TOKEN: f64 = 3.5;
+
+/// The largest chunk, in bytes, a model with this context window can be relied
+/// on to embed whole.
+///
+/// A hard limit, not a preference: past it Ollama refuses the request and
+/// fastembed silently truncates to a prefix. Callers clamp `max_chunk_bytes` to
+/// this rather than rejecting it, because that value is usually derived and the
+/// derivation is generous by design — rejecting every derived ceiling above the
+/// window would reject the shipped defaults.
+pub fn model_byte_cap(context_tokens: usize) -> usize {
+    (context_tokens as f64 * MIN_BYTES_PER_TOKEN) as usize
+}
+
+/// Whether a chunk **byte ceiling** can fit a context window.
+///
+/// [`check_chunk_fit`] answers the same question for `target_chunk_size`, and a
+/// target that fits says nothing about the ceiling: the ceiling is derived from
+/// the target by a much more generous constant, so it can sit well above what
+/// the model accepts. Ordinary chunks then embed fine while oversize-split
+/// parts — sized to exactly that ceiling — cannot.
+///
+/// No `Tight` band, deliberately: [`MIN_BYTES_PER_TOKEN`] is already the
+/// pessimistic end of a measured range, and a second margin on top would reject
+/// workable configurations for a hazard already counted.
+pub fn check_ceiling_fit(max_chunk_bytes: usize, context_tokens: usize) -> ChunkFit {
+    let worst_case_tokens = (max_chunk_bytes as f64 / MIN_BYTES_PER_TOKEN).ceil() as usize;
+    if worst_case_tokens > context_tokens {
+        ChunkFit::Impossible
+    } else {
+        ChunkFit::Ok
+    }
+}
+
 /// Chunking strategies that resolve to a real chunker.
 pub const STRATEGIES: [&str; 3] = ["recursive", "semantic", "simple"];
 
@@ -812,9 +988,17 @@ pub struct Profile {
     /// Name of the `[embedder.*]` entry to use.
     pub embedder: String,
 
-    /// Qdrant endpoint for collections under this profile.
-    #[serde(default = "default_qdrant_url")]
-    pub qdrant_url: String,
+    /// Name of the `[store.*]` entry vectors persist to. Exclusive with the
+    /// inline `qdrant_url`/`qdrant_api_key` below — setting both is a
+    /// load-time error, so which one applies is never a precedence puzzle.
+    #[serde(default)]
+    pub store: Option<String>,
+
+    /// Qdrant endpoint for collections under this profile — the inline,
+    /// anonymous spelling of a store. Unset (and no `store`) falls back to
+    /// the `QDRANT_URL` environment variable, then `http://localhost:6334`.
+    #[serde(default)]
+    pub qdrant_url: Option<String>,
     /// API key for Qdrant authentication.
     #[serde(default)]
     pub qdrant_api_key: Option<String>,
@@ -835,6 +1019,13 @@ pub struct Profile {
     /// from `target_chunk_size`; it must never sit below it.
     #[serde(default)]
     pub max_chunk_bytes: Option<usize>,
+    /// Override AST packing granularity, in non-whitespace characters.
+    ///
+    /// This — not `target_chunk_size` — governs chunk size for code, markdown,
+    /// JSON and YAML. `target_chunk_size` drives the generic chunker (used for
+    /// file types with no parser) and the derived byte ceiling.
+    #[serde(default)]
+    pub pack_target_bytes: Option<usize>,
     /// Override `[ingestion].chunk_overlap` for this profile.
     #[serde(default)]
     pub chunk_overlap: Option<usize>,
@@ -844,8 +1035,12 @@ pub struct Profile {
     pub resolved_profile_name: String,
 }
 
-fn default_qdrant_url() -> String {
-    DEFAULT_QDRANT_URL.to_string()
+/// Endpoint for a profile with neither `store` nor `qdrant_url`: the
+/// `QDRANT_URL` environment variable, then the built-in default. This was
+/// always the auto-generated default profile's behavior; applying it at
+/// resolution makes it uniform across profiles instead of special-casing one.
+fn fallback_qdrant_url() -> String {
+    std::env::var("QDRANT_URL").unwrap_or_else(|_| DEFAULT_QDRANT_URL.to_string())
 }
 
 fn default_fastembed_cache_path() -> PathBuf {
@@ -899,13 +1094,19 @@ impl Default for Config {
             DEFAULT_PROFILE_NAME.to_string(),
             Profile {
                 embedder: "default".to_string(),
-                qdrant_url: std::env::var("QDRANT_URL")
-                    .unwrap_or_else(|_| DEFAULT_QDRANT_URL.to_string()),
+                store: None,
+                // None, deliberately: the figment base layer deep-merges under
+                // a user's [profiles.default], so a value here would shadow-set
+                // qdrant_url on a profile the user wrote with `store =` only —
+                // tripping the store/url exclusivity check they never violated.
+                // The QDRANT_URL env / built-in fallback applies at resolution.
+                qdrant_url: None,
                 qdrant_api_key: None,
                 default_collection_name: None,
                 quantization: Some(QuantizationType::None),
                 target_chunk_size: None,
                 max_chunk_bytes: None,
+                pack_target_bytes: None,
                 chunk_overlap: None,
                 resolved_profile_name: DEFAULT_PROFILE_NAME.to_string(),
             },
@@ -913,6 +1114,7 @@ impl Default for Config {
 
         Self {
             backend,
+            store: HashMap::new(),
             embedder,
             profiles,
             default_profile: DEFAULT_PROFILE_NAME.to_string(),
@@ -920,6 +1122,7 @@ impl Default for Config {
             collection_aliases: HashMap::new(),
             ingestion: IngestionConfig::default(),
             fastembed_cache_path: default_fastembed_cache_path(),
+            ort_dylib_path: None,
             smart_routing_keys: default_smart_routing_keys(),
             server: ServerConfig::default(),
         }
@@ -933,6 +1136,27 @@ impl Config {
     /// `vecdb config show` prints it. One resolution, one truth: the thing that
     /// reports what will happen is the thing that makes it happen.
     /// Resolve with no per-run overrides. The common path.
+    /// Resolve a collection name to its config entry: alias first, then the
+    /// table key, then a `name = ` field that matches.
+    ///
+    /// Returns the *canonical key* alongside the entry, because the key is what
+    /// `Source::Collection` reports and what the caller must use for any further
+    /// lookup — an alias that resolved must not keep travelling under its alias.
+    /// Shared by the `-c` path and the profile-default path so the two cannot
+    /// drift; they did, and only one of them applied `[collections.*]`.
+    fn lookup_collection<'a>(&'a self, c_name: &'a str) -> (&'a str, Option<&'a CollectionConfig>) {
+        let key = self
+            .collection_aliases
+            .get(c_name)
+            .map(|s| s.as_str())
+            .unwrap_or(c_name);
+        let cfg = self
+            .collections
+            .get(key)
+            .or_else(|| self.collections.values().find(|c| c.name == key));
+        (key, cfg)
+    }
+
     pub fn resolve(
         &self,
         requested_profile: Option<&str>,
@@ -954,17 +1178,12 @@ impl Config {
         overrides: Overrides<'_>,
     ) -> Result<Resolution> {
         // ── Collection ───────────────────────────────────────────
-        let mut final_c_name = requested_collection;
-        let c_config = if let Some(mut c_name) = requested_collection {
-            if let Some(real_key) = self.collection_aliases.get(c_name) {
-                c_name = real_key.as_str();
-                final_c_name = Some(c_name);
+        let (mut final_c_name, mut c_config) = match requested_collection {
+            Some(c) => {
+                let (key, cfg) = self.lookup_collection(c);
+                (Some(key), cfg)
             }
-            self.collections
-                .get(c_name)
-                .or_else(|| self.collections.values().find(|c| c.name == c_name))
-        } else {
-            None
+            None => (None, None),
         };
 
         // ── Profile: CLI flag > collection's profile > default ───
@@ -978,6 +1197,26 @@ impl Config {
                 self.known(self.profiles.keys())
             )
         })?;
+
+        // A bare command — no `-c`, no `.vecdbrc [default]` — still WRITES into
+        // the profile's `default_collection_name`. So that collection's
+        // `[collections.*]` entry governs the run exactly as it would with an
+        // explicit `-c`. Without this the data lands in a collection whose own
+        // configuration was never read: a collection's own `target_chunk_size`
+        // was skipped for every bare `vecdb ingest ./`, silently cutting those
+        // chunks at the profile's ceiling instead of the collection's.
+        //
+        // Deliberately AFTER the profile is chosen, and deliberately does not
+        // revisit it. The profile names the collection and a collection may name
+        // a profile; following the second link here would be circular. CLI flag
+        // and `-c` both still win — this only fills a hole neither of them fills.
+        if final_c_name.is_none() {
+            if let Some(default_name) = profile.default_collection_name.as_deref() {
+                let (key, cfg) = self.lookup_collection(default_name);
+                final_c_name = Some(key);
+                c_config = cfg;
+            }
+        }
 
         // ── Embedder: --embedder > collection override > profile ─
         let (embedder_name, embedder_source) = match overrides.embedder {
@@ -1051,13 +1290,51 @@ impl Config {
             anyhow::bail!("backend '{backend_name}' is kind = \"ollama\" but has no `url`.");
         }
 
-        // ── Qdrant: collection > profile ─────────────────────────
-        let qdrant_url = c_config
-            .and_then(|c| c.qdrant_url.clone())
-            .unwrap_or_else(|| profile.qdrant_url.clone());
-        let qdrant_api_key = c_config
-            .and_then(|c| c.qdrant_api_key.clone())
-            .or_else(|| profile.qdrant_api_key.clone());
+        // ── Qdrant store: collection > profile ───────────────────
+        // At each level a named store and the inline url are exclusive
+        // (enforced at load by validate_graph), so this is a lookup, not a
+        // precedence decision. A store carries its own api_key.
+        let (qdrant_url, qdrant_api_key, store_name) = match c_config.and_then(|c| c.store.as_ref())
+        {
+            Some(s) => {
+                let st = self.lookup_store(
+                    s,
+                    &Source::Collection(final_c_name.unwrap_or_default().to_string()),
+                )?;
+                (st.url.clone(), st.api_key.clone(), Some(s.clone()))
+            }
+            None => {
+                let (base_url, base_key, base_store) = match profile.store.as_ref() {
+                    Some(s) => {
+                        let st =
+                            self.lookup_store(s, &Source::Profile(profile_name.to_string()))?;
+                        (st.url.clone(), st.api_key.clone(), Some(s.clone()))
+                    }
+                    None => (
+                        profile
+                            .qdrant_url
+                            .clone()
+                            .unwrap_or_else(fallback_qdrant_url),
+                        profile.qdrant_api_key.clone(),
+                        None,
+                    ),
+                };
+                match c_config.and_then(|c| c.qdrant_url.clone()) {
+                    // An inline collection URL replaces the profile's store —
+                    // the resolved endpoint is no longer the named one.
+                    Some(u) => (
+                        u,
+                        c_config.and_then(|c| c.qdrant_api_key.clone()).or(base_key),
+                        None,
+                    ),
+                    None => (
+                        base_url,
+                        c_config.and_then(|c| c.qdrant_api_key.clone()).or(base_key),
+                        base_store,
+                    ),
+                }
+            }
+        };
 
         let collection = c_config
             .map(|c| c.name.clone())
@@ -1100,6 +1377,17 @@ impl Config {
             ),
         };
 
+        let pack_target_bytes = match (
+            c_config.and_then(|c| c.pack_target_bytes),
+            profile.pack_target_bytes,
+        ) {
+            (Some(v), _) => {
+                Resolved::new(v, Source::Collection(coll_key.unwrap_or("").to_string()))
+            }
+            (_, Some(v)) => Resolved::new(v, Source::Profile(profile_name.to_string())),
+            _ => Resolved::new(self.ingestion.pack_target_bytes, Source::Global),
+        };
+
         // ── Embedder tuning ──────────────────────────────────────
         let num_ctx = match embedder.num_ctx {
             Some(v) => Resolved::new(v, Source::Embedder(embedder_name.to_string())),
@@ -1130,15 +1418,57 @@ impl Config {
             backend_source,
             qdrant_url,
             qdrant_api_key,
+            store: store_name,
             collection,
             quantization,
             target_chunk_size,
             chunk_overlap,
             max_chunk_bytes,
+            pack_target_bytes,
             on_oversize: self.resolve_oversize_policy(),
             num_ctx,
             batch,
             use_gpu,
+        })
+    }
+
+    /// The (url, api_key) a profile's vectors persist to, before collection
+    /// overrides: its named store if set, else its inline form.
+    ///
+    /// For callers that sweep endpoints across profiles (MCP list_collections)
+    /// without running a full `resolve()`. Errors on a dangling store name
+    /// rather than guessing an endpoint.
+    pub fn profile_endpoint(
+        &self,
+        profile_name: &str,
+        profile: &Profile,
+    ) -> Result<(String, Option<String>)> {
+        match profile.store.as_ref() {
+            Some(s) => {
+                let st = self.lookup_store(s, &Source::Profile(profile_name.to_string()))?;
+                Ok((st.url.clone(), st.api_key.clone()))
+            }
+            None => Ok((
+                profile
+                    .qdrant_url
+                    .clone()
+                    .unwrap_or_else(fallback_qdrant_url),
+                profile.qdrant_api_key.clone(),
+            )),
+        }
+    }
+
+    /// Look up a `[store.*]` entry, saying who referenced it on failure.
+    ///
+    /// `validate_graph` catches dangling references at load time; this error
+    /// exists for configs constructed in code, and keeps resolution honest
+    /// rather than silently falling back to a default endpoint.
+    fn lookup_store(&self, name: &str, referenced_by: &Source) -> Result<&Store> {
+        self.store.get(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "store '{name}' not found (referenced by {referenced_by}).\n\n  known stores: {}",
+                self.known(self.store.keys())
+            )
         })
     }
 
@@ -1242,6 +1572,26 @@ impl Config {
                     config.known(config.embedder.keys())
                 );
             }
+            if let Some(s) = &profile.store {
+                if !config.store.contains_key(s) {
+                    anyhow::bail!(
+                        "profile '{name}' references store '{s}', which is not defined.\n\n  \
+                     known stores: {}",
+                        config.known(config.store.keys())
+                    );
+                }
+                // Exclusive by rule, not precedence: with both present, one of
+                // them is silently dead config, and which one would be a fact
+                // the operator has to memorize.
+                if profile.qdrant_url.is_some() || profile.qdrant_api_key.is_some() {
+                    anyhow::bail!(
+                        "profile '{name}' sets both `store` and inline `qdrant_url`/`qdrant_api_key`.\n\n  \
+                     A named store carries its own url and api_key; setting both makes one of \n  \
+                     them dead config. Keep `store = \"{s}\"` and remove the inline keys, or \n  \
+                     drop `store` and keep the inline form."
+                    );
+                }
+            }
         }
         validate_strategy(&config.ingestion.default_strategy)?;
 
@@ -1284,6 +1634,23 @@ impl Config {
                      known embedders: {}",
                     config.known(config.embedder.keys())
                 );
+                }
+            }
+            if let Some(s) = &coll.store {
+                if !config.store.contains_key(s) {
+                    anyhow::bail!(
+                        "collection '{name}' references store '{s}', which is not defined.\n\n  \
+                     known stores: {}",
+                        config.known(config.store.keys())
+                    );
+                }
+                if coll.qdrant_url.is_some() || coll.qdrant_api_key.is_some() {
+                    anyhow::bail!(
+                        "collection '{name}' sets both `store` and inline `qdrant_url`/`qdrant_api_key`.\n\n  \
+                     A named store carries its own url and api_key; setting both makes one of \n  \
+                     them dead config. Keep `store = \"{s}\"` and remove the inline keys, or \n  \
+                     drop `store` and keep the inline form."
+                    );
                 }
             }
         }
@@ -1332,7 +1699,7 @@ mod tests {
         let mut config = Config::default();
 
         config.backend.insert(
-            "blade".to_string(),
+            "gpu".to_string(),
             Backend {
                 kind: BackendKind::Ollama,
                 url: Some("http://ollama-a.example.com:11434".to_string()),
@@ -1347,7 +1714,7 @@ mod tests {
             config.embedder.insert(
                 name.to_string(),
                 EmbedderSpec {
-                    backend: "blade".to_string(),
+                    backend: "gpu".to_string(),
                     model: model.to_string(),
                     num_ctx: Some(ctx),
                     batch_inputs: Some(48),
@@ -1360,8 +1727,10 @@ mod tests {
         config.profiles.insert(
             "remote".to_string(),
             Profile {
+                pack_target_bytes: None,
                 embedder: "baby_qwen".to_string(),
-                qdrant_url: "http://localhost:6334".to_string(),
+                store: None,
+                qdrant_url: Some("http://localhost:6334".to_string()),
                 qdrant_api_key: None,
                 default_collection_name: None,
                 quantization: None,
@@ -1381,10 +1750,12 @@ mod tests {
         config.collections.insert(
             "docs".to_string(),
             CollectionConfig {
+                pack_target_bytes: None,
                 name: "docs".to_string(),
                 description: None,
                 profile: Some("remote".to_string()),
                 embedder: Some("big_qwen".to_string()),
+                store: None,
                 qdrant_url: None,
                 qdrant_api_key: None,
                 target_chunk_size: None,
@@ -1407,7 +1778,7 @@ mod tests {
     // ── Per-run overrides: one flag per layer ────────────────────
     //
     // The motivating case, measured 2026-237: two repos ingesting into one
-    // collection, one on jetson and one on blade, because a single embed host
+    // collection, one on each of two embed hosts, because a single embed host
     // becomes everyone's queue. Both hold digest ac6da0dfba84, so the vectors
     // land in the same space — `--backend` is what says "this embedder,
     // elsewhere" without duplicating the `[embedder.*]` table per host.
@@ -1419,7 +1790,7 @@ mod tests {
     fn backend_override_relocates_without_retuning() {
         let mut config = three_layer();
         config.backend.insert(
-            "jetson".to_string(),
+            "gpu_far".to_string(),
             Backend {
                 kind: BackendKind::Ollama,
                 url: Some("http://ollama-b.example.com:11434".to_string()),
@@ -1434,13 +1805,13 @@ mod tests {
                 Some("remote"),
                 None,
                 Overrides {
-                    backend: Some("jetson"),
+                    backend: Some("gpu_far"),
                     ..Default::default()
                 },
             )
             .unwrap();
 
-        assert_eq!(away.backend_name, "jetson");
+        assert_eq!(away.backend_name, "gpu_far");
         assert_eq!(away.ollama_url(), "http://ollama-b.example.com:11434");
         assert_eq!(away.backend_source, Source::Cli("--backend"));
 
@@ -1503,7 +1874,7 @@ mod tests {
             .to_string();
 
         assert!(err.contains("--backend"), "{err}");
-        assert!(err.contains("blade"), "should list what exists: {err}");
+        assert!(err.contains("gpu"), "should list what exists: {err}");
     }
 
     /// `--embedder` outranks a collection's own override, which outranks the
@@ -1514,10 +1885,12 @@ mod tests {
         config.collections.insert(
             "docs".to_string(),
             CollectionConfig {
+                pack_target_bytes: None,
                 name: "docs".to_string(),
                 description: None,
                 profile: Some("remote".to_string()),
                 embedder: Some("big_qwen".to_string()),
+                store: None,
                 qdrant_url: None,
                 qdrant_api_key: None,
                 target_chunk_size: None,
@@ -1569,6 +1942,145 @@ mod tests {
             Source::Embedder("baby_qwen".to_string()),
             "unflagged runs still blame the embedder, not a flag"
         );
+    }
+
+    // ── The profile's default collection is still a collection ───
+
+    /// `three_layer()` plus a profile that names a default collection which has
+    /// its own `[collections.*]` entry, configured DIFFERENTLY from the profile.
+    /// Every field is deliberately distinguishable so a test cannot pass by
+    /// reading the profile and calling it the collection.
+    fn profile_default_collection() -> Config {
+        let mut config = three_layer();
+        config.default_profile = "remote".to_string();
+
+        let profile = config.profiles.get_mut("remote").unwrap();
+        profile.default_collection_name = Some("docs".to_string());
+        profile.target_chunk_size = Some(2000);
+        profile.chunk_overlap = Some(50);
+
+        config.collections.insert(
+            "docs".to_string(),
+            CollectionConfig {
+                name: "docs".to_string(),
+                description: None,
+                profile: Some("remote".to_string()),
+                embedder: None,
+                store: None,
+                qdrant_url: None,
+                qdrant_api_key: None,
+                quantization: None,
+                target_chunk_size: Some(6000),
+                max_chunk_bytes: Some(31000),
+                chunk_overlap: Some(77),
+                pack_target_bytes: Some(4096),
+            },
+        );
+        config
+    }
+
+    /// A bare command — no `-c`, no `.vecdbrc` — lands in the profile's
+    /// `default_collection_name`, so that collection's own config must govern
+    /// it. It did not: `resolve_with` looked the entry up from
+    /// `requested_collection` and gave up when that was `None`, then fell back
+    /// to the profile default *afterwards*. Every knob below came back at the
+    /// profile's value while the data went to `docs`.
+    ///
+    /// Revert the `final_c_name.is_none()` block in `resolve_with` and this
+    /// fails on the first assertion (6000 vs 2000).
+    #[test]
+    fn a_profile_default_collection_still_gets_its_own_config() {
+        let config = profile_default_collection();
+        let bare = config.resolve(None, None).unwrap();
+
+        assert_eq!(
+            bare.collection.as_deref(),
+            Some("docs"),
+            "the data lands in docs — that is the premise of the whole test"
+        );
+        assert_eq!(
+            bare.target_chunk_size.value, 6000,
+            "collection > profile, exactly as with an explicit -c"
+        );
+        assert_eq!(bare.chunk_overlap.value, 77);
+        assert_eq!(bare.max_chunk_bytes.value, 31000);
+        assert_eq!(
+            bare.pack_target_bytes.value, 4096,
+            "the knob that actually governs AST content"
+        );
+        assert_eq!(
+            bare.target_chunk_size.source,
+            Source::Collection("docs".to_string()),
+            "and it blames the collection, so `config show` tells the truth too"
+        );
+    }
+
+    /// The same answer whether the name arrives via `-c` or via the profile.
+    /// Two lookup paths that disagree is what produced the bug; this pins them
+    /// together rather than pinning one value.
+    #[test]
+    fn naming_the_collection_explicitly_changes_nothing() {
+        let config = profile_default_collection();
+        let bare = config.resolve(None, None).unwrap();
+        let named = config.resolve(None, Some("docs")).unwrap();
+
+        assert_eq!(bare.collection, named.collection);
+        assert_eq!(bare.target_chunk_size.value, named.target_chunk_size.value);
+        assert_eq!(bare.chunk_overlap.value, named.chunk_overlap.value);
+        assert_eq!(bare.max_chunk_bytes.value, named.max_chunk_bytes.value);
+        assert_eq!(bare.pack_target_bytes.value, named.pack_target_bytes.value);
+    }
+
+    /// An alias is resolved on the profile-default path too, and reports the
+    /// canonical key — an alias that resolved must not keep travelling under
+    /// its alias.
+    #[test]
+    fn a_profile_default_that_is_an_alias_resolves_through_it() {
+        let mut config = profile_default_collection();
+        config
+            .collection_aliases
+            .insert("papers".to_string(), "docs".to_string());
+        config
+            .profiles
+            .get_mut("remote")
+            .unwrap()
+            .default_collection_name = Some("papers".to_string());
+
+        let bare = config.resolve(None, None).unwrap();
+        assert_eq!(bare.collection.as_deref(), Some("docs"));
+        assert_eq!(bare.target_chunk_size.value, 6000);
+        assert_eq!(
+            bare.target_chunk_size.source,
+            Source::Collection("docs".to_string()),
+            "blames the real collection, not the alias"
+        );
+    }
+
+    /// `-c` still wins. The fix fills a hole; it must not open a new precedence.
+    #[test]
+    fn an_explicit_collection_still_outranks_the_profile_default() {
+        let mut config = profile_default_collection();
+        config.collections.insert(
+            "other".to_string(),
+            CollectionConfig {
+                name: "other".to_string(),
+                description: None,
+                profile: Some("remote".to_string()),
+                embedder: None,
+                store: None,
+                qdrant_url: None,
+                qdrant_api_key: None,
+                quantization: None,
+                target_chunk_size: Some(123),
+                max_chunk_bytes: None,
+                chunk_overlap: None,
+                pack_target_bytes: None,
+            },
+        );
+
+        let named = config.resolve(None, Some("other")).unwrap();
+        assert_eq!(named.collection.as_deref(), Some("other"));
+        assert_eq!(named.target_chunk_size.value, 123);
     }
 
     // ── Upgrade path ─────────────────────────────────────────────
@@ -1677,10 +2189,12 @@ target_chunk_size = 2000
         config.collections.insert(
             "docs".to_string(),
             CollectionConfig {
+                pack_target_bytes: None,
                 name: "docs".to_string(),
                 description: None,
                 profile: Some("remote".to_string()),
                 embedder: None,
+                store: None,
                 qdrant_url: None,
                 qdrant_api_key: None,
                 target_chunk_size: None,
@@ -1761,8 +2275,10 @@ target_chunk_size = 2000
         config.profiles.insert(
             "localp".to_string(),
             Profile {
+                pack_target_bytes: None,
                 embedder: "micro".to_string(),
-                qdrant_url: "http://localhost:6334".to_string(),
+                store: None,
+                qdrant_url: Some("http://localhost:6334".to_string()),
                 qdrant_api_key: None,
                 default_collection_name: None,
                 quantization: None,
@@ -1807,8 +2323,10 @@ target_chunk_size = 2000
         config.profiles.insert(
             "bad".to_string(),
             Profile {
+                pack_target_bytes: None,
                 embedder: "orphan".to_string(),
-                qdrant_url: "http://localhost:6334".to_string(),
+                store: None,
+                qdrant_url: Some("http://localhost:6334".to_string()),
                 qdrant_api_key: None,
                 default_collection_name: None,
                 quantization: None,
@@ -1821,7 +2339,7 @@ target_chunk_size = 2000
 
         let err = config.resolve(Some("bad"), None).unwrap_err().to_string();
         assert!(err.contains("nowhere"), "{err}");
-        assert!(err.contains("blade"), "must list what does exist: {err}");
+        assert!(err.contains("gpu"), "must list what does exist: {err}");
         // The nested-table trap is common enough to name in the error itself.
         assert!(err.contains("nested TOML table"), "{err}");
     }
@@ -1831,7 +2349,7 @@ target_chunk_size = 2000
     #[test]
     fn ollama_backend_without_url_is_rejected() {
         let mut config = three_layer();
-        config.backend.get_mut("blade").unwrap().url = None;
+        config.backend.get_mut("gpu").unwrap().url = None;
         let err = config
             .resolve(Some("remote"), None)
             .unwrap_err()
@@ -1849,10 +2367,12 @@ target_chunk_size = 2000
         config.collections.insert(
             "docs".to_string(),
             CollectionConfig {
+                pack_target_bytes: None,
                 name: "docs".to_string(),
                 description: None,
                 profile: Some("remote".to_string()),
                 embedder: None,
+                store: None,
                 qdrant_url: None,
                 qdrant_api_key: None,
                 target_chunk_size: Some(6900),
@@ -1898,10 +2418,12 @@ target_chunk_size = 2000
         config.collections.insert(
             "lts".to_string(),
             CollectionConfig {
-                name: "docs-lts".to_string(),
+                pack_target_bytes: None,
+                name: "notes-archive".to_string(),
                 description: None,
                 profile: Some("remote".to_string()),
                 embedder: None,
+                store: None,
                 qdrant_url: Some("https://qdrant.example.com".to_string()),
                 qdrant_api_key: None,
                 target_chunk_size: None,
@@ -1912,6 +2434,204 @@ target_chunk_size = 2000
         );
         let r = config.resolve(None, Some("lts")).unwrap();
         assert_eq!(r.qdrant_url, "https://qdrant.example.com");
-        assert_eq!(r.collection.as_deref(), Some("docs-lts"));
+        assert_eq!(r.collection.as_deref(), Some("notes-archive"));
+    }
+
+    // ── Named stores (RFC-2026-255) ──────────────────────────────────────
+    //
+    // The store is the storage counterpart of [backend.*]: named once,
+    // referenced by profiles/collections, exclusive with the inline
+    // qdrant_url spelling at any one level.
+
+    /// The reported shape: a collection uses one profile; that profile
+    /// uses the nomic embedder and the "local" store. Same embedder, second
+    /// profile, different store — the vectors travel, the model does not.
+    #[test]
+    fn profile_references_a_named_store() {
+        let toml = r#"
+            [store.local]
+            url = "http://localhost:6334"
+
+            [store.public]
+            url = "https://qdrant.example.com"
+            api_key = "sekrit"
+
+            [backend.local]
+            kind = "fastembed"
+
+            [embedder.nomic]
+            backend = "local"
+            model = "nomic-embed-text-v1.5"
+
+            [profiles.lts]
+            embedder = "nomic"
+            store = "local"
+
+            [profiles.lts-public]
+            embedder = "nomic"
+            store = "public"
+
+            [collections.notes-archive]
+            name = "notes-archive"
+            profile = "lts"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        Config::validate_graph(&config).unwrap();
+
+        let r = config.resolve(None, Some("notes-archive")).unwrap();
+        assert_eq!(r.qdrant_url, "http://localhost:6334");
+        assert_eq!(r.qdrant_api_key, None);
+        assert_eq!(r.store.as_deref(), Some("local"));
+
+        let public = config.resolve(Some("lts-public"), None).unwrap();
+        assert_eq!(public.qdrant_url, "https://qdrant.example.com");
+        assert_eq!(public.qdrant_api_key.as_deref(), Some("sekrit"));
+        assert_eq!(public.store.as_deref(), Some("public"));
+        assert_eq!(
+            public.embedder_name, "nomic",
+            "one embedder, two homes — that is the point of the split"
+        );
+    }
+
+    fn with_store(mut config: Config, name: &str, url: &str) -> Config {
+        config.store.insert(
+            name.to_string(),
+            Store {
+                url: url.to_string(),
+                api_key: None,
+            },
+        );
+        config
+    }
+
+    /// A collection's store override outranks the profile's store, exactly as
+    /// its inline qdrant_url always has.
+    #[test]
+    fn collection_store_outranks_profile_store() {
+        let mut config = with_store(
+            with_store(three_layer(), "near", "http://localhost:6334"),
+            "far",
+            "https://qdrant.example.com",
+        );
+        config.profiles.get_mut("remote").unwrap().store = Some("near".to_string());
+        config.profiles.get_mut("remote").unwrap().qdrant_url = None;
+        config.collections.insert(
+            "docs".to_string(),
+            CollectionConfig {
+                pack_target_bytes: None,
+                name: "docs".to_string(),
+                description: None,
+                profile: Some("remote".to_string()),
+                embedder: None,
+                store: Some("far".to_string()),
+                qdrant_url: None,
+                qdrant_api_key: None,
+                target_chunk_size: None,
+                chunk_overlap: None,
+                max_chunk_bytes: None,
+                quantization: None,
+            },
+        );
+
+        let prof = config.resolve(Some("remote"), None).unwrap();
+        assert_eq!(prof.qdrant_url, "http://localhost:6334");
+        assert_eq!(prof.store.as_deref(), Some("near"));
+
+        let coll = config.resolve(None, Some("docs")).unwrap();
+        assert_eq!(coll.qdrant_url, "https://qdrant.example.com");
+        assert_eq!(coll.store.as_deref(), Some("far"));
+    }
+
+    /// An inline collection URL replaces the profile's named store, and the
+    /// resolution must not keep claiming the store name for an endpoint that
+    /// is no longer the store's.
+    #[test]
+    fn inline_collection_url_clears_the_store_name() {
+        let mut config = with_store(three_layer(), "near", "http://localhost:6334");
+        config.profiles.get_mut("remote").unwrap().store = Some("near".to_string());
+        config.profiles.get_mut("remote").unwrap().qdrant_url = None;
+        config.collections.insert(
+            "docs".to_string(),
+            CollectionConfig {
+                pack_target_bytes: None,
+                name: "docs".to_string(),
+                description: None,
+                profile: Some("remote".to_string()),
+                embedder: None,
+                store: None,
+                qdrant_url: Some("https://elsewhere.example.com".to_string()),
+                qdrant_api_key: None,
+                target_chunk_size: None,
+                chunk_overlap: None,
+                max_chunk_bytes: None,
+                quantization: None,
+            },
+        );
+
+        let r = config.resolve(None, Some("docs")).unwrap();
+        assert_eq!(r.qdrant_url, "https://elsewhere.example.com");
+        assert_eq!(r.store, None);
+    }
+
+    /// A typo'd store name is a load-time error naming what exists, not a
+    /// first-use error about something else.
+    #[test]
+    fn dangling_store_reference_fails_validation() {
+        let mut config = with_store(three_layer(), "near", "http://localhost:6334");
+        config.profiles.get_mut("remote").unwrap().store = Some("naer".to_string());
+        config.profiles.get_mut("remote").unwrap().qdrant_url = None;
+
+        let err = Config::validate_graph(&config).unwrap_err().to_string();
+        assert!(err.contains("store 'naer'"), "names the typo: {err}");
+        assert!(err.contains("near"), "lists what exists: {err}");
+    }
+
+    /// `store` and the inline spelling are exclusive: with both present one of
+    /// them is dead config, and which one would be a fact to memorize.
+    #[test]
+    fn store_plus_inline_url_fails_validation() {
+        let mut config = with_store(three_layer(), "near", "http://localhost:6334");
+        config.profiles.get_mut("remote").unwrap().store = Some("near".to_string());
+        // three_layer() leaves the inline qdrant_url set — that is the conflict.
+
+        let err = Config::validate_graph(&config).unwrap_err().to_string();
+        assert!(
+            err.contains("both `store` and inline"),
+            "states the rule: {err}"
+        );
+
+        // Same rule at the collection level.
+        let mut config = with_store(three_layer(), "near", "http://localhost:6334");
+        config.collections.insert(
+            "docs".to_string(),
+            CollectionConfig {
+                pack_target_bytes: None,
+                name: "docs".to_string(),
+                description: None,
+                profile: Some("remote".to_string()),
+                embedder: None,
+                store: Some("near".to_string()),
+                qdrant_url: Some("https://elsewhere.example.com".to_string()),
+                qdrant_api_key: None,
+                target_chunk_size: None,
+                chunk_overlap: None,
+                max_chunk_bytes: None,
+                quantization: None,
+            },
+        );
+        let err = Config::validate_graph(&config).unwrap_err().to_string();
+        assert!(
+            err.contains("collection 'docs' sets both"),
+            "names the level: {err}"
+        );
+    }
+
+    /// The inline spelling keeps working untouched — nothing existing breaks.
+    #[test]
+    fn inline_qdrant_url_still_works_without_stores() {
+        let config = three_layer();
+        let r = config.resolve(Some("remote"), None).unwrap();
+        assert_eq!(r.qdrant_url, "http://localhost:6334");
+        assert_eq!(r.store, None);
     }
 }

@@ -74,7 +74,7 @@
 //   - src/types.rs - FileType enum and related types
 //   - src/parsers/mod.rs - Parser implementations that depend on detection
 //   - tests/fixtures/ - Real-world test files for detection validation
-//   - tests/unit/detection_tests.rs - Unit tests for specific detection scenarios
+//   - src/detection.rs - Unit tests for specific detection scenarios
 //
 // MAINTENANCE:
 //   Update when:
@@ -344,7 +344,7 @@ fn generate_file_path(file_type: FileType) -> BoxedStrategy<PathBuf> {
             Just(PathBuf::from("main.rs")),
             Just(PathBuf::from("lib.rs")),
             Just(PathBuf::from("src/parser.rs")),
-            Just(PathBuf::from("tests/integration.rs")),
+            Just(PathBuf::from("tests/integration.rs")), // path-ok: detector input, not a reference
         ]
         .boxed(),
         FileType::Python => prop_oneof![
@@ -357,7 +357,7 @@ fn generate_file_path(file_type: FileType) -> BoxedStrategy<PathBuf> {
         FileType::Markdown => prop_oneof![
             Just(PathBuf::from("README.md")),
             Just(PathBuf::from("CHANGELOG.md")),
-            Just(PathBuf::from("docs/guide.md")),
+            Just(PathBuf::from("docs/guide.md")), // path-ok: detector input, not a reference
             Just(PathBuf::from("notes.markdown")),
         ]
         .boxed(),

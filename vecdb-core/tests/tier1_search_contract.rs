@@ -166,9 +166,6 @@ fn core_with(seen: Arc<Mutex<Option<SearchParams>>>) -> Core {
         Arc::new(DummyDetector),
         Arc::new(DummyParserFactory),
         vec!["source_type".to_string(), "language".to_string()], // smart_routing_keys
-        vec![],                                                  // path_rules
-        4,
-        2,
     )
 }
 
@@ -292,7 +289,7 @@ fn model(name: &str, digest: &str, arch: &str, params: &str, quant: &str) -> Mod
     }
 }
 
-/// The exact fleet scenario from the bug report: sleipnir has
+/// The exact fleet scenario from the bug report: one machine has
 /// nomic-embed-text (768), another box resolves to bge-base-en-v1.5 (768).
 /// The old guard compared 768 != 768, passed, and mixed two spaces forever.
 #[test]
@@ -355,7 +352,7 @@ fn same_model_different_quant_is_read_free_write_gated() {
     );
 }
 
-/// Tags are not identity. On blade, `qwen3-embedding:4b` and
+/// Tags are not identity. On one host, `qwen3-embedding:4b` and
 /// `qwen3-embedding:4b-q4_K_M` are the same blob under different names —
 /// a name comparison would call these different models.
 #[test]

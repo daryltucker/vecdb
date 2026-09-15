@@ -202,7 +202,11 @@ pub async fn process_single_file(
         parser_factory.get_parser(file_type).is_some()
     );
 
-    let chunks = if let Some(p) = parser_factory.get_parser(file_type) {
+    // Sized for THIS destination, not for the run — see `ChunkSpec::pack_target`.
+    let chunks = if let Some(p) = parser_factory.get_parser_sized(
+        file_type,
+        Some(options.chunking_for(&collection).pack_target()),
+    ) {
         match p.parse(&content, &path, meta_val).await {
             Ok(c) => c,
             Err(e) => {

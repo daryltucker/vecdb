@@ -45,8 +45,17 @@ pub async fn run() -> anyhow::Result<()> {
     let git_hash = vecdb_common::revision();
 
     let ort_version = vecdb_core::get_ort_version();
+    // No leading "vecdb": clap prepends the command name to whatever `version`
+    // holds, so `"vecdb v1.1.1 …"` rendered as `vecdb vecdb v1.1.1 …`.
+    //
+    // "ONNX Runtime: {}" and NOT "ONNX v{}". `get_ort_version()` returns a
+    // version number for a static build but a sentence for `cuda-dynamic`
+    // ("dynamic — requires API 24 via ORT_DYLIB_PATH"), and a hardcoded "v"
+    // rendered that as "ONNX vdynamic — …". The label must not assume the
+    // shape of a value that legitimately has two shapes.
+    // Parsed by tests/tier2_ort_distribution.py; documented in docs/GPU.md.
     let long_version = format!(
-        "vecdb v{} (git:{})\nONNX v{}",
+        "v{} (git:{})\nONNX Runtime: {}",
         app_version, git_hash, ort_version
     );
 
@@ -105,46 +114,31 @@ pub async fn run() -> anyhow::Result<()> {
             commands::status::run(args, &config, profile_arg, overrides, format).await?
         }
         Commands::Delete(args) => {
-            let resolution =
-                config.resolve_with(profile_arg, args.collection.as_deref(), overrides)?;
-
-            if args.all {
-                let is_local = resolution.qdrant_url.contains("localhost")
-                    || resolution.qdrant_url.contains("127.0.0.1")
-                    || resolution.qdrant_url.contains("0.0.0.0");
-                if !is_local {
-                    anyhow::bail!(
-                        "Bulk deletion (--all) is restricted to local backends to prevent accidental data loss on remote systems ({}). \
-                        To delete a remote collection, please specify it by name.",
-                        resolution.qdrant_url
-                    );
-                }
-            }
-
             // Delete only needs the backend (Qdrant) — no embedder required.
             // Set VECDB_SKIP_PROBE to prevent LocalEmbedder from eagerly loading the ONNX model.
             unsafe {
                 std::env::set_var("VECDB_SKIP_PROBE", "true");
             }
-            use std::sync::Arc;
-            use vecdb_core::parsers::vecq_adapter::VecqParserFactory;
-            use vecq::detection::HybridDetector;
-            let file_detector = Arc::new(HybridDetector::new());
-            let parser_factory = Arc::new(VecqParserFactory);
 
-            let services = vecdb_core::CoreServices::from_config(
-                &config,
-                file_detector.clone(),
-                parser_factory.clone(),
-            );
-            let _core = vecdb_core::Core::new(&resolution, services).await?;
-            commands::delete::run(args, &config).await?;
+            // EVERYTHING ELSE THAT WAS HERE HAS MOVED INTO `delete::run`, and
+            // the move is the bug fix — not tidying. See the module comment in
+            // commands/delete.rs.
+            //
+            // This arm used to resolve the endpoint itself, evaluate the
+            // `--all` locality guard against THAT resolution, and then build a
+            // `Core` it immediately threw away. `delete::run` resolved a second
+            // time, from different inputs, and the deletion used the second
+            // answer. A guard that inspects one endpoint while the delete hits
+            // another is not a guard.
+            commands::delete::run(args, &config, profile_arg, overrides).await?;
         }
         Commands::Snapshot(args) => {
             commands::snapshot::run(args, &config, profile_arg, overrides).await?
         }
         Commands::Man(args) => commands::man::run(args)?,
-        Commands::Config(args) => commands::config::run(args, &mut config, profile_arg, overrides)?,
+        Commands::Config(args) => {
+            commands::config::run(args, &mut config, profile_arg, overrides, format)?
+        }
         Commands::Optimize(args) => {
             commands::optimize::run(args, &config, profile_arg, overrides).await?
         }

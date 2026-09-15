@@ -12,6 +12,8 @@ use vecq::{available_output_formats, supported_file_types, FileType, SchemaRegis
 /// Supports Rust, Python, Markdown, C/C++, CUDA, Go, and Bash files.
 #[derive(Parser)]
 #[command(name = "vecq")]
+// Overridden at runtime in `get_informed_command()` to carry the build
+// revision as well. Kept here so `Args::command()` is still valid on its own.
 #[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "jq for source code - convert documents to queryable JSON")]
 #[command(long_about = r#"
@@ -320,6 +322,27 @@ pub fn validate_file_type(type_str: &str) -> Result<FileType, String> {
 
 pub fn get_informed_command() -> clap::Command {
     let mut cmd = Args::command();
+
+    // Stamp the build revision, as `vecdb` and `vecdb-server` do.
+    //
+    // `--version` printed `vecq 1.1.1` — the package version alone — so there
+    // was no way to tell which build you had. vecq ships standalone
+    // (`cargo binstall --git … vecq`) and README.md tells users to run
+    // `vecq --version` to verify the install, promising a `(git:<sha>)` that
+    // only the other two binaries emitted. Set here rather than in the derive
+    // attribute because the revision is a runtime value, not a literal.
+    //
+    // Leaked deliberately: clap wants `&'static str`, this runs once, and the
+    // process is about to exit or parse. Same idiom as vecdb-cli/src/cli.rs.
+    let version: &'static str = Box::leak(
+        format!(
+            "{} (git:{})",
+            env!("CARGO_PKG_VERSION"),
+            vecdb_common::revision()
+        )
+        .into_boxed_str(),
+    );
+    cmd = cmd.version(version);
 
     // Dynamically discover supported file types for suggestions/help
     let types: Vec<_> = supported_file_types()

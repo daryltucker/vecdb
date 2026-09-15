@@ -30,10 +30,23 @@ def main():
     
     # Initialize
     subprocess.run([cli_bin, "init"], env=env, check=True)
+
+    # Pin the endpoint. `init` writes a config with no explicit URL, so without
+    # this the ingest below lands on the DEFAULT endpoint — production. This is
+    # an ad-hoc profiling script rather than a gate test, so nothing else stops
+    # it. Same failure that put a `test_` collection into production from T3.6.
+    test_url = os.environ.get("VECDB_TEST_QDRANT_URL", "http://localhost:6336")
+    cfg_file = os.path.join(tmp_config, "vecdb", "config.toml")
+    with open(cfg_file) as f:
+        cfg = f.read()
+    assert "[profiles.default]" in cfg, "generated config has no [profiles.default] to pin"
+    with open(cfg_file, "w") as f:
+        f.write(cfg.replace("[profiles.default]",
+                            f'[profiles.default]\nqdrant_url = "{test_url}"', 1))
     
     start_time = time.time()
     # Run ingest in background to monitor it
-    proc = subprocess.Popen([cli_bin, "ingest", lua_file, "--collection", "mini_test"], env=env)
+    proc = subprocess.Popen([cli_bin, "ingest", lua_file, "--collection", "test_mini_lua"], env=env)
     
     p = psutil.Process(proc.pid)
     max_rss = 0

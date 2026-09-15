@@ -1,7 +1,7 @@
 /*
  * PURPOSE:
  *   Centralized input context for stdin-aware processing.
- *   Implements the "Codified Correctness" philosophy - see docs/planning/PHILOSOPHY.md
+ *   Detected once, centrally, so no caller has to remember to check.
  *
  * ⚠️ RULE: INPUT
  *   CLI tools should automatically detect stdin when:
@@ -18,7 +18,8 @@
  *   }
  *
  * TESTING:
- *   See vecdb-common/TESTING.md for test strategies.
+ *   Unit tests at the bottom of this file; the constructors exist so a test can
+ *   pin a context instead of depending on whether the runner has a TTY.
  */
 
 use std::io::IsTerminal;

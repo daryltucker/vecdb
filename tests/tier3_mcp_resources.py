@@ -11,6 +11,7 @@ import shutil
 import sys, os as _os
 sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from paths import bin_path
+from lib_stdio import drain_stderr
 
 class Tier3ResourcesTest(unittest.TestCase):
     def setUp(self):
@@ -42,7 +43,6 @@ accept_invalid_certs = true
         self.env["VECDB_ALLOW_LOCAL_FS"] = "true"
         
         # Build
-        subprocess.run(["cargo", "build", "-p", "vecdb-server"], check=True, capture_output=True)
         self.server_bin = bin_path("vecdb-server")
         
         self.process = subprocess.Popen(
@@ -53,6 +53,10 @@ accept_invalid_certs = true
             text=True,
             env=self.env
         )
+        # Drain stderr continuously so the server can never block writing to
+        # a full stderr pipe while this test blocks reading stdout.
+        # See tests/lib_stdio.py for the deadlock this prevents.
+        self._stderr = drain_stderr(self.process)
         time.sleep(1)
 
     def tearDown(self):
@@ -77,7 +81,7 @@ accept_invalid_certs = true
         self.process.stdin.flush()
         line = self.process.stdout.readline()
         if not line:
-             err = self.process.stderr.read()
+             err = self._stderr()
              raise Exception(f"Server died: {err}")
         return json.loads(line)
 
@@ -196,31 +200,50 @@ accept_invalid_certs = true
             except Exception:
                 pass
 
-        # 4. Smart Search (Verify no regression/panic on smart arg)
+        # 4. `smart: true` must search the collection it was given.
+        #
+        # This block used to print on both branches and assert nothing —
+        # "Smart search error (expected if docs missing)" / "Smart search
+        # success" — wrapped in deliberation about whether `search_smart`
+        # hardcoded a collection. It does not: `handle_search_vectors` resolves
+        # the Core for the named collection and passes it through. The question
+        # was answerable from the code, and leaving it open meant the check
+        # could not fail.
+        #
+        # The query carries no `key:value` qualifier, so no filter is parsed and
+        # this is an ordinary search of a collection that was just ingested.
         res = self._rpc("tools/call", {
             "name": "search_vectors",
             "arguments": {
-                "query": "anything",
+                "query": "vecdb vector database",
                 "collection": "test_tier3_res",
                 "smart": True,
-                "json": True
+                "json": True,
             }
         })
-        # This will fail logic-wise if 'docs' collection is missing or smart search fails, 
-        # but we just want to ensure it doesn't PANIC or explode due to arg parsing.
-        # Smart search usually defaults to 'docs'. If we search 'test_tier3_res', 
-        # using 'smart' might ignore collection? 
-        # Code: if args.smart { core.search_smart(...) }
-        # core.search_smart hardcodes "docs"? Or uses config?
-        # Let's check result provided no error.
-        
-        # Wait, if smart search fails (e.g. no 'docs' collection), it sends an error.
-        # That is Acceptable. We just want to ensure routing works.
-        
-        if "error" in res:
-             print(f"Smart search error (expected if docs missing): {res['error']}")
-        else:
-             print("Smart search success")
+
+        self.assertNotIn(
+            "error", res,
+            f"smart search failed on a collection that was just ingested: {res.get('error')}",
+        )
+
+        payload = json.loads(res["result"]["content"][0]["text"])
+        # Same envelope as the non-smart path — one response format, two flags.
+        for field in ("collection", "query", "applied_filters", "result_count", "results"):
+            self.assertIn(field, payload, f"smart search envelope missing {field!r}: {sorted(payload)}")
+
+        self.assertEqual(
+            payload["collection"], "test_tier3_res",
+            "smart search answered about a different collection than it was asked about",
+        )
+        # No qualifier was given, so nothing may have been filtered. A filter
+        # appearing here would mean scoping was inferred from prose — the exact
+        # behaviour removed in 2026-234.
+        self.assertFalse(
+            payload["applied_filters"],
+            f"bare prose produced a filter: {payload['applied_filters']}",
+        )
+        print(f"smart search: {payload['result_count']} result(s), no inferred filters ✅")
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,10 +16,15 @@ run-name: CI ${{ github.ref_name }}
 # See: tests/run_all.sh (the authoritative manifest)
 #      vecq/tests/tier1_line_index_convention.rs (what the line bug cost)
 
+# main is excluded (operator decision, 2026-09-15): main only receives
+# release squashes, whose content was already gated by this workflow on the
+# feature branch, and every release push also fires release.yml — running
+# CI again on the same tree was noise. The gate lives on branches and PRs.
 on:
   push:
     branches:
       - '**'
+      - '!main'
   pull_request:
 
 # A second push to the same branch cancels the first. Saves runner minutes
@@ -32,6 +37,17 @@ env:
   CARGO_TERM_COLOR: always
   # Match release.yml — node20 actions are EOL on some runner images.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Match release.yml: pin the ONNX Runtime CUDA flavour so CI tests the same
+  # artifact we publish. Unset, ort-sys guesses from the runner image. See
+  # docs/GPU.md and the Makefile for the full rationale.
+  ORT_CUDA_VERSION: "12"
+  # Hosted runners have no CUDA toolkit, so `cuobjdump` is absent and
+  # tier2_ort_distribution.py cannot verify the published GPU support matrix
+  # against the artifact. Acknowledged explicitly HERE rather than by having
+  # the test skip itself: the release gate runs on hardware that does have the
+  # toolkit, and there a missing cuobjdump must be a hard failure. The
+  # libcudart-major half of that test still runs on CI.
+  VECDB_ALLOW_UNVERIFIED_SM: "1"
 
 jobs:
   # ═══════════════════════════════════════════════════════════════════

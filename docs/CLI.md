@@ -20,8 +20,8 @@ in `config.toml`. The common use is two machines filling one collection at once,
 so a single embed host does not become everyone's queue:
 
 ```bash
-vecdb --profile code ingest -c code ./                    # embedder's own backend
-vecdb --profile code --backend blade ingest -c code ./    # same model, other GPU
+vecdb --profile prose ingest -c notes ./                 # embedder's own backend
+vecdb --profile prose --backend gpu ingest -c notes ./   # same model, other GPU
 ```
 
 Both write comparable vectors because `--backend` changes only *where* the model
@@ -107,8 +107,8 @@ Show system health, connectivity, and detailed collection stats.
 ### `config <SUBCOMMAND>`
 Manage configuration settings.
 *   **Subcommands**:
+    *   `show`: Show the effective settings and where each one came from (collection, profile, global, derived or built-in). Accepts `-c <COLLECTION>` to resolve as that collection would.
     *   `set-quantization <COLLECTION> <TYPE>`: Set quantization config (scalar, binary, none).
-    *   `get`: View current config values.
 
 ### `optimize <COLLECTION>`
 Apply optimization (quantization) to a collection based on its config.

@@ -13,7 +13,16 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-bash ${SCRIPT_DIR}/scripts/prune_target.sh
+# Optional local housekeeping. `scripts/` has never been tracked, so this path
+# does not exist in a clone — unguarded under `set -e` it aborted the script on
+# line 1 for every user who followed the README. Guard, don't assume.
+if [ -f "${SCRIPT_DIR}/scripts/prune_target.sh" ]; then
+    bash "${SCRIPT_DIR}/scripts/prune_target.sh"
+fi
+
+# NOTE: this installs with default features and does NOT copy the CUDA
+# execution-provider libraries next to the binaries, so `use_gpu = true` will
+# not work from here. Use `make install` for that, or see docs/GPU.md.
 
 # Parse args
 # Default to verbose to avoid "frozen" appearance

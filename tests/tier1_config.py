@@ -72,6 +72,34 @@ def test_config_loading():
         log(f"FAIL: {e}", "FAIL")
         return False
 
+# Addresses that satisfy "this profile cannot touch a real store" by being
+# unable to reach anything at all.
+#
+# RFC 5737 reserves 192.0.2.0/24 (TEST-NET-1), 198.51.100.0/24 (TEST-NET-2) and
+# 203.0.113.0/24 (TEST-NET-3) for documentation. They are guaranteed never to
+# route, on any network, by specification.
+#
+# THIS IS NOT A LOOSENING OF THE RULE ABOVE. The rule protects one invariant —
+# no test may reach a store that is not the test instance — and these addresses
+# honour it by construction rather than by convention: a packet sent to one goes
+# nowhere. That is a stronger guarantee than "points at localhost:6336", which
+# relies on the port being what we think it is.
+#
+# It exists for exactly one profile, `remote_guard`, which must be non-local so
+# that `tier2_delete_safety.py` can prove `delete --all` REFUSES a remote
+# endpoint. A test asserting "this must not connect" has to be unable to connect;
+# pointing it at a real host to satisfy a guard would be the actual hazard.
+#
+# Keep this list to RFC 5737. A private-range address (10.x, 192.168.x) is NOT
+# acceptable here: those route perfectly well on somebody's LAN.
+UNROUTABLE_PREFIXES = ("192.0.2.", "198.51.100.", "203.0.113.")
+
+
+def is_unroutable(url: str) -> bool:
+    """True when the URL's host is an RFC 5737 documentation address."""
+    return any(f"//{p}" in url for p in UNROUTABLE_PREFIXES)
+
+
 def test_qdrant_url():
     """Test 2: Every profile's Qdrant URL points at the test instance.
 
@@ -95,9 +123,15 @@ def test_qdrant_url():
             if not url or not isinstance(url, str):
                 log(f"FAIL: profiles.{name} has no qdrant_url", "FAIL")
                 return False
+            if is_unroutable(url):
+                # See UNROUTABLE_PREFIXES. Not an exemption from the rule this
+                # test enforces — an address satisfying it by construction.
+                log(f"PASS: profiles.{name} -> {url} (unroutable, cannot reach a store)", "PASS")
+                continue
             if "6335" not in url and "6336" not in url:
                 log(f"FAIL: profiles.{name} uses production Qdrant! URL: {url}", "FAIL")
-                log("       Expected: http://localhost:6335 or 6336 (test instance)", "FAIL")
+                log("       Expected: http://localhost:6335 or 6336 (test instance),", "FAIL")
+                log("       or an RFC 5737 documentation address that cannot route.", "FAIL")
                 return False
             log(f"PASS: profiles.{name} -> {url}", "PASS")
 

@@ -18,7 +18,7 @@
 - **JQ Filters**: No `.usages[]` filter in stdlib for querying usage elements
 - **Pipeline Integration**: Usage elements not included in JSON output for jq querying
 - **Query Workflow**: `vecq --enable-usages file.rs '.usages[]'` doesn't work
-- **Documentation**: `docs/internal/USAGE.md` doesn't exist
+- **Documentation**: no user-facing guide for usage queries yet
 - **Examples**: No CLI help text showing usage query patterns
 
 ## Implementation Gap Analysis

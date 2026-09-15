@@ -1,6 +1,6 @@
 //! JSON-with-comments and trailing commas.
 //!
-//! Ported from `vecdb-core/tests/tier1_json_comments.rs`, which tested
+//! Ported from `vecdb-core's own JSON tests`, which tested
 //! `vecdb_core::parsers::json::JsonParser` — a parser no binary ever
 //! constructed. Every vecdb binary injects `VecqParserFactory`, so the capable
 //! parser was unreachable and a `tsconfig.json` silently degraded to a single

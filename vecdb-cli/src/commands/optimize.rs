@@ -32,7 +32,7 @@ pub async fn run(
     }
 
     let file_detector = Arc::new(HybridDetector::new());
-    let parser_factory = Arc::new(VecqParserFactory);
+    let parser_factory = Arc::new(VecqParserFactory::default());
 
     let services = vecdb_core::CoreServices::from_config(
         config,

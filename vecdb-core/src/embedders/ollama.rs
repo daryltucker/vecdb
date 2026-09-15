@@ -253,7 +253,7 @@ impl Embedder for OllamaEmbedder {
     /// Two calls because they carry different things: `/api/show` has the
     /// architecture, parameter size, quantization level and the real context
     /// and embedding lengths; only `/api/tags` carries the digest, which is the
-    /// one field that is actually identity. A tag string is not — on blade,
+    /// one field that is actually identity. A tag string is not — on one host,
     /// `qwen3-embedding:4b` and `qwen3-embedding:4b-q4_K_M` are the same blob
     /// while `4b-q8_0` is different weights.
     ///

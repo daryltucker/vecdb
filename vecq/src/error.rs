@@ -58,7 +58,7 @@
 //   1. Add new variant to VecqError enum with descriptive fields
 //   2. Add #[error("...")] attribute with user-friendly message format
 //   3. Update error conversion From implementations if needed
-//   4. Add unit tests in tests/unit/error_tests.rs
+//   4. Add a case to vecq/tests/tier1_query_error_size.rs
 //   5. Update error handling documentation in README.md
 //
 //   When parser dependencies change:
@@ -71,7 +71,7 @@
 //   - src/query.rs - Uses QueryError for jq syntax issues
 //   - src/detection.rs - Uses UnsupportedFileType for unknown files
 //   - src/main.rs - Handles error display and exit codes
-//   - tests/unit/error_tests.rs - Error handling validation
+//   - vecq/tests/tier1_query_error_size.rs - Error handling validation
 //
 // MAINTENANCE:
 //   Update when:

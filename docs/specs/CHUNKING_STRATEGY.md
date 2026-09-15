@@ -3,7 +3,6 @@
 > **Status**: Draft — **partially implemented.** See the reality notes below;
 > two clauses describe behaviour that does not exist yet.
 > **Parent**: [INGESTION_DESIGN.md](INGESTION_DESIGN.md)
-> **Source**: [AdvancedCodeChunkingforRAG.md](../inquiries/responses/AdvancedCodeChunkingforRAG.md)
 
 ## 1. Philosophy: Syntax-First Architecture
 

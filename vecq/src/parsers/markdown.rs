@@ -566,7 +566,7 @@ mod tests {
 
     #[test]
     fn test_image_parsing() {
-        let doc = parse_md("![Alt](image.png)");
+        let doc = parse_md("![Alt](image.png)"); // path-ok: markdown sample
         let images: Vec<_> = doc
             .elements
             .iter()

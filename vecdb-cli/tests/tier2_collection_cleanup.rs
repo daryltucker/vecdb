@@ -4,6 +4,25 @@ use tempfile::TempDir;
 
 #[test]
 fn test_collection_cleanup_logic() {
+    // This test shells out to the `vecdb` binary, which resolves whatever config
+    // it finds. With no VECDB_CONFIG it picks up the operator's real one — so a
+    // bare `cargo test` ingests `test_cleanup_A` into PRODUCTION Qdrant using
+    // whatever embedder the default profile names, GPU included. `tests/run_all.sh`
+    // exports VECDB_CONFIG before it gets here; `make test-rust` and a bare
+    // `cargo test --workspace` do not.
+    //
+    // Skip rather than run unisolated: the same convention as tier2_qdrant.rs,
+    // which skips without VECDB_TEST_QDRANT_URL. Silently using production is the
+    // one outcome that must be impossible.
+    if std::env::var("VECDB_CONFIG").is_err() {
+        println!(
+            "Skipping tier2_collection_cleanup: VECDB_CONFIG is unset, so this would run \
+             against the ambient (production) config. Run via tests/run_all.sh, or set \
+             VECDB_CONFIG=tests/fixtures/config.toml"
+        );
+        return;
+    }
+
     // 1. Setup
     let temp_dir = TempDir::new().unwrap();
     let data_dir = temp_dir.path().join("data");

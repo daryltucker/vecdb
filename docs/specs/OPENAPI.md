@@ -63,7 +63,7 @@ Every exposed tool MUST include:
 | Tool | Description |
 |------|-------------|
 | `search_vectors` | Semantic search against the index |
-| `ingest_file` | Index a file or directory |
+| `ingest_path` | Index a file or directory |
 | `list_collections` | List available collections |
 
 ### 3. Server Capabilities

@@ -68,7 +68,7 @@
 //   - src/converter.rs - JsonConverter trait being tested
 //   - src/types.rs - Data structures used in property tests
 //   - src/error.rs - Error types that must be handled gracefully
-//   - tests/generators.rs - Test data generators (to be created)
+//   - proptest strategies are defined inline below
 //
 // MAINTENANCE:
 //   Update when:

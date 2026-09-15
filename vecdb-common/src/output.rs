@@ -1,7 +1,7 @@
 /*
  * PURPOSE:
  *   Centralized output context for TTY-aware formatting.
- *   Implements the "Codified Correctness" philosophy - see docs/planning/PHILOSOPHY.md
+ *   Detected once, centrally, so no caller has to remember to check.
  *
  * ⚠️ RULE: OUTPUT
  *   All functions producing user-facing output should receive OutputContext
@@ -24,7 +24,8 @@
  *   }
  *
  * TESTING:
- *   See vecdb-common/TESTING.md for test strategies.
+ *   Unit tests at the bottom of this file; the constructors exist so a test can
+ *   pin a context instead of depending on whether the runner has a TTY.
  */
 
 use std::io::IsTerminal;

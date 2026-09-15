@@ -2,19 +2,40 @@
 import subprocess
 import os
 import shutil
-import time
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from paths import bin_path
+
+# The binary T1.1 built, not `cargo run`.
+#
+# `cargo run --bin vecdb` rebuilds vecdb with DEFAULT features at the path T1.1
+# wrote the cuda-dynamic build to, silently replacing the binary every later
+# tier depends on.
+VECDB = bin_path("vecdb")
+
+# Pinned, never inherited. This file runs `delete --yes`, and an unpinned
+# VECDB_CONFIG resolves the ambient config — which, run directly rather than
+# through run_all.sh, is the operator's real one pointed at production.
+ENV = {
+    **os.environ,
+    "VECDB_CONFIG": os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "fixtures", "config.toml"
+    ),
+}
+
 
 def run_test():
     TEST_DIR = "tests/fixtures/inc_test_repo"
     COLLECTION = "test_inc"
-    
+
     # Clean up
     if os.path.exists(TEST_DIR):
         shutil.rmtree(TEST_DIR)
     os.makedirs(TEST_DIR)
-    
+
     # Ensure fresh collection for Tier 1 test
-    subprocess.run(["cargo", "run", "--quiet", "--bin", "vecdb", "--", "delete", COLLECTION, "--yes"], capture_output=True)
+    subprocess.run([VECDB, "delete", COLLECTION, "--yes"], capture_output=True, env=ENV)
 
     try:
         print(f"Initializing repo in {TEST_DIR}...")
@@ -37,12 +58,8 @@ def run_test():
 
         # Run Ingest 1
         print("--- Run 1 ---")
-        cmd = [
-            "cargo", "run", "--quiet", "--bin", "vecdb", "--", 
-            "ingest", TEST_DIR, 
-            "--collection", COLLECTION
-        ]
-        res1 = subprocess.run(cmd, capture_output=True, text=True)
+        cmd = [VECDB, "ingest", TEST_DIR, "--collection", COLLECTION]
+        res1 = subprocess.run(cmd, capture_output=True, text=True, env=ENV)
         if res1.returncode != 0: raise Exception(res1.stderr)
         
         if "Processed 2" not in res1.stderr: 
@@ -56,7 +73,7 @@ def run_test():
              
         # Run Ingest 2 (No changes)
         print("--- Run 2 (No Change) ---")
-        res2 = subprocess.run(cmd, capture_output=True, text=True)
+        res2 = subprocess.run(cmd, capture_output=True, text=True, env=ENV)
         print(res2.stderr)
         if "Processed 0" not in res2.stderr:
              print("FAILURE: Run 2 should process 0 files.")
@@ -68,7 +85,7 @@ def run_test():
             
         # Run Ingest 3 (Change)
         print("--- Run 3 (Modified) ---")
-        res3 = subprocess.run(cmd, capture_output=True, text=True)
+        res3 = subprocess.run(cmd, capture_output=True, text=True, env=ENV)
         print(res3.stderr)
         if "Processed 1" not in res3.stderr:
              print("FAILURE: Run 3 should process 1 file.")

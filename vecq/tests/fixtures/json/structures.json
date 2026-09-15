@@ -1,0 +1,65 @@
+{
+  "name": "structures",
+  "purpose": "Exercise the JSON parser's structural handling. Synthetic.",
+  "scalars": {
+    "string": "plain",
+    "empty_string": "",
+    "integer": 42,
+    "negative": -17,
+    "float": 3.14159,
+    "exponent": 6.022e23,
+    "zero": 0,
+    "boolean_true": true,
+    "boolean_false": false,
+    "null_value": null
+  },
+  "escapes": {
+    "quote": "a \"quoted\" word",
+    "backslash": "C:\\path\\to\\thing",
+    "newline": "line one\nline two",
+    "tab": "col\tcol",
+    "unicode_escape": "\u00e9\u4e2d\u6587",
+    "literal_unicode": "héllo wörld — 日本語 — 🚀"
+  },
+  "arrays": {
+    "empty": [],
+    "scalars": [1, 2, 3, 5, 8, 13],
+    "mixed": [1, "two", 3.0, null, true],
+    "nested": [[1, 2], [3, 4], [[5]]],
+    "of_objects": [
+      { "id": 1, "label": "first" },
+      { "id": 2, "label": "second" },
+      { "id": 3, "label": "third" }
+    ]
+  },
+  "objects": {
+    "empty": {},
+    "deep": {
+      "level_1": {
+        "level_2": {
+          "level_3": {
+            "level_4": { "leaf": "bottom" }
+          }
+        }
+      }
+    },
+    "keys_needing_care": {
+      "with space": 1,
+      "with.dot": 2,
+      "with-dash": 3,
+      "with/slash": 4,
+      "123": 5,
+      "": 6
+    }
+  },
+  "realistic": {
+    "service": "indexer",
+    "replicas": 3,
+    "endpoints": [
+      { "name": "http", "port": 8080, "tls": false },
+      { "name": "grpc", "port": 8081, "tls": true }
+    ],
+    "limits": { "memory_mb": 2048, "cpu_millicores": 1500 },
+    "labels": { "tier": "backend", "managed_by": "test-fixture" }
+  }
+}

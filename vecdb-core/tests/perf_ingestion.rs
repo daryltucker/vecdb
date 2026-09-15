@@ -246,6 +246,7 @@ async fn test_fixture_ingestion_performance() {
             }
 
             let options = IngestionOptions {
+                pack_target_bytes: None,
                 path: path.to_str().unwrap().to_string(),
                 collection: "perf_test".to_string(),
                 target_chunk_size: 512,
@@ -257,6 +258,8 @@ async fn test_fixture_ingestion_performance() {
                 ignore_vectorignore: false,
                 vecdbrc_routes: None,
                 vecdbrc_root: None,
+                only_collection: None,
+                route_default_collection: None,
                 strategy: "recursive".to_string(),
                 tokenizer: "bytes".to_string(),
                 git_ref: None,
@@ -316,6 +319,7 @@ async fn test_large_generic_text_performance() {
     let factory: Arc<dyn ParserFactory> = Arc::new(FastFactory);
 
     let options = IngestionOptions {
+        pack_target_bytes: None,
         path: file_path.to_str().unwrap().to_string(),
         collection: "perf_test_large".to_string(),
         target_chunk_size: 512,
@@ -327,6 +331,8 @@ async fn test_large_generic_text_performance() {
         ignore_vectorignore: false,
         vecdbrc_routes: None,
         vecdbrc_root: None,
+        only_collection: None,
+        route_default_collection: None,
         strategy: "recursive".to_string(),
         tokenizer: "bytes".to_string(),
         git_ref: None,

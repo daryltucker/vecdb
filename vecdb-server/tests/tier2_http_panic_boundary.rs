@@ -216,9 +216,6 @@ fn make_state(backend: Arc<dyn Backend>) -> AppState {
         Arc::new(HybridDetector::new()),
         Arc::new(MockParserFactory),
         Vec::new(),
-        Vec::new(),
-        1,
-        10,
     ));
 
     // v1.1.0: `default_collection_name` is retired and everything resolves

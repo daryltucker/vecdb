@@ -9,6 +9,17 @@
 //! That is not recoverable later. Chunk size is baked into the vectors at
 //! ingest, so the only repair is a full re-ingest — which is why this is
 //! asserted rather than left to the integration tier.
+//!
+//! **Scope, stated because it was once mistaken for more.** Everything here
+//! asserts what the RESOLVER returns for a destination. It measures no chunk,
+//! and it cannot: a resolver can return the right numbers while nothing
+//! downstream reads them. That gap is what let configured granularity go
+//! unapplied to AST-parsed content while this file stayed green.
+//!
+//! The artifact-level counterpart is `tests/tier2_pack_granularity.py` (T2.7d),
+//! which ingests real source into two destinations differing only in
+//! granularity and compares the chunk sizes that come out. Keep both: this one
+//! localises a resolution bug, that one proves the value arrives.
 
 use std::collections::HashMap;
 use vecdb_core::config::{default_max_chunk_bytes, OversizePolicy};
@@ -17,12 +28,15 @@ use vecdb_core::ingestion::IngestionOptions;
 
 fn options(route_chunking: HashMap<String, ChunkSpec>) -> IngestionOptions {
     IngestionOptions {
+        pack_target_bytes: None,
         path: ".".to_string(),
         file_allowlist: None,
         project_root: None,
         collection: "test_fallback_collection".to_string(),
         vecdbrc_routes: None,
         vecdbrc_root: None,
+        only_collection: None,
+        route_default_collection: None,
         target_chunk_size: 512,
         max_chunk_bytes: None,
         on_oversize: OversizePolicy::default(),
@@ -52,6 +66,7 @@ fn each_destination_gets_its_own_chunk_size() {
     routes.insert(
         "test_code".to_string(),
         ChunkSpec {
+            pack_target_bytes: None,
             target_chunk_size: 384,
             chunk_overlap: 32,
             max_chunk_bytes: None,
@@ -60,6 +75,7 @@ fn each_destination_gets_its_own_chunk_size() {
     routes.insert(
         "test_docs".to_string(),
         ChunkSpec {
+            pack_target_bytes: None,
             target_chunk_size: 6144,
             chunk_overlap: 256,
             max_chunk_bytes: None,
@@ -102,6 +118,7 @@ fn the_ceiling_follows_the_route() {
     routes.insert(
         "test_small".to_string(),
         ChunkSpec {
+            pack_target_bytes: None,
             target_chunk_size: 384,
             chunk_overlap: 0,
             max_chunk_bytes: None,
@@ -110,6 +127,7 @@ fn the_ceiling_follows_the_route() {
     routes.insert(
         "test_large".to_string(),
         ChunkSpec {
+            pack_target_bytes: None,
             target_chunk_size: 6144,
             chunk_overlap: 0,
             max_chunk_bytes: None,
@@ -140,6 +158,7 @@ fn explicit_ceiling_is_not_overridden() {
     routes.insert(
         "test_pinned".to_string(),
         ChunkSpec {
+            pack_target_bytes: None,
             target_chunk_size: 2048,
             chunk_overlap: 0,
             max_chunk_bytes: Some(99_000),

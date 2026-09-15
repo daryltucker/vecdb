@@ -46,6 +46,7 @@ from lib_envelope import search_results
 import sys, os as _os
 sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from paths import bin_path
+from lib_stdio import drain_stderr
 
 
 # Qdrant test instance ports
@@ -112,12 +113,6 @@ target_chunk_size = 512
 """)
 
         # Build server binary
-        print("Building vecdb-server...")
-        subprocess.run(
-            ["cargo", "build", "-p", "vecdb-server"],
-            check=True, capture_output=True,
-            cwd=cls.root,
-        )
         cls.server_bin = os.path.join(cls.root, bin_path("vecdb-server"))
 
     @classmethod
@@ -146,6 +141,10 @@ target_chunk_size = 512
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=env,
         )
+        # Drain stderr continuously — see tests/lib_stdio.py. Without this the
+        # server blocks writing to a full stderr pipe and never answers on
+        # stdout, and the readline() below waits forever.
+        drain_stderr(proc)
         try:
             # Initialize
             init_req = json.dumps({"jsonrpc": "2.0", "method": "initialize", "id": 0}) + "\n"
@@ -174,6 +173,10 @@ target_chunk_size = 512
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=env,
         )
+        # Drain stderr continuously — see tests/lib_stdio.py. The ingest below
+        # is the largest in the suite and is exactly where the stderr pipe
+        # fills; this test deadlocked here for 40 minutes on 2026-257.
+        self._stderr = drain_stderr(self._proc)
         # Initialize
         req = json.dumps({"jsonrpc": "2.0", "method": "initialize", "id": 0}) + "\n"
         self._proc.stdin.write(req)
@@ -189,7 +192,7 @@ target_chunk_size = 512
         line = self._proc.stdout.readline()
         if not line:
             if self._proc.poll() is not None:
-                err = self._proc.stderr.read()
+                err = self._stderr()
                 raise Exception(f"Server died. stderr: {err}")
             raise Exception("Empty response from live server")
         return json.loads(line)

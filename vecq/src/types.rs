@@ -70,7 +70,7 @@
 //   3. Add display name to Display implementation
 //   4. Update file_extensions() method
 //   5. Add parser implementation in src/parsers/
-//   6. Update tests in tests/unit/types_tests.rs
+//   6. Update vecq/tests/property_core_traits.rs
 //
 //   When adding new element types:
 //   1. Add variant to ElementType enum
@@ -84,7 +84,7 @@
 //   - src/parser.rs - Creates ParsedDocument structures
 //   - src/converter.rs - Converts ParsedDocument to JSON
 //   - src/parsers/*.rs - Language-specific parser implementations
-//   - tests/unit/types_tests.rs - Type definition validation
+//   - vecq/tests/property_core_traits.rs - Type definition validation
 //
 // MAINTENANCE:
 //   Update when:

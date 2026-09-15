@@ -103,6 +103,26 @@ impl GoParser {
                 "import_declaration" => {
                     elements.extend(self.parse_import_declaration(content, child));
                 }
+                // The Go schema has mapped `Package -> "package"` since it was
+                // written, but nothing constructed one, so every Go file
+                // reported no package. Every Go file has exactly one.
+                "package_clause" => {
+                    if let Some(name) = child
+                        .named_child(0)
+                        .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+                    {
+                        elements.push(DocumentElement::new(
+                            ElementType::Package,
+                            Some(name.to_string()),
+                            child
+                                .utf8_text(content.as_bytes())
+                                .unwrap_or("")
+                                .to_string(),
+                            child.start_position().row + 1,
+                            child.end_position().row + 1,
+                        ));
+                    }
+                }
                 _ => {}
             }
         }

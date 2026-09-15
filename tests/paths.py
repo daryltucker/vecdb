@@ -61,13 +61,129 @@ def bin_path(name: str, profile: str = "debug") -> str:
 
 
 def find_bin(name: str) -> str:
-    """A built binary, preferring release over debug.
+    """The binary under test. Identical to `bin_path`.
 
-    For tests that only need *a* working binary and would rather use the fast
-    one if it happens to exist.
+    This used to prefer `release` over `debug`, "for tests that only need *a*
+    working binary". That is not a thing a test can want: `run_all.sh` builds
+    debug only, so the release binary is whatever someone last built by hand —
+    never rebuilt, never validated, and on this machine observed 50 minutes
+    older than the one every other test was using. Two gate entries (T2.7c,
+    T2.8) were therefore asserting against different code than the other 28.
+
+    Kept as a name so the call sites read the same; the behaviour is now one
+    answer for the whole suite. `tier0_binary_provenance.py` proves that answer
+    matches the working tree.
     """
-    for profile in ("release", "debug"):
-        candidate = target_dir() / profile / name
-        if candidate.exists():
-            return str(candidate)
     return bin_path(name)
+
+
+def require_bin(name: str) -> str:
+    """The built binary, or a clear failure. Never builds it.
+
+    Tests used to call `cargo build -p vecdb-server` in their own setUp, "safe
+    to check" and "idempotent". It is neither: a plain `cargo build` uses
+    DEFAULT features, so it silently replaced the `--features cuda-dynamic`
+    binary T1.1 had produced, at the same path. Seven files did this.
+
+    Building is the manifest's job. A test's job is to fail loudly when the
+    thing it needs is absent, naming what to run.
+    """
+    path = bin_path(name)
+    if not os.path.exists(path):
+        raise SystemExit(
+            f"{name} not built at {path}.\n"
+            f"Tests do not build binaries — `cargo build` would drop the "
+            f"cuda-dynamic features T1.1 sets.\n"
+            f"Run the suite (`make tests`), or build it yourself:\n"
+            f"    cargo build --bin {name} --features cuda-dynamic"
+        )
+    return path
+
+
+def cuda_samples_dir(subpath: str = "2_Concepts_and_Techniques") -> Path:
+    """A directory inside the cuda-samples fixture, or a loud failure.
+
+    WHY THIS IS RESOLVED RATHER THAN HARDCODED
+        `tests/fixtures/init.sh` clones NVIDIA/cuda-samples from `master`,
+        unpinned. Upstream moved every sample from `Samples/` to `cpp/`. Two
+        Tier 4 tests hardcoded the old path, found nothing, and raised
+        `unittest.SkipTest` — so the release gate printed OK for T4.2 and T4.3
+        while ingesting nothing at all. Tier 4 is the only tier that runs at
+        real scale; two thirds of it had been dead for an unknown number of
+        green runs.
+
+    WHY A MISSING FIXTURE IS A FAILURE, NOT A SKIP
+        A skip that reports OK is indistinguishable from a pass in the gate's
+        output, which is the whole defect above. If the corpus is absent the
+        run has not proven what it claims to have proven, and it must say so.
+        `init.sh` is one command; there is no case where silently continuing
+        is the better answer.
+
+    Both layouts are accepted because a clone taken before the upstream move is
+    still a perfectly good corpus — this tolerates the layout, it does not
+    tolerate the absence.
+    """
+    root = REPO_ROOT / "tests" / "fixtures" / "external" / "cuda-samples"
+    candidates = [root / "cpp" / subpath, root / "Samples" / subpath]
+    for c in candidates:
+        if c.is_dir():
+            return c
+
+    if not root.is_dir():
+        raise SystemExit(
+            f"cuda-samples fixture missing at {root}.\n"
+            f"Tier 4 ingests it at real scale; without it this tier proves "
+            f"nothing.\n"
+            f"Run: bash tests/fixtures/init.sh"
+        )
+    raise SystemExit(
+        f"cuda-samples is present at {root} but '{subpath}' is in neither "
+        f"known layout:\n"
+        + "".join(f"    {c}\n" for c in candidates)
+        + "Upstream has restructured again. Fix this resolver — do NOT skip, "
+        "which is how this went unnoticed before (T4.2/T4.3, 2026-257)."
+    )
+
+
+def revision_of(binary: str) -> str | None:
+    """The git revision a built binary reports, e.g. `06dfeec` or `06dfeec-dirty`.
+
+    Parsed from `--version`, which `vecdb-common/build.rs` stamps at compile
+    time. Returns None if the binary is missing or does not answer.
+    """
+    import re
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            [binary, "--version"], capture_output=True, text=True, timeout=60
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"\(git:([0-9a-f]+(?:-dirty)?)\)", out.stdout + out.stderr)
+    return m.group(1) if m else None
+
+
+def expected_revision() -> str | None:
+    """What a binary built from this working tree must report.
+
+    Mirrors `vecdb-common/build.rs`: short HEAD, plus `-dirty` when tracked
+    files are modified. Untracked files are excluded there and so are excluded
+    here — the two must agree or every dev build looks stale.
+    """
+    import subprocess
+
+    def git(*args):
+        try:
+            r = subprocess.run(
+                ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    head = git("rev-parse", "--short", "HEAD")
+    if not head:
+        return None
+    dirty = git("status", "--porcelain", "--untracked-files=no")
+    return f"{head}-dirty" if dirty else head

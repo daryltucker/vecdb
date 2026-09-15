@@ -31,7 +31,44 @@ pub struct DeleteArgs {
     pub url: Option<String>,
 }
 
-pub async fn run(args: DeleteArgs, config: &Config) -> anyhow::Result<()> {
+/// Delete collections.
+///
+/// THE ENDPOINT IS RESOLVED EXACTLY ONCE, HERE, AND THE `--all` GUARD IS
+/// EVALUATED AGAINST THAT SAME ANSWER.
+///
+/// It used to be resolved twice. `cli.rs` resolved from the GLOBAL `--profile`
+/// and checked the locality guard against that; this function then re-resolved
+/// from the SUBCOMMAND-LOCAL `-P`, applied `--url` afterwards, and deleted
+/// against the second answer.
+///
+/// `--url` was the exploitable half — no trickery, just flags working as
+/// documented:
+///
+///     vecdb delete --all --url http://<remote>:PORT
+///
+/// `--url` is applied HERE, after cli.rs had already run the guard, so the
+/// guard never saw it. It read the default profile's localhost, passed, and the
+/// command then listed and deleted every collection on the remote host.
+///
+/// The `-P` half was NOT exploitable, though the audit listed it as such:
+/// `--profile` on the root is `global = true`, so `-P` populates `cli.profile`
+/// and `args.profile` together and they cannot disagree. Measured against the
+/// pre-fix binary, that route was correctly refused.
+///
+/// Keeping one resolution makes the whole class unrepresentable rather than
+/// patching the one hole: there is no second answer left to disagree with.
+///
+/// `profile_arg` is the global `--profile`. The subcommand's own `-P` wins when
+/// present — it exists precisely to aim a delete at one endpoint — but when it
+/// is absent the global flag is now honoured. Previously delete ignored the
+/// global `--profile` silently, so `vecdb --profile remote delete foo` operated
+/// on the default profile and reported success.
+pub async fn run(
+    args: DeleteArgs,
+    config: &Config,
+    profile_arg: Option<&str>,
+    overrides: vecdb_core::config::Overrides<'_>,
+) -> anyhow::Result<()> {
     if !args.all && args.collection.is_none() {
         anyhow::bail!("Please specify a collection name or use --all");
     }
@@ -43,21 +80,51 @@ pub async fn run(args: DeleteArgs, config: &Config) -> anyhow::Result<()> {
     // Delete only needs a Qdrant endpoint. It never embeds, so the embedder in
     // the resolution is constructed but unused — `--url` bypasses config
     // entirely, which is the point of the flag.
-    let mut resolution = config.resolve(args.profile.as_deref(), None)?;
+    //
+    // The COLLECTION must be passed to `resolve`. It used to pass `None`, which
+    // resolved the default profile's store and ignored `[collections.<name>]`
+    // entirely — so `vecdb delete notes-archive`, a collection routed to a remote
+    // store, deleted a non-existent collection from the LOCAL one and printed
+    // "Done". Deleting a name that is not there is not an error in Qdrant, so
+    // the no-op looked exactly like a success while the real data survived.
+    let profile = args.profile.as_deref().or(profile_arg);
+    let mut resolution = config.resolve_with(profile, args.collection.as_deref(), overrides)?;
     if let Some(ref url) = args.url {
         resolution.qdrant_url = url.clone();
+    }
+
+    // The locality guard, evaluated on the FINAL endpoint — after the profile
+    // choice and after `--url`. Nothing may change `resolution.qdrant_url`
+    // below this point; if that ever becomes necessary, this check moves with
+    // it rather than being left behind.
+    //
+    // NOTE ON WHAT THIS DOES *NOT* PROTECT. It is a substring test that blocks
+    // only REMOTE bulk deletion. Production here is `localhost:6333`, so
+    // `vecdb delete --all` against local collections is fully permitted and is
+    // stopped by nothing but the interactive token prompt below. Making local
+    // data safe needs a protected-collection denylist, which is designed
+    // (`[protected]`) but NOT implemented — do not read this guard as one.
+    if args.all {
+        let is_local = resolution.qdrant_url.contains("localhost")
+            || resolution.qdrant_url.contains("127.0.0.1")
+            || resolution.qdrant_url.contains("0.0.0.0");
+        if !is_local {
+            anyhow::bail!(
+                "Bulk deletion (--all) is restricted to local backends to prevent accidental data loss on remote systems ({}). \
+                To delete a remote collection, please specify it by name.",
+                resolution.qdrant_url
+            );
+        }
     }
 
     // Delete never searches and never embeds, so routing keys and path rules
     // are empty rather than inherited.
     let services = vecdb_core::CoreServices {
         smart_routing_keys: vec![],
-        path_rules: vec![],
-        max_concurrent_requests: 4,
         fastembed_cache_path: Some(config.fastembed_cache_path.clone()),
         allow_embed_truncation: false,
         file_detector: std::sync::Arc::new(HybridDetector::new()),
-        parser_factory: std::sync::Arc::new(VecqParserFactory),
+        parser_factory: std::sync::Arc::new(VecqParserFactory::default()),
     };
 
     let core = vecdb_core::Core::new(&resolution, services).await?;
@@ -108,9 +175,44 @@ pub async fn run(args: DeleteArgs, config: &Config) -> anyhow::Result<()> {
         }
     }
 
+    // Failures are COUNTED, not just printed. Every branch below used to
+    // `continue` or swallow, and the function returned `Ok(())` regardless — so
+    // `vecdb delete X && echo gone` printed "gone" after a store that could not
+    // be reached and a collection that was never touched. Printing red text is
+    // not a failure signal to anything that is not a human reading a terminal,
+    // and the agent interface is the primary consumer here.
+    //
+    // A collection that is genuinely ABSENT is not counted: the requested end
+    // state ("this collection does not exist") already holds, and delete is
+    // meant to be idempotent. Being unable to ASK is the failure.
+    let mut failures: Vec<String> = Vec::new();
+
     for collection in collections {
-        print!("Deleting '{}'... ", collection);
+        print!("Deleting '{}' at {}... ", collection, resolution.qdrant_url);
         std::io::stdout().flush()?;
+
+        // Check first. Qdrant treats deleting an absent collection as success,
+        // so without this a wrong endpoint, a typo, or an already-deleted name
+        // all report "Done" — and the operator believes data is gone when it is
+        // not. Say which endpoint was checked, so a surprise is diagnosable.
+        //
+        // `Err` here means the store could not be asked. It must stay distinct
+        // from `Ok(false)`: the backend used to flatten every transport error
+        // into `false`, which made this branch unreachable and turned an
+        // unreachable host into "not found". See backends/qdrant.rs.
+        match core.collection_exists(&collection).await {
+            Ok(false) => {
+                println!("{}", "not found — nothing deleted".yellow());
+                continue;
+            }
+            Err(e) => {
+                println!("{}", format!("Failed: could not reach store: {e}").red());
+                failures.push(format!("{collection}: could not reach store: {e}"));
+                continue;
+            }
+            Ok(true) => {}
+        }
+
         match core.delete_collection(&collection).await {
             Ok(_) => {
                 println!("{}", "Done".green());
@@ -118,8 +220,20 @@ pub async fn run(args: DeleteArgs, config: &Config) -> anyhow::Result<()> {
                     "  Note: Re-ingesting will re-process files — the Qdrant collection UUID has changed."
                 );
             }
-            Err(e) => println!("{}", format!("Failed: {}", e).red()),
+            Err(e) => {
+                println!("{}", format!("Failed: {}", e).red());
+                failures.push(format!("{collection}: {e}"));
+            }
         }
+    }
+
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "{} of the requested deletions did not happen at {}:\n  {}",
+            failures.len(),
+            resolution.qdrant_url,
+            failures.join("\n  ")
+        );
     }
 
     Ok(())

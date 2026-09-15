@@ -20,7 +20,9 @@
 //! Acquisition is in stable order (sorted by resource discriminant + key) so
 //! multi-resource permits cannot deadlock against each other.
 //!
-//! Background and design rationale: docs/planning/BUG_IDLE_VRAM_AND_RESOURCE_ISOLATION.md
+//! The problem this solves: a remote-Ollama ingest and a local-GPU ingest
+//! used to serialise against each other despite sharing no resource, because
+//! one global lock guarded every embed call.
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};

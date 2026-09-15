@@ -4,6 +4,10 @@ use crate::vecdbrc::Route;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// `Clone` so a caller can run the same plan against several destinations —
+/// see `only_collection`. Every field is owned data or a plain value; there is
+/// no shared handle here whose duplication would mean anything.
+#[derive(Clone)]
 pub struct IngestionOptions {
     /// Primary path (kept for backward compat). When `file_allowlist` is
     /// set, this should be the common parent of all allowed files.
@@ -28,6 +32,10 @@ pub struct IngestionOptions {
     pub vecdbrc_root: Option<PathBuf>,
     pub target_chunk_size: usize,
     pub max_chunk_bytes: Option<usize>,
+
+    /// Run-level AST packing granularity, in non-whitespace characters.
+    /// Per-destination values in `route_chunking` override it.
+    pub pack_target_bytes: Option<usize>,
     /// Chunk parameters per routed destination, keyed by collection name.
     ///
     /// A `.vecdbrc` fans one run across several collections, and chunking is a
@@ -40,6 +48,32 @@ pub struct IngestionOptions {
     /// caller populates it because resolving a collection's chunk parameters
     /// needs `Config`, which the ingestion layer deliberately does not depend on.
     pub route_chunking: HashMap<String, ChunkSpec>,
+
+    /// Restrict this pass to files that route to exactly this collection.
+    ///
+    /// A `.vecdbrc` can fan one tree across collections whose profiles resolve
+    /// to different models or different stores. A single pass cannot serve
+    /// those: it holds one embedder and one backend, resolved before any file
+    /// is read, so routing a file elsewhere would embed it with the wrong model
+    /// and write it to the wrong endpoint — creating the target at the wrong
+    /// dimension when it does not yet exist.
+    ///
+    /// The caller therefore runs one pass per destination, each with that
+    /// collection's own resolution, and sets this so the pass ignores files
+    /// belonging to the others. `None` means "take every file", which is the
+    /// single-destination case and the default.
+    pub only_collection: Option<String>,
+
+    /// Destination for files that match no `.vecdbrc` route.
+    ///
+    /// `collection` cannot serve this during a split run: it is also the
+    /// write-target the embedding-space guard validates, so a per-destination
+    /// pass must set it to that destination. If route resolution then fell back
+    /// to it, every unrouted file would be claimed by whichever pass is running
+    /// and ingested into the wrong space — the exact failure the split exists to
+    /// prevent. `None` means "use `collection`", which is correct whenever there
+    /// is only one destination.
+    pub route_default_collection: Option<String>,
     /// What to do with a chunk that exceeds the resolved ceiling.
     ///
     /// Never an abort. An oversized chunk is a configuration problem, and taking
@@ -76,6 +110,14 @@ pub struct ChunkSpec {
     pub chunk_overlap: usize,
     /// Byte ceiling. `None` derives from `target_chunk_size`.
     pub max_chunk_bytes: Option<usize>,
+    /// Granularity for AST-parsed content, in non-whitespace characters.
+    /// `None` uses the run-level default.
+    ///
+    /// A SEPARATE knob from `target_chunk_size`, and the one that governs code,
+    /// markdown, JSON and YAML — `target_chunk_size` drives the generic chunker
+    /// and the derived ceiling. Keeping it here, rather than only at run level,
+    /// is what lets one routed ingest chunk each destination as configured.
+    pub pack_target_bytes: Option<usize>,
 }
 
 impl ChunkSpec {
@@ -84,6 +126,12 @@ impl ChunkSpec {
     pub fn ceiling(&self) -> usize {
         self.max_chunk_bytes
             .unwrap_or_else(|| default_max_chunk_bytes(self.target_chunk_size))
+    }
+
+    /// AST packing granularity for this destination, defaulted when unset.
+    pub fn pack_target(&self) -> usize {
+        self.pack_target_bytes
+            .unwrap_or(crate::config::DEFAULT_PACK_TARGET_BYTES)
     }
 }
 
@@ -103,6 +151,10 @@ impl IngestionOptions {
             // by it, a derived ceiling and a written one are the same fact.
             max_chunk_bytes: spec.ceiling(),
             tokenizer: self.tokenizer.clone(),
+            // Recorded because it is what actually cut the chunks for AST
+            // content. Without it the genesis describes the generic chunker's
+            // parameters for chunks the generic chunker never touched.
+            pack_target_bytes: spec.pack_target(),
         }
     }
 
@@ -115,6 +167,7 @@ impl IngestionOptions {
                 target_chunk_size: self.target_chunk_size,
                 chunk_overlap: self.chunk_overlap,
                 max_chunk_bytes: self.max_chunk_bytes,
+                pack_target_bytes: self.pack_target_bytes,
             })
     }
 }

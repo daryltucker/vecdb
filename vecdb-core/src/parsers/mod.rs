@@ -50,6 +50,20 @@ pub trait ParserFactory: Send + Sync {
     /// Get a parser for a specific file type
     fn get_parser(&self, file_type: FileType) -> Option<Box<dyn Parser>>;
 
+    /// Get a parser sized for a specific DESTINATION.
+    ///
+    /// Chunk granularity belongs to the destination collection, not to the run:
+    /// one routed ingest can fan across collections configured differently, and
+    /// a factory built once per run cannot express that. The default ignores the
+    /// size and delegates, which is correct for parsers that have no size knob.
+    fn get_parser_sized(
+        &self,
+        file_type: FileType,
+        _pack_target_bytes: Option<usize>,
+    ) -> Option<Box<dyn Parser>> {
+        self.get_parser(file_type)
+    }
+
     /// Get a streaming parser for a specific file type (for large files)
     fn get_streaming_parser(&self, _file_type: FileType) -> Option<Box<dyn Parser>> {
         None

@@ -51,4 +51,4 @@ Commands like `vecdb search "In GCC 13, ..."` are automatically routed to the `g
 
 ---
 
-For more details on implementation, see `vecdb-core` and the [walkthrough.md](../docs/walkthrough.md).
+For more details on implementation, see `vecdb-core` and [docs/CLI.md](../docs/CLI.md).

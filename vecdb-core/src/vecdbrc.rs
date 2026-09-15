@@ -188,32 +188,32 @@ mod tests {
     fn test_parse_basic() {
         let toml_str = r#"
 [default]
-collection = "code"
+collection = "src"
 
 [[routes]]
 glob = "data/descriptions_export/**/*.md"
-collection = "music"
+collection = "assets"
 
 [[routes]]
 glob = "docs/research/**"
-collection = "docs-lts"
+collection = "notes-archive"
 "#;
 
         let rc: VecdbRc = toml::from_str(toml_str).unwrap();
         assert_eq!(
             rc.default.as_ref().unwrap().collection.as_deref(),
-            Some("code")
+            Some("src")
         );
         assert_eq!(rc.routes.len(), 2);
-        assert_eq!(rc.routes[0].collection, "music");
-        assert_eq!(rc.routes[1].collection, "docs-lts");
+        assert_eq!(rc.routes[0].collection, "assets");
+        assert_eq!(rc.routes[1].collection, "notes-archive");
     }
 
     #[test]
     fn test_route_resolution_first_match_wins() {
         let toml_str = r#"
 [default]
-collection = "code"
+collection = "src"
 
 [[routes]]
 glob = "*.rs"
@@ -221,7 +221,7 @@ collection = "rust-code"
 
 [[routes]]
 glob = "docs/**"
-collection = "docs-lts"
+collection = "notes-archive"
 "#;
 
         let rc: VecdbRc = toml::from_str(toml_str).unwrap();
@@ -230,8 +230,8 @@ collection = "docs-lts"
         let (coll, _) = rc.route("src/main.rs", None);
         assert_eq!(coll, "rust-code");
 
-        let (coll, _) = rc.route("docs/guide.md", None);
-        assert_eq!(coll, "docs-lts");
+        let (coll, _) = rc.route("docs/guide.md", None); // path-ok: routing input
+        assert_eq!(coll, "notes-archive");
     }
 
     #[test]
@@ -252,14 +252,14 @@ collection = "everything-else"
         let toml_str = r#"
 [[routes]]
 glob = "src/**"
-collection = "code"
+collection = "src"
 "#;
 
         let rc: VecdbRc = toml::from_str(toml_str).unwrap();
 
         // Routed file ignores CLI flag per RFC spec
         let (coll, _) = rc.route("src/main.rs", Some("override"));
-        assert_eq!(coll, "code");
+        assert_eq!(coll, "src");
 
         // Unrouted file uses CLI flag
         let (coll, _) = rc.route("data/file.txt", Some("override"));
@@ -294,13 +294,13 @@ ignore_vector_ignore = true
         let tmp = tempfile::TempDir::new().unwrap();
         let rc_path = tmp.path().join(".vecdbrc");
         let mut f = std::fs::File::create(&rc_path).unwrap();
-        f.write_all(b"[default]\ncollection = \"code\"\n").unwrap();
+        f.write_all(b"[default]\ncollection = \"src\"\n").unwrap();
 
         let result = VecdbRc::discover(tmp.path()).unwrap();
         assert!(result.is_some());
         let (path, rc) = result.unwrap();
         assert_eq!(path, rc_path);
-        assert_eq!(rc.default_collection(), Some("code"));
+        assert_eq!(rc.default_collection(), Some("src"));
     }
 
     #[test]

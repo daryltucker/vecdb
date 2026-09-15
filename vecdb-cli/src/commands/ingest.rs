@@ -142,8 +142,16 @@ pub async fn run(
     //
     // Note what this does NOT do: it never adjusts `num_ctx` or `target_chunk_size`. A
     // value the operator wrote is used exactly as written.
-    if resolution.is_ollama() {
-        let num_ctx = resolution.num_ctx.value;
+    // Where the window comes from differs by backend; the checks do not.
+    //
+    // Both paths need checking, and the fastembed one more so: Ollama refuses an
+    // over-long input, while fastembed silently truncates it to a prefix. The
+    // quiet failure is the dangerous one.
+    // Where the window comes from differs by backend; `Resolution` knows, and
+    // `history ingest` and the MCP tool need the same answer.
+    let context_tokens = resolution.context_tokens();
+
+    if let Some(num_ctx) = context_tokens {
         let target = args
             .target_chunk_size
             .unwrap_or(resolution.target_chunk_size.value);
@@ -177,8 +185,46 @@ pub async fn run(
         }
     }
 
+    // Clamp the chunk byte ceiling to what the model can actually embed.
+    //
+    // The oversize policy splits large chunks down to exactly `max_chunk_bytes`.
+    // If that ceiling is above the model's capacity, the split parts are still
+    // too big — the split makes things worse, not better, and the run dies on
+    // input it created itself.
+    //
+    // Clamped rather than rejected: `max_chunk_bytes` is usually derived, and
+    // the derivation constant is generous on purpose, so erroring on any
+    // derived ceiling above the window would reject the shipped defaults.
+    // Capacity is a hard limit; the ceiling is a policy knob; policy yields,
+    // and says so.
+    //
+    // NOT clamped: `target_chunk_size` and `num_ctx`. Those are operator intent,
+    // they are checked above, and are used exactly as written.
+    let ceiling_cap = context_tokens.map(vecdb_core::config::model_byte_cap);
+    let clamp_ceiling = |v: usize| -> usize { ceiling_cap.map_or(v, |cap| v.min(cap)) };
+
+    if let (Some(cap), Some(ctx)) = (ceiling_cap, context_tokens) {
+        let configured = resolution.max_chunk_bytes.value;
+        if configured > cap {
+            // Never gated on `is_interactive`: a caller reading JSON is exactly
+            // who needs to know the ceiling it configured is not the one in force.
+            eprintln!(
+                "note: max_chunk_bytes {configured} exceeds what this model can embed \
+                 ({ctx} tokens ~ {cap} bytes); using {cap}.\n\
+                 \x20     Oversized chunks split to {cap} instead, which the model accepts.\n\
+                 \x20     Set max_chunk_bytes at or below {cap} to silence this."
+            );
+        }
+    }
+
     let file_detector = Arc::new(HybridDetector::new());
-    let parser_factory = Arc::new(VecqParserFactory);
+    // Run-level fallback only: the destination's own value is applied per file
+    // via `ChunkSpec::pack_target`, because one routed run can span collections
+    // configured differently. Baked into the vectors either way — changing it
+    // later means a re-ingest.
+    let parser_factory = Arc::new(VecqParserFactory::with_pack_target(
+        resolution.pack_target_bytes.value,
+    ));
 
     let services = vecdb_core::CoreServices::from_config(
         config,
@@ -198,7 +244,9 @@ pub async fn run(
         }
     }
 
-    let resolved_max_chunk_bytes = Some(resolution.max_chunk_bytes.value);
+    // Clamped: see `clamp_ceiling` above. The pipeline must never be handed a
+    // ceiling the model cannot embed, because that is what it splits down to.
+    let resolved_max_chunk_bytes = Some(clamp_ceiling(resolution.max_chunk_bytes.value));
     let final_chunk_size = args
         .target_chunk_size
         .or(Some(resolution.target_chunk_size.value));
@@ -247,7 +295,7 @@ pub async fn run(
 
     // Discovered above, before resolution — reused here rather than re-read, so
     // the file that supplied the collection is the same one supplying routes.
-    let (rc_path, rc) = match rc_result {
+    let (rc_path, rc, extra_passes) = match rc_result {
         Some((rc_path, rc)) => {
             if OUTPUT.is_interactive {
                 println!(
@@ -256,14 +304,82 @@ pub async fn run(
                     rc.routes.len()
                 );
             }
-            // Print warning ONCE if any route differs from CLI collection
+
+            // ONCE if any route disagrees with `-c`, never once per route.
+            //
+            // Distinct from the cross-space split below: this is about intent
+            // (`-c` says one thing, the file says another), not about
+            // embedding-space correctness.
             let has_mismatch = rc.routes.iter().any(|r| r.collection != collection);
             if has_mismatch && OUTPUT.is_interactive {
-                eprintln!("Warning: .vecdbrc routes to different collection. Verify profile matches '-c {}'", collection);
+                eprintln!(
+                    "Warning: .vecdbrc routes to different collection. Verify profile matches '-c {collection}'"
+                );
             }
-            (Some(rc_path), Some(rc))
+            // A route may send files to another COLLECTION, but this run has a
+            // single embedder and a single store — resolved once, before any
+            // file is read. `route_chunking` below resolves chunk size per
+            // routed collection; the embedder and the store are NOT resolved
+            // that way and cannot be, because the pipeline holds one `Core`.
+            //
+            // So a route naming a collection whose profile resolves to a
+            // different embedder or store writes THIS run's vectors under that
+            // name: wrong model, wrong width, wrong endpoint. When the target
+            // does not exist yet it is CREATED at the wrong dimension, which
+            // the embedding-space guard cannot catch because there is no
+            // genesis to compare against. That is how a 768-dim `notes-archive`
+            // appeared on the local store while the real 2560-dim one lived
+            // elsewhere (2026-256).
+            //
+            // Refuse instead of corrupting. The operator's `.vecdbrc` is not
+            // wrong — the feature cannot honour it yet. Until routing resolves
+            // per-collection embedders, split the run: one invocation per
+            // target collection, each with `-c` and its own profile.
+            // A route may send files to another COLLECTION whose profile
+            // resolves to a different model or a different store. One pass
+            // cannot serve those — it holds a single embedder and a single
+            // backend, resolved before any file is read — so routing a file
+            // elsewhere would embed it with the wrong model and write it to the
+            // wrong endpoint, CREATING the target at the wrong dimension when it
+            // does not yet exist. The embedding-space guard cannot catch that:
+            // there is no genesis to compare against. It is how a 768-dim
+            // `notes-archive` came to sit on the local store while the real 2560-dim
+            // one lived elsewhere (2026-256).
+            //
+            // So the run is split: one pass per destination, each with that
+            // collection's own resolution, each ignoring the others' files.
+            // `route_chunking` already resolves chunk size this way; this
+            // extends the same idea to the model and the store.
+            let mut extra_passes: Vec<String> = Vec::new();
+            for r in &rc.routes {
+                if r.collection == collection || r.collection.is_empty() {
+                    continue;
+                }
+                if let Ok(other) = config.resolve(profile_name, Some(&r.collection)) {
+                    // Compare the SPACE, not the embedder name: `nomic_gpu` and
+                    // `nomic_cpu` are two names for one model and produce
+                    // interchangeable vectors.
+                    let same_space = other.embedder.model == resolution.embedder.model
+                        && other.qdrant_url == resolution.qdrant_url;
+                    if !same_space {
+                        extra_passes.push(r.collection.clone());
+                    }
+                }
+            }
+            extra_passes.sort();
+            extra_passes.dedup();
+
+            if OUTPUT.is_interactive && !extra_passes.is_empty() {
+                println!(
+                    "Routing spans {} embedding spaces; running one pass per destination: {}, {}",
+                    extra_passes.len() + 1,
+                    collection,
+                    extra_passes.join(", ")
+                );
+            }
+            (Some(rc_path), Some(rc), extra_passes)
         }
-        None => (None, None),
+        None => (None, None, Vec::new()),
     };
 
     let vecdbrc_root = rc_path
@@ -283,6 +399,7 @@ pub async fn run(
         target_chunk_size: final_chunk_size
             .unwrap_or(vecdb_core::config::DEFAULT_TARGET_CHUNK_SIZE),
         max_chunk_bytes: resolved_max_chunk_bytes,
+        pack_target_bytes: Some(resolution.pack_target_bytes.value),
         on_oversize: config.resolve_oversize_policy().value,
         // Chunk parameters per routed destination.
         //
@@ -311,7 +428,15 @@ pub async fn run(
                             vecdb_core::ingestion::options::ChunkSpec {
                                 target_chunk_size: r.target_chunk_size.value,
                                 chunk_overlap: r.chunk_overlap.value,
-                                max_chunk_bytes: Some(r.max_chunk_bytes.value),
+                                // Per-route ceiling, clamped the same way: a
+                                // route naming a collection with a looser
+                                // ceiling must not smuggle one past the model.
+                                max_chunk_bytes: Some(clamp_ceiling(r.max_chunk_bytes.value)),
+                                // The knob that actually governs AST content.
+                                // Resolved per destination for the same reason
+                                // as the rest: chunk size belongs to the
+                                // collection, not to the run.
+                                pack_target_bytes: Some(r.pack_target_bytes.value),
                             },
                         ))
                     })
@@ -338,7 +463,17 @@ pub async fn run(
         gpu_batch_size: args.gpu_concurrency.unwrap_or(2),
         quantization: resolution.quantization.clone(),
         allow_quantization_delta: args.allow_quantization_delta,
+        // Only restrict when the run is genuinely split. With one destination
+        // this stays `None`, so the common path is byte-for-byte unchanged.
+        only_collection: if extra_passes.is_empty() {
+            None
+        } else {
+            Some(collection.to_string())
+        },
+        route_default_collection: Some(collection.to_string()),
     };
+
+    let opts_template = opts.clone();
 
     tokio::select! {
         res = core.ingest_with_options(opts, None) => {
@@ -346,7 +481,59 @@ pub async fn run(
         }
         _ = tokio::signal::ctrl_c() => {
             println!("\nCancelled by user.");
-            std::process::exit(0);
+            // 130 = 128 + SIGINT, the shell convention. Exiting 0 told every
+            // caller the work had SUCCEEDED, so a `for` loop over directories
+            // saw a clean result and advanced to the next one — which is why
+            // Ctrl-C appeared not to stop `vecdb.sh` and it had to be killed by
+            // PID. Cancelled is not done.
+            std::process::exit(130);
+        }
+    }
+
+    // One further pass per destination that needs a different model or store.
+    //
+    // Each builds its own `Core` from that collection's resolution, so the
+    // embedder and endpoint match the collection it writes. Files belonging to
+    // the other destinations are ignored by `only_collection`, so every file is
+    // handled exactly once across the passes.
+    for target in &extra_passes {
+        let target_res = config.resolve(profile_name, Some(target))?;
+        if OUTPUT.is_interactive {
+            println!(
+                "\n── pass: '{}' via {} at {}",
+                target, target_res.embedder.model, target_res.qdrant_url
+            );
+        }
+
+        let services = vecdb_core::CoreServices::from_config(
+            config,
+            std::sync::Arc::new(HybridDetector::new()),
+            std::sync::Arc::new(VecqParserFactory::with_pack_target(
+                config.ingestion.pack_target_bytes,
+            )),
+        );
+        let target_core = vecdb_core::Core::new(&target_res, services).await?;
+
+        let mut target_opts = opts_template.clone();
+        // `collection` becomes this destination: it is what the embedding-space
+        // guard validates against this pass's embedder. `route_default_collection`
+        // stays the original, so unrouted files still belong to the first pass
+        // and are not re-ingested here.
+        target_opts.collection = target.clone();
+        target_opts.only_collection = Some(target.clone());
+        target_opts.target_chunk_size = target_res.target_chunk_size.value;
+        target_opts.chunk_overlap = target_res.chunk_overlap.value;
+        target_opts.quantization = target_res.quantization.clone();
+
+        tokio::select! {
+            res = target_core.ingest_with_options(target_opts, None) => {
+                res?;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nCancelled by user.");
+                // See above: cancelled is not done. 130 = 128 + SIGINT.
+                std::process::exit(130);
+            }
         }
     }
 
@@ -377,7 +564,13 @@ async fn run_stdin(
     }
 
     let file_detector = Arc::new(HybridDetector::new());
-    let parser_factory = Arc::new(VecqParserFactory);
+    // Run-level fallback only: the destination's own value is applied per file
+    // via `ChunkSpec::pack_target`, because one routed run can span collections
+    // configured differently. Baked into the vectors either way — changing it
+    // later means a re-ingest.
+    let parser_factory = Arc::new(VecqParserFactory::with_pack_target(
+        resolution.pack_target_bytes.value,
+    ));
 
     let services = vecdb_core::CoreServices::from_config(
         config,
@@ -399,7 +592,19 @@ async fn run_stdin(
         .entry("source".to_string())
         .or_insert(serde_json::Value::String("stdin".to_string()));
 
-    let resolved_max_chunk_bytes = Some(resolution.max_chunk_bytes.value);
+    // Same clamp as the directory path. stdin is not a special case: the model
+    // limit applies to whatever produced the bytes.
+    let stdin_cap = if resolution.is_ollama() {
+        Some(resolution.num_ctx.value)
+    } else {
+        vecdb_core::embedders::local::fastembed_context_length(&resolution.embedder.model)
+            .map(|n| n as usize)
+    }
+    .map(vecdb_core::config::model_byte_cap);
+    let resolved_max_chunk_bytes =
+        Some(stdin_cap.map_or(resolution.max_chunk_bytes.value, |cap| {
+            resolution.max_chunk_bytes.value.min(cap)
+        }));
     let final_chunk_size = args
         .target_chunk_size
         .or(Some(resolution.target_chunk_size.value));
@@ -412,7 +617,9 @@ async fn run_stdin(
         }
         _ = tokio::signal::ctrl_c() => {
             println!("\nCancelled by user.");
-            return Ok(());
+            // Same contract as the other cancellation sites: cancelled is not
+            // done, and `Ok(())` here would exit 0 and tell the caller it was.
+            std::process::exit(130);
         }
     }
     Ok(())

@@ -90,9 +90,36 @@ This ensures that searched results strictly respect the constraints you asked fo
 ### Thread Capping (The "Meltdown Preventer")
 Vector math libraries (ONNX Runtime, Torch, Intel MKL) are notorious for trying to grab **all available CPU cores** for every operation. In a concurrent environment (like an MCP server handling multiple requests), this causes "Thread Starvation" and system lag.
 
-`vecdb` aggressively manages this by detecting your CPU count and forcing these libraries to stay in their lane.
-*   **Automatic Cap**: defaults to `(NumCPUs / 2).clamp(1, 4)` threads per operation.
-*   **Overrides**: You can manually set `ORT_INTRA_OP_NUM_THREADS` env var if you need raw performance for a single-user batch job.
+`vecdb` detects your CPU count and sets the conventional thread-limit variables before initialising the local embedder (`vecdb-core/src/embedders/local.rs`).
+*   **Automatic Cap**: `(NumCPUs / 2).clamp(1, 2)` — deliberately low, because the MCP server runs as a background process.
+*   **Variables set**: `ORT_INTRA_OP_NUM_THREADS`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, each only if not already present in the environment. Exporting one yourself therefore takes precedence.
+
+> **Known gap (2026-256).** Setting those variables is all vecdb does — it never passes an intra-op thread count to the ONNX session itself, and the pinned `fastembed` 5.13.4 exposes no API to accept one. Whether the cap is honoured therefore depends entirely on whether the runtime reads the environment, which is **unverified**. Treat the cap as best-effort until measured. If you observe the local embedder saturating every core during ingest, this is why.
+
+### The two embedders
+
+Both implement the `Embedder` trait (`vecdb-core/src/embedder.rs`). Which one a
+command uses is decided by the `kind` of the backend its embedder references —
+see [CONFIG.md](CONFIG.md).
+
+| | `LocalEmbedder` | `OllamaEmbedder` |
+|---|---|---|
+| file | `embedders/local.rs` | `embedders/ollama.rs` |
+| runs | in-process, fastembed + ONNX Runtime | HTTP to `/api/embed`, 120 s timeout |
+| batch knob | `batch_rows` (ONNX rows in-process) | `batch_inputs` (array length over HTTP) |
+| its own knobs | `use_gpu` | `num_ctx`, `url`, `api_key`, `accept_invalid_certs` |
+| built by | `local-embed` feature (plus optional `cuda`) | always available |
+
+The batch knobs are deliberately **not** one setting: the quantities have
+different units and different failure modes — an oversized `batch_rows` is an
+out-of-memory kill, an oversized `batch_inputs` is a request timeout. Only the
+knobs matching the backend's `kind` are consulted.
+
+`MockEmbedder` (`embedders/mock.rs`) is a zero-dimension testing stub.
+
+`OllamaEmbedder` sends `truncate: false` by default, so a chunk exceeding the
+model context is an error naming the file rather than a silently shortened
+vector. Opt out with `ingestion.allow_embed_truncation`.
 
 ### Memory Safety (Rust)
 The entire codebase is written in Rust, which guarantees memory safety without a garbage collector. This is critical for `ingest`, which might process gigabytes of text. We use streaming iterators and buffered readers to keep RAM usage constant regardless of dataset size.

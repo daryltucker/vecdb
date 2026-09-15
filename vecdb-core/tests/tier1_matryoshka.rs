@@ -157,9 +157,6 @@ async fn test_matryoshka_truncation_on_search() -> Result<()> {
         Arc::new(DummyDetector),
         Arc::new(DummyParserFactory),
         vec![],
-        vec![],
-        4,
-        2,
     );
 
     // Search should trigger truncation to 384

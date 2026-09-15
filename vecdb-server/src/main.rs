@@ -42,6 +42,12 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // ORT anchors its CUDA provider libs on dirname(argv[0]); a bare PATH
+    // invocation would make that the CWD. Must run before anything else —
+    // exec() preserves the stdio fds the MCP transport uses.
+    #[cfg(unix)]
+    vecdb_core::reexec_for_ort_provider_anchor();
+
     // Install aws-lc-rs as the TLS crypto provider before any connections.
     // Required because fastembed (reqwest 0.12) and vecdb-core (reqwest 0.13) each
     // pull in a different rustls backend (ring vs aws-lc-rs), leaving rustls unable
@@ -96,7 +102,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Prepare shared services
     let file_detector = Arc::new(HybridDetector::new());
-    let parser_factory = Arc::new(VecqParserFactory);
+    // Same packing target as the CLI: the MCP path must not build a corpus
+    // with different granularity from the one `vecdb ingest` builds.
+    let parser_factory = Arc::new(VecqParserFactory::with_pack_target(
+        config.ingestion.pack_target_bytes,
+    ));
 
     // Don't eagerly load GPU at boot. The server creates a boot Core for the default
     // profile (which may use local GPU embedding). If this server only serves requests

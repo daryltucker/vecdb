@@ -9,6 +9,19 @@ on:
 env:
   CARGO_TERM_COLOR: always
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Pin which CUDA major the prebuilt ONNX Runtime links against.
+  #
+  # Unset, ort-sys infers this from the BUILD MACHINE (CUDA_HOME,
+  # NV_CUDA_CUDART_VERSION, `nvcc --version`). On a hosted runner that means
+  # the published artifact's libcudart requirement is decided by whatever the
+  # runner image happened to ship that week — invisible to us and to users.
+  # Published binaries must be a function of the tag, not of the runner.
+  #
+  # 12, not 13: both flavours carry the identical kernel set
+  # (sm_75/sm_80/sm_90), so this only decides which CUDA the user needs
+  # installed, and CUDA 12 is more widely deployed with a lower minimum
+  # driver. See docs/GPU.md.
+  ORT_CUDA_VERSION: "12"
 
 jobs:
   build-release:

@@ -28,29 +28,61 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from paths import bin_path  # noqa: E402
+
 REPO = Path(__file__).resolve().parent.parent
 QDRANT = "http://localhost:6335"
 COLLECTION = "test_stale_purge"
 
-ORIGINAL = '''\
+# The packer emits ONE chunk for any file whose total content is under
+# `pack_target_bytes` — splitting it cannot improve retrieval, since every piece
+# answers the same queries. Undersized neighbours are folded together for the
+# same reason.
+#
+# This test needs alpha and beta in SEPARATE chunks, because the property it
+# proves is that editing one leaves the other untouched. So the fixture has to
+# be a file that genuinely warrants two chunks: each function clears the floor
+# on its own, and the pair clears the pack target. Padding is generated rather
+# than typed out so the intent stays legible.
+_FILLER = (
+    "    It is deliberately verbose so that this function is large enough to be\n"
+    "    chunked on its own rather than folded in with its neighbour.\n"
+) * 9
+
+_ALPHA_BODY = (
+    "    Alpha performs the first half of the worked example used by this test.\n"
+    "    It exists to be edited.\n" + _FILLER
+)
+
+_BETA_BODY = (
+    "    Beta is untouched throughout, and exists to prove that purging the\n"
+    "    edited chunk does not take unrelated content with it.\n" + _FILLER
+)
+
+ORIGINAL = f'''\
 def alpha():
-    """Original alpha docstring, mentions marmalade."""
+    """Original alpha docstring, mentions marmalade.
+{_ALPHA_BODY}"""
     return 1
 
 
 def beta():
-    """Beta is untouched throughout this test."""
+    """Beta is untouched throughout this test.
+{_BETA_BODY}"""
     return 2
 '''
 
-EDITED = '''\
+EDITED = f'''\
 def alpha():
-    """Rewritten alpha docstring, mentions zeppelins."""
+    """Rewritten alpha docstring, mentions zeppelins.
+{_ALPHA_BODY}"""
     return 999
 
 
 def beta():
-    """Beta is untouched throughout this test."""
+    """Beta is untouched throughout this test.
+{_BETA_BODY}"""
     return 2
 '''
 
@@ -73,8 +105,15 @@ def scroll():
 
 
 def ingest(path, env):
+    # `bin_path("vecdb")`, not a bare "vecdb".
+    #
+    # A bare name resolves through PATH to ~/.cargo/bin/vecdb — whatever was
+    # last `make install`ed, which on one measured tree was four hours older
+    # than the binary T1.1 had just built. This was the only test in the suite
+    # doing it, and nothing caught it: tier0_target_dir_isolation.py scans for
+    # the literal "target/debug", which a bare name does not contain.
     proc = subprocess.run(
-        ["vecdb", "ingest", str(path), "-c", COLLECTION],
+        [bin_path("vecdb"), "ingest", str(path), "-c", COLLECTION],
         capture_output=True, text=True, env=env,
     )
     if proc.returncode != 0:

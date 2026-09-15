@@ -45,7 +45,13 @@ pub enum Commands {
     /// Optimize a collection (apply quantization)
     Optimize(optimize::OptimizeArgs),
 
-    /// Time Travel / History Operations
+    /// [WIP] Time Travel / History Operations
+    ///
+    /// Ingesting a named revision works. Retaining more than one revision of
+    /// the same file does not: the AST path seeds chunk IDs on
+    /// `doc_id :: trail :: content_hash` with `doc_id` derived from the path
+    /// alone, so a second revision upserts over the first. The generic chunker
+    /// path does include `commit_sha` and behaves as intended.
     History(history::HistoryArgs),
 
     /// Enable usage/reference extraction mode

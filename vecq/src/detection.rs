@@ -72,7 +72,7 @@
 //   - src/types.rs - Defines FileType enum used by detection
 //   - src/parser.rs - Uses detection results for parser selection
 //   - src/parsers/mod.rs - Parser implementations for detected file types
-//   - tests/unit/detection_tests.rs - Detection accuracy validation
+//   - vecq/tests/property_file_detection.rs - Detection accuracy validation
 //   - tests/fixtures/ - Real-world files for detection testing
 //
 // MAINTENANCE:

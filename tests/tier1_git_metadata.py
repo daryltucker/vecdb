@@ -2,7 +2,20 @@
 import subprocess
 import os
 import shutil
-import time
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from paths import bin_path
+
+# The binary T1.1 built, not `cargo run`.
+#
+# `cargo run --bin vecdb` REBUILDS vecdb with DEFAULT features at the same path
+# T1.1 wrote the cuda-dynamic build to, so this test silently replaced the
+# binary every later tier depends on — one of five such points in the manifest.
+# The old comment justified it as "to ensure we are testing the current code",
+# but run_all.sh already built the current code, with the right features.
+VECDB = bin_path("vecdb")
+
 
 def run_test():
     TEST_DIR = "tests/fixtures/git_test_repo"
@@ -33,17 +46,18 @@ def run_test():
 
         # Run Ingest
         print("Running verify ingestion...")
-        # Note: We use cargo run to ensure we are testing the current code
-        # We need --allow-local-fs equivalent logic or just CLI direct usage
-        # vecdb-cli ingest does use local fs
-        
-        cmd = [
-            "cargo", "run", "--quiet", "--bin", "vecdb", "--", 
-            "ingest", TEST_DIR, 
-            "--collection", "test_git"
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        cmd = [VECDB, "ingest", TEST_DIR, "--collection", "test_git"]
+
+        # VECDB_CONFIG pinned explicitly. Inherited, this resolves whatever
+        # config the ambient environment names — the operator's real one when
+        # the file is run directly rather than through run_all.sh.
+        env = {
+            **os.environ,
+            "VECDB_CONFIG": os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "fixtures", "config.toml"
+            ),
+        }
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
         
         if result.returncode != 0:
             print("CLI Failed:")

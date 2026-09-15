@@ -23,7 +23,7 @@ use std::sync::Arc;
 #[cfg(feature = "local-embed")]
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 #[cfg(feature = "cuda")]
-use ort::execution_providers::CUDAExecutionProvider;
+use ort::execution_providers::{CUDAExecutionProvider, ExecutionProviderDispatch};
 #[cfg(feature = "local-embed")]
 use std::sync::Mutex;
 
@@ -51,6 +51,20 @@ struct LocalEmbedderInitParams {
     model_type: EmbeddingModel,
     cache_path: Option<std::path::PathBuf>,
     use_gpu: bool,
+}
+
+/// The CUDA execution provider vecdb registers on every GPU session.
+///
+/// `error_on_failure()` is load-bearing: without it, ORT treats a failed EP
+/// registration (most commonly `libonnxruntime_providers_shared.so` missing
+/// from the directory containing the vecdb executable) as a logged warning and
+/// silently builds a CPU session. That is exactly the false-success path of
+/// BUG_GPU_PROVIDER_CWD_RESOLUTION_AND_FALSE_SUCCESS-2026-254: embedding ran
+/// on CPU under a "GPU Accelerated" banner. With the flag set, session
+/// creation fails instead, and the caller's ❌ error path reports the truth.
+#[cfg(feature = "cuda")]
+fn cuda_execution_provider() -> ExecutionProviderDispatch {
+    CUDAExecutionProvider::default().build().error_on_failure()
 }
 
 #[cfg(feature = "local-embed")]
@@ -202,6 +216,32 @@ impl LocalEmbedder {
             return Ok(());
         }
 
+        // cuda-dynamic builds dlopen the ONNX Runtime named by ORT_DYLIB_PATH
+        // for EVERY fastembed operation, CPU included. If the variable is
+        // unset or stale, ort 2.0.0-rc.12 does not report an error — it
+        // deadlocks (its error constructor re-enters the API-init OnceLock,
+        // verified by thread stacks, BUG-2026-254 addendum). Refuse loudly
+        // here, before any ort symbol is touched. Commands that never embed
+        // (list, delete, …) are unaffected — this is the embed choke point.
+        #[cfg(feature = "cuda-dynamic")]
+        {
+            match std::env::var_os("ORT_DYLIB_PATH") {
+                None => anyhow::bail!(
+                    "this vecdb was built with `cuda-dynamic` and needs to know where \
+                     your libonnxruntime.so lives before it can embed. Set \
+                     `ort_dylib_path` in config.toml (one-time), or export \
+                     ORT_DYLIB_PATH (overrides config). See docs/GPU_LEGACY.md. \
+                     Without this check the process would hang instead of erroring."
+                ),
+                Some(p) if !std::path::Path::new(&p).is_file() => anyhow::bail!(
+                    "ORT_DYLIB_PATH points to a missing file: {} \
+                     (see docs/GPU_LEGACY.md)",
+                    std::path::Path::new(&p).display()
+                ),
+                Some(_) => {}
+            }
+        }
+
         // Need to initialize. Params are persistent (Arc<LocalEmbedderInitParams>) —
         // borrow, don't consume, so subsequent reloads after release() also work.
         tracing::debug!("Lazy initializing LocalEmbedder...");
@@ -227,8 +267,7 @@ impl LocalEmbedder {
                 // Build GPU init closure so we can retry on OOM
                 let try_init_gpu = || -> Result<TextEmbedding, anyhow::Error> {
                     let mut opts = make_options();
-                    opts = opts
-                        .with_execution_providers(vec![CUDAExecutionProvider::default().into()]);
+                    opts = opts.with_execution_providers(vec![cuda_execution_provider()]);
                     TextEmbedding::try_new(opts).map_err(|e| anyhow::anyhow!("{}", e))
                 };
 
@@ -245,8 +284,11 @@ impl LocalEmbedder {
                     match try_init_gpu() {
                         Ok(m) => {
                             if attempt > 1 {
+                                // Same care as the banner below: retrying cleared the
+                                // VRAM pressure that blocked EP registration. That is
+                                // all this reports — not that the GPU can run the model.
                                 eprintln!(
-                                    "✅ GPU available — initialized successfully after retry."
+                                    "✅ GPU session created after retry (VRAM pressure cleared)."
                                 );
                             }
                             gpu_model = Some(Ok(m));
@@ -285,18 +327,31 @@ impl LocalEmbedder {
                     .unwrap_or_else(|| Err(anyhow::anyhow!("GPU init failed after all retries")))
                 {
                     Ok(m) => {
-                        // VERIFICATION: Even if try_new succeeds, ORT might have silently failed to register
-                        // the CUDA provider and fallen back to CPU internally.
-                        let active_providers = crate::get_ort_providers();
-                        if active_providers.iter().any(|p| p.contains("CUDA")) {
-                            eprintln!(
-                                "✅ [CUDA] Local Embedder initialized successfully (GPU Accelerated)."
-                            );
-                        } else {
-                            eprintln!("\n⚠️  [CUDA WARNING] GPU was requested but ORT initialization fell back to CPU.");
-                            eprintln!("   This usually means libonnxruntime_providers_cuda.so is missing or incompatible.");
-                            eprintln!("   Check docs/GPU.md for installation instructions.\n");
-                        }
+                        // Reaching this arm proves the CUDA EP REGISTERED on the session:
+                        // cuda_execution_provider() sets error_on_failure, so a session
+                        // that failed to register cannot get here — try_new returns Err.
+                        //
+                        // It does NOT prove this GPU can execute the model. Registration
+                        // only needs cuBLAS to initialise for the device; the runtime's
+                        // compiled kernels are consulted later, at the first inference.
+                        // On a card outside the prebuilt's sm_75/sm_80/sm_90 window this
+                        // arm is reached and the first embed then fails with
+                        // cudaErrorNoKernelImageForDevice (measured on SM 5.2 against the
+                        // cu12 prebuilt; the cu13 one happens to fail earlier, in
+                        // cublasCreate, which is why this banner looked trustworthy).
+                        //
+                        // So the wording states what was actually established and nothing
+                        // more — claiming "GPU Accelerated" here was a claim about the
+                        // outcome made from evidence about the configuration.
+                        //
+                        // Do NOT reintroduce a get_ort_providers() check here: that API
+                        // (GetAvailableProviders) lists providers *compiled into* the
+                        // runtime, not providers active on this session, so it reports
+                        // CUDA even when registration failed and embedding runs on CPU.
+                        eprintln!(
+                            "✅ [CUDA] Execution provider registered on the session. \
+                             (GPU capability is confirmed by the first embedding.)"
+                        );
                         m
                     }
                     Err(e) => {
@@ -306,9 +361,17 @@ impl LocalEmbedder {
                         );
                         eprintln!("   Last error: {}", e);
                         eprintln!("   Troubleshooting:");
-                        eprintln!("     1. GPU may be occupied by another process (Ollama, training job, etc.)");
-                        eprintln!("     2. Run 'nvidia-smi' to check what's using VRAM");
-                        eprintln!("     3. Set 'local_use_gpu = false' in config.toml to use CPU instead\n");
+                        eprintln!("     1. If the error mentions libonnxruntime_providers_*.so: those libraries must");
+                        eprintln!("        sit in the SAME directory as the vecdb executable, and must come from the");
+                        eprintln!("        same ONNX Runtime build the binary was compiled against. `make install`");
+                        eprintln!(
+                            "        places matching copies automatically — see docs/GPU.md."
+                        );
+                        eprintln!("     2. GPU may be occupied by another process (Ollama, training job, etc.) —");
+                        eprintln!("        run 'nvidia-smi' to check what's using VRAM");
+                        eprintln!("     3. CUBLAS_STATUS_ARCH_MISMATCH means the prebuilt CUDA kernels do not");
+                        eprintln!("        support this GPU's compute capability");
+                        eprintln!("     4. Set 'use_gpu = false' on the embedder in config.toml to use CPU instead\n");
 
                         return Err(e).context(format!(
                             "Local embedder failed to initialize with GPU after {} retries",
@@ -325,7 +388,7 @@ impl LocalEmbedder {
             {
                 if params.use_gpu {
                     tracing::warn!("GPU acceleration requested but 'cuda' feature not enabled. Falling back to CPU.");
-                    eprintln!("\n⚠️  [CUDA WARNING] 'local_use_gpu = true' but binary was compiled without 'cuda' feature.");
+                    eprintln!("\n⚠️  [CUDA WARNING] 'use_gpu = true' but binary was compiled without 'cuda' feature.");
                     eprintln!("   falling back to CPU.\n");
                     if !cfg!(test) {
                         std::thread::sleep(std::time::Duration::from_secs(3));
@@ -379,7 +442,7 @@ fn wrap_cuda_error(err: anyhow::Error) -> anyhow::Error {
              To fix:\n\
                1. Free GPU memory: stop other GPU processes (e.g. 'docker stop ollama-...')\n\
                2. Check usage: run 'nvidia-smi' to see what's consuming VRAM\n\
-               3. Fall back to CPU: set 'local_use_gpu = false' in config.toml\n\
+               3. Fall back to CPU: set 'use_gpu = false' on the embedder in config.toml\n\
              \n\
              Technical detail: {}",
             msg
@@ -494,7 +557,9 @@ impl Embedder for LocalEmbedder {
             parameter_size: None,
             quantization_level: None,
             embedding_length: Some(self.dimension as u64),
-            context_length: None,
+            // Needed so a chunk ceiling can be validated against real capacity;
+            // fastembed truncates silently rather than refusing.
+            context_length: fastembed_context_length(&self.model_name),
         })
     }
 
@@ -537,6 +602,34 @@ impl Clone for LocalEmbedder {
 /// guard rests on the digest, which is exact. An unrecognised code reports
 /// itself rather than guessing.
 #[cfg(feature = "local-embed")]
+/// The model's maximum input sequence, in tokens.
+///
+/// fastembed exposes no accessor for it, so these come from the model cards —
+/// the same numbers recorded in the `from_name` arms above. Needed *before* an
+/// embedder is constructed, so chunk sizing can be checked without loading a
+/// model or touching the network.
+///
+/// Unlike Ollama's `num_ctx` this is not a knob: it is baked into the ONNX
+/// graph, and exceeding it makes fastembed **silently truncate** rather than
+/// error. That silence is why callers need this.
+pub fn fastembed_context_length(model_code: &str) -> Option<u64> {
+    let lower = model_code.to_lowercase();
+    if lower.contains("nomic") {
+        Some(8192)
+    } else if lower.contains("minilm") {
+        // 256, not the 512 its BERT backbone could hold: the published
+        // sentence-transformers config truncates there, and fastembed follows
+        // it. Matches the per-model note in `from_name` above.
+        Some(256)
+    } else if lower.contains("bge") || lower.contains("gte") {
+        Some(512)
+    } else {
+        // Unknown model: report nothing rather than guess. Callers must treat
+        // `None` as "cannot check", never as "no limit".
+        None
+    }
+}
+
 fn fastembed_architecture(model_code: &str) -> &str {
     let lower = model_code.to_lowercase();
 
@@ -691,6 +784,27 @@ mod tests {
         assert_eq!(
             v1, v1_again,
             "model must be deterministic across reload cycles"
+        );
+    }
+
+    /// Regression test for BUG_GPU_PROVIDER_CWD_RESOLUTION_AND_FALSE_SUCCESS-2026-254.
+    ///
+    /// The CUDA EP dispatch MUST carry `error_on_failure`. Without it, ORT logs
+    /// a failed registration (e.g. provider libs missing from the executable's
+    /// directory) and silently builds a CPU session, and vecdb then printed a
+    /// "✅ GPU Accelerated" banner over CPU embedding. The Debug format of
+    /// `ExecutionProviderDispatch` exposes the flag, which is the only way to
+    /// observe it without a real GPU — keeping this test runnable in CI.
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn test_cuda_dispatch_hard_fails_on_registration_failure() {
+        let dispatch = super::cuda_execution_provider();
+        let debug = format!("{:?}", dispatch);
+        assert!(
+            debug.contains("error_on_failure: true"),
+            "CUDA EP must be registered with error_on_failure so a failed \
+             registration aborts init instead of silently falling back to CPU \
+             under a GPU-success banner; got: {debug}"
         );
     }
 

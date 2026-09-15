@@ -61,14 +61,24 @@ We use Git only as a signal for optimization, but rely on **Content Hashing** fo
 4.  **Ingest** from the sandbox path.
 5.  **Discard** (or cache) the sandbox.
 
-**ID Generation**:
-- To allow coexistence of `HEAD` and `v1.0`, IDs are composites: `Hash(path + commit_sha + content)`.
+**ID Generation** — and the reason this feature is **[WIP]**:
+
+- The **generic chunker** composes IDs as `Hash(path + commit_sha + content)`, so
+  `HEAD` and `v1.0` coexist as intended.
+- The **AST packer** — which handles code, markdown, JSON and YAML, i.e. nearly
+  everything you would time-travel — seeds on `Hash(document_id :: trail ::
+  content)` with `document_id` derived from the path alone. **`commit_sha` is not
+  in it.** A second revision of the same file therefore upserts *over* the first
+  rather than sitting beside it.
+
+Ingesting a single named revision works. Retaining more than one revision of the
+same source file does not yet. Do not rely on cross-revision retrieval.
 
 **Commands**:
 - CLI: `vecdb history ingest --path . --git-ref <SHA>`
-- MCP: `ingest_historic_version(repo_path, git_ref)`
+- MCP: `ingest_history(repo_path, git_ref)`
 
-**MCP Tool**: `ingest_historic_version(repo_url, sha)`
+**MCP Tool**: `ingest_history(repo_url, sha)`
 - This runs entirely isolated from the user's current work.
 
 ---

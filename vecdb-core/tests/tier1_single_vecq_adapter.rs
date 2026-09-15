@@ -1,7 +1,7 @@
 //! There must be exactly one bridge from vecq's AST to vecdb chunks.
 //!
-//! There were two. `vecdb-cli/src/vecq_adapter.rs` and
-//! `vecdb-server/src/vecq_adapter.rs` began as a copy and drifted:
+//! There were two. `the CLI` and
+//! `the server` began as a copy and drifted:
 //!
 //! | | CLI | server |
 //! |---|---|---|

@@ -55,10 +55,13 @@ async fn test_fallback_on_parser_failure() -> Result<()> {
     let rules = vec![];
 
     let options = Arc::new(IngestionOptions {
+        pack_target_bytes: None,
         path: ".".to_string(),
         collection: "test".to_string(),
         vecdbrc_routes: None,
         vecdbrc_root: None,
+        only_collection: None,
+        route_default_collection: None,
         strategy: "code_aware".to_string(), // Request code aware!
         target_chunk_size: 100,
         max_chunk_bytes: None,

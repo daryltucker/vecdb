@@ -46,6 +46,11 @@ impl From<QuantizationArg> for vecdb_core::config::QuantizationType {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // ORT anchors its CUDA provider libs on dirname(argv[0]); a bare PATH
+    // invocation would make that the CWD. Must be the first thing that runs.
+    #[cfg(unix)]
+    vecdb_core::reexec_for_ort_provider_anchor();
+
     // Install aws-lc-rs as the TLS crypto provider before any connections.
     // Required because fastembed (reqwest 0.12) and vecdb-core (reqwest 0.13) each
     // pull in a different rustls backend (ring vs aws-lc-rs), leaving rustls unable

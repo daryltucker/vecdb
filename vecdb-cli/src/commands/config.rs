@@ -36,10 +36,11 @@ pub fn run(
     config: &mut Config,
     profile_name: Option<&str>,
     overrides: vecdb_core::config::Overrides<'_>,
+    format: vecdb_common::output::OutputFormat,
 ) -> anyhow::Result<()> {
     match args.command {
         ConfigCommands::Show { collection } => {
-            return show_resolved(config, profile_name, collection.as_deref(), overrides);
+            return show_resolved(config, profile_name, collection.as_deref(), overrides, format);
         }
         ConfigCommands::SetQuantization { collection, r#type } => {
             let q_type: QuantizationType = r#type.into();
@@ -50,6 +51,8 @@ pub fn run(
                     description: None,
                     profile: None,
                     embedder: None,
+                    pack_target_bytes: None,
+                    store: None,
                     qdrant_url: None,
                     qdrant_api_key: None,
                     target_chunk_size: None,
@@ -81,14 +84,73 @@ fn show_resolved(
     profile_name: Option<&str>,
     collection: Option<&str>,
     overrides: vecdb_core::config::Overrides<'_>,
+    format: vecdb_common::output::OutputFormat,
 ) -> anyhow::Result<()> {
     use vecdb_core::config::Source;
 
     let r = config.resolve_with(profile_name, collection, overrides)?;
 
+    // `config show` accepted -j/--json and silently printed text anyway. For a
+    // command whose entire purpose is "what will actually happen", an agent
+    // parsing that output had to scrape a human table. Every command has
+    // --json; this one now honours it.
+    //
+    // Emits value AND source for each setting, because "where it came from" is
+    // half of what this command answers — a consumer that can see 6000 but not
+    // `collections.code` cannot tell a deliberate override from a default.
+    if matches!(format, vecdb_common::output::OutputFormat::Json) {
+        let setting = |value: serde_json::Value, source: &Source| {
+            serde_json::json!({ "value": value, "source": source.to_string() })
+        };
+        let mut out = serde_json::json!({
+            "profile": r.profile_name,
+            "collection": r.collection,
+            "qdrant_url": r.qdrant_url,
+            "store": r.store,
+            "embedder": {
+                "name": r.embedder_name,
+                "model": r.embedder.model,
+                "backend": r.backend_name,
+                "backend_kind": r.backend.kind,
+                "dimension": r.embedder.dimension,
+            },
+            "target_chunk_size": setting(r.target_chunk_size.value.into(), &r.target_chunk_size.source),
+            "chunk_overlap": setting(r.chunk_overlap.value.into(), &r.chunk_overlap.source),
+            "max_chunk_bytes": setting(r.max_chunk_bytes.value.into(), &r.max_chunk_bytes.source),
+            "on_oversize": setting(r.on_oversize.value.to_string().into(), &r.on_oversize.source),
+        });
+        if r.is_ollama() {
+            out["num_ctx"] = setting(r.num_ctx.value.into(), &r.num_ctx.source);
+            out["batch_inputs"] = setting(r.batch.value.into(), &r.batch.source);
+        } else {
+            out["batch_rows"] = setting(r.batch.value.into(), &r.batch.source);
+            out["use_gpu"] = setting(r.use_gpu.value.into(), &r.use_gpu.source);
+            if r.use_gpu.value {
+                let env = std::env::var_os("ORT_DYLIB_PATH").map(std::path::PathBuf::from);
+                let (path, origin) = match (&env, &config.ort_dylib_path) {
+                    (Some(p), _) => (Some(p.clone()), "env:ORT_DYLIB_PATH"),
+                    (None, Some(p)) => (Some(p.clone()), "global:ort_dylib_path"),
+                    (None, None) => (None, "unset"),
+                };
+                out["onnx_runtime"] = serde_json::json!({
+                    "path": path.as_ref().map(|p| p.display().to_string()),
+                    "source": origin,
+                    // Reported so a caller never has to stat the path itself to
+                    // learn the most common legacy-GPU failure.
+                    "exists": path.as_ref().map(|p| p.is_file()),
+                });
+            }
+        }
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
     println!("profile    {}", r.profile_name);
     println!("collection {}", r.collection.as_deref().unwrap_or("(none)"));
-    println!("qdrant     {}", r.qdrant_url);
+    match &r.store {
+        Some(s) => println!("qdrant     {}  (store {s})", r.qdrant_url),
+        None => println!("qdrant     {}", r.qdrant_url),
+    }
     println!();
     println!(
         "embedder   {}  ({} on backend {} — {})",
@@ -165,6 +227,38 @@ fn show_resolved(
             "",
             &r.use_gpu.source,
         );
+
+        // Where the ONNX Runtime comes from, shown whenever the GPU is asked
+        // for. vecdb sets ORT_DYLIB_PATH from config itself at startup
+        // (vecdb-core/src/lib.rs) precisely so the user never has to export
+        // anything — but it did so silently, and this command never mentioned
+        // it. The one setting that decides whether GPU embedding can work at
+        // all was the one setting you could not inspect, which is how a
+        // correctly configured machine and a broken one looked identical.
+        //
+        // Precedence matches lib.rs exactly: an explicitly exported
+        // ORT_DYLIB_PATH wins, config fills in otherwise. Reported, not
+        // re-derived — same reason show_resolved() reads through
+        // Config::resolve rather than re-walking precedence.
+        if r.use_gpu.value {
+            let env = std::env::var_os("ORT_DYLIB_PATH").map(std::path::PathBuf::from);
+            let (path, origin) = match (&env, &config.ort_dylib_path) {
+                (Some(p), _) => (Some(p.clone()), "ORT_DYLIB_PATH (env, overrides config)"),
+                (None, Some(p)) => (Some(p.clone()), "global ort_dylib_path"),
+                (None, None) => (None, "(unset — default build uses its linked runtime)"),
+            };
+            match path {
+                Some(p) => {
+                    // A path that does not exist is the single most common
+                    // legacy-GPU failure, and it is cheap to catch here rather
+                    // than at the first embed.
+                    let missing = if p.is_file() { "" } else { "   ** FILE NOT FOUND **" };
+                    println!("  {:<16} {}{}", "onnx runtime", p.display(), missing);
+                    println!("  {:<16} <- {origin}", "");
+                }
+                None => println!("  {:<16} {}", "onnx runtime", origin),
+            }
+        }
     }
 
     if let Some(dim) = r.embedder.dimension {

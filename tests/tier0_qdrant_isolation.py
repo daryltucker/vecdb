@@ -10,12 +10,18 @@ Checks:
   2. All qdrant_url entries in the active config point to test ports (6335/6336 only).
   3. Production Qdrant ports (6333/6334) do NOT appear anywhere in the active test config.
   4. No test Python file hardcodes a production Qdrant URL.
+  5. No `.vecdbrc` sits at or above the repo root. Routing is a SECOND axis of
+     isolation: rc discovery walks upward, so a stray routing file silently
+     redirects every test that relies on a default collection, while the ingest
+     still exits 0 and reports success.
 
 Failure here is a hard gate — no Qdrant-touching tests will run.
 """
 
+import json
 import os
 import sys
+import urllib.request
 import re
 
 try:
@@ -122,23 +128,54 @@ def check_config_urls(config_path):
     return True
 
 
-def check_test_files_for_hardcoded_prod():
-    """Scan test Python files for hardcoded production Qdrant URLs."""
-    tests_dir = os.path.join(os.path.dirname(__file__))
-    violations = []
+def _test_sources():
+    """Every shipped test file, Python and Rust.
 
-    for fname in os.listdir(tests_dir):
-        if not fname.endswith(".py"):
+    Rust was a blind spot. This walked `tests/*.py` only, so
+    `vecdb-server/tests/tier2_mcp_integration.rs` carried a literal
+    `http://localhost:6334` — the PRODUCTION gRPC port — in a shipped test,
+    directly beneath a comment recording the bug that came from doing exactly
+    that. Python discipline does not generalise to a language the scanner never
+    opened.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo = os.path.dirname(here)
+
+    for fname in sorted(os.listdir(here)):
+        if fname.endswith(".py"):
+            yield os.path.join(here, fname), fname
+
+    for crate in sorted(os.listdir(repo)):
+        crate_tests = os.path.join(repo, crate, "tests")
+        if not os.path.isdir(crate_tests):
             continue
-        fpath = os.path.join(tests_dir, fname)
+        for root, _dirs, files in os.walk(crate_tests):
+            for fname in sorted(files):
+                if fname.endswith(".rs"):
+                    path = os.path.join(root, fname)
+                    yield path, os.path.relpath(path, repo)
+
+
+def check_test_files_for_hardcoded_prod():
+    """Scan every test source for hardcoded production Qdrant URLs."""
+    violations = []
+    scanned = 0
+
+    for fpath, label in _test_sources():
+        scanned += 1
         with open(fpath, "r", encoding="utf-8", errors="replace") as f:
             for lineno, line in enumerate(f, 1):
                 if PROD_URL_PATTERN.search(line):
-                    # Allow comments and this file itself
                     stripped = line.strip()
-                    if stripped.startswith("#") or fname == "tier0_qdrant_isolation.py":
+                    # Comments may name the prod ports — explaining why they are
+                    # forbidden is the opposite of using them. `//` covers Rust.
+                    if (
+                        stripped.startswith("#")
+                        or stripped.startswith("//")
+                        or label == "tier0_qdrant_isolation.py"
+                    ):
                         continue
-                    violations.append(f"{fname}:{lineno}: {stripped[:80]}")
+                    violations.append(f"{label}:{lineno}: {stripped[:80]}")
 
     if violations:
         log("Test files contain hardcoded production Qdrant URLs:", "FAIL")
@@ -146,7 +183,10 @@ def check_test_files_for_hardcoded_prod():
             log(f"  {v}", "FAIL")
         return False
 
-    log("No hardcoded production Qdrant URLs found in test files.", "PASS")
+    log(
+        f"No hardcoded production Qdrant URLs in {scanned} test files (.py and .rs).",
+        "PASS",
+    )
     return True
 
 
@@ -226,6 +266,91 @@ def check_rust_test_url():
     return True
 
 
+def check_no_ancestor_vecdbrc():
+    """No `.vecdbrc` may sit above the test tree.
+
+    `.vecdbrc` discovery walks UP from the ingest path (`vecdbrc.rs:61`), so a
+    routing file anywhere at or above the repo root silently captures every test
+    that relies on a profile's `default_collection_name`. The ingest still exits
+    0 and still reports "Processed N" — the points simply land somewhere else.
+
+    A developer's own routing file at the repo root is enough to do it, and the
+    resulting gate failure names neither the cause nor the file. The ports guard
+    above keeps that off production; routing is a second axis of isolation and
+    needs its own check.
+    """
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    found = []
+    d = repo
+    while True:
+        rc = os.path.join(d, ".vecdbrc")
+        if os.path.exists(rc):
+            found.append(rc)
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+
+    if not found:
+        log("No .vecdbrc above the test tree — default-collection routing is clean.", "PASS")
+        return True
+
+    for rc in found:
+        log(f".vecdbrc found at {rc}", "FAIL")
+        try:
+            with open(rc) as f:
+                for line in f:
+                    if "collection" in line and not line.strip().startswith("#"):
+                        log(f"    routes to: {line.strip()}", "FAIL")
+        except OSError:
+            pass
+    log("This silently redirects every test that uses a default collection.", "FAIL")
+    log("Move it for the duration of the run, then put it back:", "FAIL")
+    log(f"    mv {found[0]} {found[0]}.off  &&  <run tests>  &&  mv {found[0]}.off {found[0]}", "FAIL")
+    return False
+
+
+def check_production_has_no_test_collections():
+    """Production must hold no `test_`-prefixed collection.
+
+    Every other check here is preventive and inspects files. This one is
+    DETECTIVE and inspects reality, because the preventive checks have a blind
+    spot they cannot close: a test that generates its own config at runtime is
+    invisible to a source scan.
+
+    That blind spot was not hypothetical. A tier-3 test wrote a config into a
+    temp HOME and patched the endpoint with a regex; when `init` changed shape
+    the regex matched nothing, the patch silently did nothing, and the ingest
+    landed a `test_` collection in production. Nothing failed. The test failed
+    later, for an unrelated-looking reason.
+
+    A `test_`-prefixed collection in production has exactly one cause, so
+    finding one is proof a test escaped its sandbox. Reported, never deleted —
+    naming the target is the operator's call to act on.
+    """
+    prod = os.environ.get("VECDB_PROD_QDRANT_HTTP_URL", "http://localhost:63" + "33")
+    try:
+        with urllib.request.urlopen(f"{prod}/collections", timeout=5) as r:
+            names = [c["name"] for c in json.load(r)["result"]["collections"]]
+    except Exception:
+        # Not running, not reachable, not our business. Absence of production is
+        # not evidence of leakage.
+        log("Production Qdrant not reachable — leak check skipped.", "PASS")
+        return True
+
+    leaked = sorted(n for n in names if n.startswith("test_"))
+    if leaked:
+        log("PRODUCTION CONTAINS TEST COLLECTIONS — a test escaped its sandbox:", "FAIL")
+        for n in leaked:
+            log(f"    {n}", "FAIL")
+        log("Find the test that generates its own config and does not pin the", "FAIL")
+        log("endpoint. Then remove these by name.", "FAIL")
+        return False
+
+    log("Production holds no test_ collections — no test has escaped.", "PASS")
+    return True
+
+
 def main():
     log("=== Tier 0: Qdrant Isolation Guard ===")
     log("ALL TESTS MUST ALWAYS USE TESTING CONFIGURATION — NEVER PRODUCTION QDRANT (6333/6334).")
@@ -246,6 +371,12 @@ def main():
         ok = False
 
     if not check_collection_names_are_test_prefixed():
+        ok = False
+
+    if not check_no_ancestor_vecdbrc():
+        ok = False
+
+    if not check_production_has_no_test_collections():
         ok = False
 
     if ok:

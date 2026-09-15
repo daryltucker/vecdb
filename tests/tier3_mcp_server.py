@@ -20,7 +20,8 @@ import shutil
 
 import sys, os as _os
 sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-from paths import bin_path
+from paths import bin_path, require_bin
+from lib_stdio import drain_stderr
 
 def log(msg):
     print(f"[Tier 3 MCP] {msg}")
@@ -45,17 +46,39 @@ def main():
     log(f"Config Dir: {config_dir}")
 
     try:
-        # 1. Build Server
-        log("Building vecdb-server...")
-        subprocess.run("cargo build -p vecdb-server", shell=True, check=True, cwd=project_root)
-        server_bin = bin_path("vecdb-server")
-        
-        # 2. Build CLI & Init (to generate valid config/profile)
-        # The server needs a valid profile to start.
+        # 1. The binaries the manifest built. Never `cargo build` here — a
+        #    plain build uses DEFAULT features and replaces the cuda-dynamic
+        #    binary T1.1 produced, at the same path. `cargo build -p vecdb-cli`
+        #    did exactly that to `vecdb`, mid-Tier-3.
+        server_bin = require_bin("vecdb-server")
+        cli_bin = require_bin("vecdb")
+
+        # 2. Generate a valid config/profile for the server to start from.
         log("Initializing config...")
-        subprocess.run("cargo build -p vecdb-cli", shell=True, check=True, cwd=project_root, stdout=subprocess.DEVNULL)
-        cli_bin = bin_path("vecdb")
-        subprocess.run(f"{cli_bin} init", shell=True, check=True, env=env, stdout=subprocess.DEVNULL)
+        subprocess.run([cli_bin, "init"], check=True, env=env, stdout=subprocess.DEVNULL)
+
+        # Pin the endpoint before anything can connect.
+        #
+        # `vecdb init` writes a config with no explicit URL, so the profile
+        # falls through to the DEFAULT endpoint — localhost:6334, production.
+        # tier3_quantization.py and mini_lua.py were both hardened against this
+        # after a `test_` collection reached production that way; this file was
+        # missed. It only handshakes today, but the guard is what makes that a
+        # fact rather than a coincidence.
+        cfg_file = os.path.join(config_dir, "vecdb", "config.toml")
+        with open(cfg_file) as f:
+            cfg = f.read()
+        if "[profiles.default]" not in cfg:
+            raise Exception("generated config has no [profiles.default] to pin")
+        test_url = os.environ.get("VECDB_TEST_QDRANT_URL", "http://localhost:6336")
+        with open(cfg_file, "w") as f:
+            f.write(
+                cfg.replace(
+                    "[profiles.default]",
+                    f'[profiles.default]\nqdrant_url = "{test_url}"',
+                    1,
+                )
+            )
 
         # 3. Start Server Process
         log("Starting Server Process...")
@@ -68,6 +91,10 @@ def main():
             encoding='utf-8', 
             bufsize=0 # Unbuffered
         )
+        # Drain stderr continuously so the server can never block writing to
+        # a full stderr pipe while this test blocks reading stdout.
+        # See tests/lib_stdio.py for the deadlock this prevents.
+        _stderr = drain_stderr(process)
         
         # 4. JSON-RPC Handshake
         # Send 'initialize' request
@@ -97,7 +124,7 @@ def main():
         for _ in range(20): # Wait up to 10 seconds (20 * 0.5s)
             if process.poll() is not None:
                 log("Process exited prematurely!")
-                stderr_out = process.stderr.read()
+                stderr_out = _stderr()
                 log(f"Stderr: {stderr_out}")
                 raise Exception("Server process crashed")
             
@@ -120,7 +147,7 @@ def main():
              log("No response received within timeout. Checking stderr...")
              # Kill it to read stderr
              process.terminate()
-             stderr_out = process.stderr.read()
+             stderr_out = _stderr()
              log(f"Stderr: {stderr_out}")
              raise Exception("Server timed out / returned nothing")
 

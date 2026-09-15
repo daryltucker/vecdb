@@ -14,6 +14,7 @@ from lib_envelope import search_results
 import sys, os as _os
 sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from paths import bin_path
+from lib_stdio import drain_stderr
 
 
 # Default ports if running standalone
@@ -111,7 +112,6 @@ accept_invalid_certs = true
         # 2. Compile Server (Usually already built by runner, but safe to check)
         # In managed mode, maybe skip build? 
         # But 'cargo build' is idempotent.
-        subprocess.run(["cargo", "build", "-p", "vecdb-server"], check=True, capture_output=True)
         self.server_bin = bin_path("vecdb-server")
         
         # 3. Start Server with ISOLATED CONFIG
@@ -125,6 +125,10 @@ accept_invalid_certs = true
             text=True,
             env=self.env
         )
+        # Drain stderr continuously so the server can never block writing to
+        # a full stderr pipe while this test blocks reading stdout.
+        # See tests/lib_stdio.py for the deadlock this prevents.
+        self._stderr = drain_stderr(self.process)
         time.sleep(1) # Wait for process init
 
     def tearDown(self):
@@ -150,7 +154,7 @@ accept_invalid_certs = true
             self.process.stdin.write(json_line)
             self.process.stdin.flush()
         except BrokenPipeError:
-            err = self.process.stderr.read()
+            err = self._stderr()
             raise Exception(f"Server Process Exited with Broken Pipe. Stderr: {err}")
             
         # Read with timeout safety mechanism could be added here
@@ -163,7 +167,7 @@ accept_invalid_certs = true
         if not response_line:
              # Don't block blindly. Poll.
              if self.process.poll() is not None:
-                 err = self.process.stderr.read()
+                 err = self._stderr()
                  raise Exception(f"Server Process Exited. Stderr: {err}")
              else:
                  raise Exception("Server returned empty line but process is alive (Stdout closed?)")

@@ -5,7 +5,7 @@
 // RELATED FILES:
 //   - src/parsers/mod.rs - Parser registry
 //   - src/types.rs - DocumentElement, ElementType definitions
-//   - docs/ADDING_LANGUAGE_PARSER.md - Tutorial using this as example
+//   - docs/specs/PARSING_GUIDELINES.md - the structural contract a parser must meet
 
 use crate::error::{VecqError, VecqResult};
 use crate::parser::{Parser, ParserCapabilities, ParserConfig};

@@ -78,9 +78,11 @@ pub struct Core {
     file_detector: Arc<dyn FileTypeDetector>,
     parser_factory: Arc<dyn ParserFactory>,
     smart_routing_keys: Vec<String>,
-    path_rules: Vec<crate::config::PathRule>,
-    max_concurrent_requests: usize,
-    gpu_batch_size: usize,
+    // `path_rules`, `max_concurrent_requests` and `gpu_batch_size` were removed
+    // 2026-257 with `Core::ingest`/`ingest_routed`. They existed only to fill in
+    // `IngestionOptions` defaults for those wrappers; `ingest_with_options`
+    // takes them from the caller, which is what stopped the MCP path silently
+    // using a different granularity from the CLI.
 }
 
 /// Process-wide services a Core needs, independent of which model it uses.
@@ -91,8 +93,12 @@ pub struct Core {
 #[derive(Clone)]
 pub struct CoreServices {
     pub smart_routing_keys: Vec<String>,
-    pub path_rules: Vec<crate::config::PathRule>,
-    pub max_concurrent_requests: usize,
+    // `path_rules` and `max_concurrent_requests` were removed 2026-257. They
+    // reached nothing: `Core` held them only to fill in `IngestionOptions` for
+    // the deleted `ingest`/`ingest_routed` wrappers. Every caller of
+    // `ingest_with_options` already supplies both from `config.ingestion`, which
+    // is the point — a value the caller states cannot silently differ per entry
+    // point, and that difference is what broke MCP ingest.
     pub fastembed_cache_path: Option<std::path::PathBuf>,
     /// Permit the embedder to silently cut oversized chunks. Off in every normal
     /// path; see `IngestionConfig::allow_embed_truncation`.
@@ -108,10 +114,23 @@ impl CoreServices {
         file_detector: Arc<dyn FileTypeDetector>,
         parser_factory: Arc<dyn ParserFactory>,
     ) -> Self {
+        // `ort_dylib_path` from config → ORT_DYLIB_PATH, unless the user
+        // already set the variable — an explicit environment always wins
+        // (same idiom as the ORT_INTRA_OP_NUM_THREADS auto-cap). This is the
+        // single config→runtime bridge every binary crosses, and it runs
+        // before any ort symbol is touched, which is what makes the
+        // cuda-dynamic install a one-time config edit instead of an env var
+        // that every shell, hook, and MCP block must remember.
+        if let Some(path) = &config.ort_dylib_path {
+            if std::env::var_os("ORT_DYLIB_PATH").is_none() {
+                unsafe {
+                    std::env::set_var("ORT_DYLIB_PATH", path);
+                }
+            }
+        }
+
         Self {
             smart_routing_keys: config.smart_routing_keys.clone(),
-            path_rules: config.ingestion.path_rules.clone(),
-            max_concurrent_requests: config.ingestion.max_concurrent_requests,
             fastembed_cache_path: Some(config.fastembed_cache_path.clone()),
             allow_embed_truncation: config.ingestion.allow_embed_truncation,
             file_detector,
@@ -137,8 +156,6 @@ impl Core {
 
         let CoreServices {
             smart_routing_keys,
-            path_rules,
-            max_concurrent_requests,
             fastembed_cache_path,
             allow_embed_truncation,
             file_detector,
@@ -149,7 +166,6 @@ impl Core {
             QdrantBackend::new(&resolution.qdrant_url, resolution.qdrant_api_key.clone())?;
 
         let model = resolution.embedder.model.as_str();
-        let gpu_batch_size = resolution.batch.value;
 
         let embedder: Arc<dyn Embedder + Send + Sync> = match resolution.backend.kind {
             #[cfg(feature = "local-embed")]
@@ -223,9 +239,6 @@ impl Core {
             file_detector,
             parser_factory,
             smart_routing_keys,
-            path_rules,
-            max_concurrent_requests,
-            gpu_batch_size,
         })
     }
 
@@ -235,7 +248,6 @@ impl Core {
         &self.embedder
     }
 
-    #[allow(clippy::too_many_arguments)]
     /// Create a new Core instance from existing backends
     pub fn with_backends(
         backend: Arc<dyn Backend + Send + Sync>,
@@ -243,9 +255,6 @@ impl Core {
         file_detector: Arc<dyn FileTypeDetector>,
         parser_factory: Arc<dyn ParserFactory>,
         smart_routing_keys: Vec<String>,
-        path_rules: Vec<crate::config::PathRule>,
-        max_concurrent_requests: usize,
-        gpu_batch_size: usize,
     ) -> Self {
         Self {
             backend,
@@ -253,9 +262,6 @@ impl Core {
             file_detector,
             parser_factory,
             smart_routing_keys,
-            path_rules,
-            max_concurrent_requests,
-            gpu_batch_size,
         }
     }
 
@@ -339,145 +345,20 @@ impl Core {
         self.backend.search(collection, &vector, params).await
     }
 
-    /// Ingest a file or directory with per-file .vecdbrc routing.
-    /// When `routes` is provided, each file is routed to its matching collection
-    /// instead of using a single collection for everything.
-    /// `collection` serves as the fallback when no route matches.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn ingest_routed(
-        &self,
-        path: &str,
-        collection: &str,
-        routes: Vec<crate::vecdbrc::Route>,
-        vecdbrc_root: std::path::PathBuf,
-        target_chunk_size: Option<usize>,
-        max_chunk_bytes: Option<usize>,
-        chunk_overlap: Option<usize>,
-        extensions: Option<Vec<String>>,
-        excludes: Option<Vec<String>>,
-        dry_run: bool,
-        metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
-        concurrency: Option<usize>,
-        gpu_concurrency: Option<usize>,
-        quantization: Option<config::QuantizationType>,
-        target_dim: Option<usize>,
-        ignore_vectorignore: bool,
-    ) -> Result<()> {
-        let options = IngestionOptions {
-            path: path.to_string(),
-            collection: collection.to_string(),
-            vecdbrc_routes: Some(routes),
-            vecdbrc_root: Some(vecdbrc_root),
-            target_chunk_size: target_chunk_size.unwrap_or(config::DEFAULT_TARGET_CHUNK_SIZE),
-            max_chunk_bytes,
-            on_oversize: Default::default(),
-            route_chunking: Default::default(),
-            chunk_overlap: chunk_overlap.unwrap_or(50),
-            // `.gitignore` is never consulted unless the operator asks for it on
-            // the command line. It is a build-artifact list, not an indexing
-            // policy, and the two disagree constantly. `.vectorignore` is the
-            // knob that governs indexing.
-            respect_gitignore: false,
-            ignore_vectorignore,
-            strategy: "recursive".to_string(),
-            tokenizer: "cl100k_base".to_string(),
-            git_ref: None,
-            extensions,
-            excludes,
-            dry_run,
-            metadata,
-            file_allowlist: None,
-            project_root: None,
-            path_rules: self.path_rules.clone(),
-            max_concurrent_requests: concurrency.unwrap_or(self.max_concurrent_requests),
-            gpu_batch_size: gpu_concurrency.unwrap_or(self.gpu_batch_size),
-            quantization,
-            allow_quantization_delta: false,
-        };
-
-        ingestion::ingest_path(
-            &self.backend,
-            &self.embedder,
-            &self.file_detector,
-            &self.parser_factory,
-            options,
-            target_dim,
-        )
-        .await
-    }
-
-    /// Ingest a file or directory
-    #[allow(clippy::too_many_arguments)]
-    pub async fn ingest(
-        &self,
-        path: &str,
-        collection: &str,
-        target_chunk_size: Option<usize>,
-        max_chunk_bytes: Option<usize>,
-        chunk_overlap: Option<usize>,
-        extensions: Option<Vec<String>>,
-        excludes: Option<Vec<String>>,
-        dry_run: bool,
-        metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
-        concurrency: Option<usize>,
-        gpu_concurrency: Option<usize>,
-        quantization: Option<config::QuantizationType>,
-        target_dim: Option<usize>,
-        ignore_vectorignore: bool,
-    ) -> Result<()> {
-        // The write guard lives in `ingestion::ensure_write_target`, which every
-        // ingestion path funnels through. It compares the full embedding space
-        // — model, digest, architecture, parameter size, dimension — and checks
-        // collection ownership before it says anything about compatibility.
-        //
-        // A dimension-only check used to sit here as well. It was strictly
-        // weaker on identity (two unrelated models sharing a dimension passed
-        // it) and actively harmful when it did fire on a collection that was
-        // never ours, since it advised deleting it. Its one real contribution
-        // was comparing the *effective* dimension, i.e. honouring `target_dim`;
-        // `ensure_write_target` now takes `target_dim` directly, so that check
-        // moved rather than disappeared.
-
-        let options = IngestionOptions {
-            path: path.to_string(),
-            collection: collection.to_string(),
-            vecdbrc_routes: None,
-            vecdbrc_root: None,
-            target_chunk_size: target_chunk_size.unwrap_or(config::DEFAULT_TARGET_CHUNK_SIZE),
-            max_chunk_bytes,
-            on_oversize: Default::default(),
-            route_chunking: Default::default(),
-            chunk_overlap: chunk_overlap.unwrap_or(50),
-            // See `ingest_routed`: never inferred, only ever set explicitly by
-            // the operator on the CLI.
-            respect_gitignore: false,
-            ignore_vectorignore,
-            strategy: "recursive".to_string(),
-            tokenizer: "cl100k_base".to_string(),
-            git_ref: None,
-            extensions,
-            excludes,
-            dry_run,
-            metadata,
-            file_allowlist: None,
-            project_root: None,
-            path_rules: self.path_rules.clone(),
-            max_concurrent_requests: concurrency.unwrap_or(self.max_concurrent_requests),
-            gpu_batch_size: gpu_concurrency.unwrap_or(self.gpu_batch_size),
-            quantization,
-            allow_quantization_delta: false,
-        };
-
-        ingestion::ingest_path(
-            &self.backend,
-            &self.embedder,
-            &self.file_detector,
-            &self.parser_factory,
-            options,
-            target_dim,
-        )
-        .await
-    }
+    // `Core::ingest` and `Core::ingest_routed` were removed 2026-257.
+    //
+    // Both were convenience wrappers that built `IngestionOptions` on the
+    // caller's behalf — and what they filled in was wrong. Each pinned
+    // `pack_target_bytes: None`, so `chunking_identity()` recorded the 2048
+    // default rather than the destination's configured granularity, and each
+    // hardcoded `strategy: "recursive"` and `tokenizer: "cl100k_base"` past the
+    // config. `ingest_routed` had no callers at all; `ingest` had exactly one,
+    // the MCP `ingest_path` handler, which the defect broke outright once the
+    // chunking guard started comparing what it recorded.
+    //
+    // `ingest_with_options` below is the single entry point. A caller states
+    // every parameter it means, which is what makes omitting one impossible
+    // rather than merely discouraged. See vecdb-server/src/rpc/tools.rs.
 
     /// Ingest with full control over IngestionOptions.
     /// Allows passing `file_allowlist` for multi-file glob batching and
@@ -485,9 +366,10 @@ impl Core {
     /// method sets these to None; use this when you need them.
     #[allow(clippy::too_many_arguments)]
     /// Ingest using a fully-specified `IngestionOptions`.
-    /// Unlike `ingest()`, this does NOT merge `self.path_rules` or any other Core fields —
-    /// the caller owns the entire options struct. If you build `IngestionOptions` manually,
-    /// populate `path_rules` from `config.ingestion.path_rules` yourself.
+    /// The caller owns the entire options struct: nothing is merged in from
+    /// `Core`. Populate `path_rules`, `strategy`, `tokenizer` and the chunk
+    /// parameters from the resolved config yourself — stating them is what keeps
+    /// two entry points from quietly disagreeing.
     pub async fn ingest_with_options(
         &self,
         options: IngestionOptions,
@@ -607,7 +489,7 @@ impl Core {
         path: &str,
         git_ref: &str,
         collection: &str,
-        target_chunk_size: usize,
+        chunking: ingestion::options::ChunkSpec,
         quantization: Option<config::QuantizationType>,
         target_dim: Option<usize>,
     ) -> Result<()> {
@@ -620,7 +502,7 @@ impl Core {
             path,
             git_ref,
             collection,
-            target_chunk_size,
+            chunking,
             quantization,
             target_dim,
         )
@@ -686,6 +568,16 @@ impl Core {
         self.backend.delete_collection(collection).await
     }
 
+    /// Does this collection exist at the resolved store?
+    ///
+    /// Needed because Qdrant treats deleting an absent collection as success,
+    /// so a caller cannot distinguish "removed it" from "there was nothing
+    /// here" — which turns a wrong endpoint into a silent no-op reported as a
+    /// deletion.
+    pub async fn collection_exists(&self, collection: &str) -> Result<bool> {
+        self.backend.collection_exists(collection).await
+    }
+
     /// Get the dimension of the configured embedding model
     pub async fn get_embedding_dimension(&self) -> Result<usize> {
         self.embedder.dimension().await
@@ -711,12 +603,87 @@ impl Core {
     }
 }
 
-/// Retrieve the version of the underlying ONNX Runtime (if available)
+/// Re-exec with an absolute argv\[0\] so ONNX Runtime can find its CUDA
+/// provider libraries. Call first thing in `main()`.
+///
+/// ORT resolves `libonnxruntime_providers_shared.so` /
+/// `libonnxruntime_providers_cuda.so` relative to `dirname(argv[0])` — dladdr
+/// on the main executable reports argv\[0\], and a bare name (normal PATH
+/// invocation: `vecdb ...`) degrades the anchor to the CWD, where the
+/// libraries never are. The same binary invoked by absolute path (e.g.
+/// `~/.cargo/bin/vecdb`) anchors correctly (BUG-2026-254; both behaviours
+/// verified 2026-09-11).
+///
+/// So: if argv\[0\] is bare AND the provider libraries are installed next to
+/// the real executable, replace the process with an absolute-path invocation
+/// of itself. No-op in every other case — in particular CPU-only installs
+/// (no provider libs present) never re-exec. Loop-safe: the re-exec'd child's
+/// argv\[0\] contains a separator, so it returns at the first check.
+#[cfg(unix)]
+pub fn reexec_for_ort_provider_anchor() {
+    use std::os::unix::process::CommandExt;
+
+    let Some(argv0) = std::env::args_os().next() else {
+        return;
+    };
+    if std::path::Path::new(&argv0).components().count() != 1 {
+        return; // invoked via a path — ORT's anchor is already the binary's directory
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(dir) = exe.parent() else { return };
+    if !dir.join("libonnxruntime_providers_shared.so").exists() {
+        return; // CPU-only install — nothing for ORT to anchor on anyway
+    }
+    let err = std::process::Command::new(&exe)
+        .args(std::env::args_os().skip(1))
+        .exec();
+    // exec only returns on failure; continue un-anchored rather than dying.
+    eprintln!("⚠️  re-exec for GPU provider resolution failed ({err}); if use_gpu = true, invoke {} by absolute path", exe.display());
+}
+
+/// Retrieve the version of the underlying ONNX Runtime (if available).
+///
+/// This used to return the literal `"1.23.2"`, commented "environmental truth
+/// verified via strings/nm". It was true once, and then the prebuilt moved to
+/// 1.24.2 while the literal did not — so `vecdb --version` published a number
+/// nobody had measured, and docs/GPU.md copied it. A version we report must be
+/// one we *asked for*, never one we remembered.
+///
+/// Statically linked builds can ask safely: `OrtGetApiBase` is a linked symbol,
+/// so reading the version string touches no loader and cannot fail.
+///
+/// `cuda-dynamic` builds deliberately do NOT ask. There the runtime is whatever
+/// `ORT_DYLIB_PATH` names, resolving it means a dlopen, and under ort
+/// 2.0.0-rc.12 an API-version mismatch *hangs* instead of erroring
+/// (BUG-2026-254). `--version` must never be able to hang, so it reports the
+/// contract the binary requires and leaves the concrete answer to `vecdb
+/// status`, which is already allowed to initialize an embedder.
 pub fn get_ort_version() -> String {
-    #[cfg(feature = "cuda")]
+    #[cfg(all(feature = "cuda", not(feature = "cuda-dynamic")))]
     {
-        // Environmental truth verified via strings/nm
-        "1.23.2".to_string()
+        // SAFETY: statically linked ORT — the symbol is present, takes no
+        // arguments, and returns a pointer to a 'static NUL-terminated string
+        // owned by the runtime ("Do not deallocate the returned buffer").
+        unsafe {
+            let base = ort::sys::OrtGetApiBase();
+            if base.is_null() {
+                return "unknown (OrtGetApiBase returned null)".to_string();
+            }
+            let ptr = ((*base).GetVersionString)();
+            if ptr.is_null() {
+                return "unknown (GetVersionString returned null)".to_string();
+            }
+            std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        }
+    }
+    #[cfg(feature = "cuda-dynamic")]
+    {
+        format!(
+            "dynamic — requires API {} via ORT_DYLIB_PATH (see docs/GPU_LEGACY.md)",
+            ort::MINOR_VERSION
+        )
     }
     #[cfg(not(feature = "cuda"))]
     {
@@ -724,7 +691,14 @@ pub fn get_ort_version() -> String {
     }
 }
 
-/// Retrieve the active ONNX Runtime Execution Providers
+/// Retrieve the Execution Providers *compiled into* the ONNX Runtime build.
+///
+/// CAUTION: this is `GetAvailableProviders`, which reports build-time
+/// availability only. A CUDA-enabled build lists `CUDAExecutionProvider` here
+/// even when `libonnxruntime_providers_cuda.so` is absent and every session
+/// runs on CPU. It must never be used to decide whether a session is actually
+/// GPU-accelerated (BUG-2026-254); registration truth comes from creating the
+/// session with `error_on_failure` on the dispatch (see `embedders/local.rs`).
 pub fn get_ort_providers() -> Vec<String> {
     #[cfg(feature = "cuda")]
     {

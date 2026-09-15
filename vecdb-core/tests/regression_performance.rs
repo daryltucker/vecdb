@@ -235,6 +235,7 @@ async fn regression_lua_speed_and_structure() {
     let factory: Arc<dyn vecdb_core::parsers::ParserFactory> = Arc::new(MockFactory);
 
     let options = IngestionOptions {
+        pack_target_bytes: None,
         path: tmp.path().to_str().unwrap().to_string(),
         collection: "regress_lua".to_string(),
         target_chunk_size: 1000,
@@ -246,6 +247,8 @@ async fn regression_lua_speed_and_structure() {
         ignore_vectorignore: false,
         vecdbrc_routes: None,
         vecdbrc_root: None,
+        only_collection: None,
+        route_default_collection: None,
         strategy: "recursive".to_string(), // Requesting recursive, but Unknown type should override to Simple
         tokenizer: "bytes".to_string(),
         git_ref: None,
@@ -363,6 +366,7 @@ async fn regression_text_performance() {
     let factory: Arc<dyn vecdb_core::parsers::ParserFactory> = Arc::new(TextBypassFactory);
 
     let options = IngestionOptions {
+        pack_target_bytes: None,
         path: tmp.path().to_str().unwrap().to_string(),
         collection: "regress_text".to_string(),
         target_chunk_size: 1000,
@@ -374,6 +378,8 @@ async fn regression_text_performance() {
         ignore_vectorignore: false,
         vecdbrc_routes: None,
         vecdbrc_root: None,
+        only_collection: None,
+        route_default_collection: None,
         strategy: "recursive".to_string(),
         tokenizer: "bytes".to_string(),
         git_ref: None,
@@ -433,6 +439,7 @@ async fn regression_pride_and_prejudice_file() {
     let factory: Arc<dyn vecdb_core::parsers::ParserFactory> = Arc::new(TextBypassFactory);
 
     let options = IngestionOptions {
+        pack_target_bytes: None,
         path: file_path.to_str().unwrap().to_string(),
         collection: "regress_pp".to_string(),
         target_chunk_size: 1000,
@@ -444,6 +451,8 @@ async fn regression_pride_and_prejudice_file() {
         ignore_vectorignore: false,
         vecdbrc_routes: None,
         vecdbrc_root: None,
+        only_collection: None,
+        route_default_collection: None,
         strategy: "recursive".to_string(),
         tokenizer: "bytes".to_string(),
         git_ref: None,

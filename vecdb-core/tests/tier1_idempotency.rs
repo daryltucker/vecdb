@@ -214,16 +214,7 @@ async fn test_ingestion_idempotency() -> Result<()> {
     });
     let detector = Arc::new(MockFileTypeDetector);
     let parser_factory = Arc::new(MockParserFactory);
-    let core = Core::with_backends(
-        backend,
-        embedder,
-        detector,
-        parser_factory,
-        Vec::new(),
-        Vec::new(),
-        1,
-        10,
-    );
+    let core = Core::with_backends(backend, embedder, detector, parser_factory, Vec::new());
 
     let content = "This is a unique string that should only be embedded once.";
     let metadata = std::collections::HashMap::new();

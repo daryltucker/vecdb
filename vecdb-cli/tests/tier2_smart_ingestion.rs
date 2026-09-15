@@ -38,10 +38,15 @@ fn test_smart_ingestion_dry_run() {
 
     // 2. Run CLI with --dry-run
     //
-    // The collection is named explicitly. Without `-c` this inherited the
-    // config default, which is `docs` — a production collection name, and one
-    // that carries whatever embedding space a previous test left on it. Test
-    // collections must be `test_`-prefixed (docs/planning/TESTING.md).
+    // The collection is named explicitly. Without `-c` this inherits the
+    // config default — a real collection name, carrying whatever embedding
+    // space a previous run left on it.
+    //
+    // Every collection a test creates must be `test_`-prefixed: an
+    // unprefixed one cannot be told from a real one when reviewing the
+    // instance, so nobody can safely purge leftovers — and leftovers are how
+    // one run's state leaks into the next. Enforced by
+    // tests/tier0_qdrant_isolation.py.
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_vecdb"));
     cmd.arg("ingest")
         .arg(root.to_str().unwrap())

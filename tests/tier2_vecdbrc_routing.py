@@ -88,7 +88,10 @@ def write_config(tmp):
     for line in lines:
         out.append(line)
         if line.strip() == "[ingestion]" and not injected:
-            out.append("target_chunk_size = 400")
+            # Governs FALLBACK, which sets nothing of its own. Kept inside the
+            # model's window (200 x 6 = 1200 bytes, ~343 tokens) so the ceiling
+            # in force is the configured one rather than a clamped one.
+            out.append("target_chunk_size = 200")
             out.append('tokenizer = "bytes"')
             injected = True
     assert injected
@@ -104,11 +107,19 @@ def write_config(tmp):
         "target_chunk_size = 200",
         "max_chunk_bytes = 400",
         "",
+        # Bounded by the model: `tier1_basic` is a 512-token encoder, so ingest
+        # clamps any ceiling above 1792 bytes (512 x MIN_BYTES_PER_TOKEN) down to
+        # it. A larger number here is not an error, it just silently becomes
+        # 1792 — leaving the test asserting against a value that never applied.
+        # State the one actually in force.
+        #
+        # A 4.5x spread against SMALL's 400 is ample: the assertion below only
+        # needs the counts to differ, and says so in its message.
         f'[collections.{LARGE}]',
         f'name = "{LARGE}"',
         'profile = "tier1_basic"',
-        "target_chunk_size = 20000",
-        "max_chunk_bytes = 40000",
+        "target_chunk_size = 300",
+        "max_chunk_bytes = 1792",
         "",
         f'[collections.{FALLBACK}]',
         f'name = "{FALLBACK}"',
@@ -179,8 +190,8 @@ def run_once(attempt):
             if counts[SMALL] <= counts[LARGE]:
                 failures.append(
                     f"{SMALL} ({counts[SMALL]} points) should hold MORE points than "
-                    f"{LARGE} ({counts[LARGE]}) — identical input, target_chunk_size 200 vs "
-                    f"20000. Equal counts mean one chunk config was applied to both "
+                    f"{LARGE} ({counts[LARGE]}) — identical input, max_chunk_bytes 400 vs "
+                    f"1792. Equal counts mean one chunk config was applied to both "
                     f"routes, which is the defect this test exists for."
                 )
 

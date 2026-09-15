@@ -16,7 +16,9 @@
 //     ~80 MiB process-global CUDA context is reclaimed by the OS. The MCP client
 //     respawns it on next use.
 //
-// Rationale documented in docs/planning/BUG_IDLE_VRAM_AND_RESOURCE_ISOLATION.md (E1).
+// Why evict at all: a Core holds a loaded embedding model. Left resident, an
+// idle server keeps VRAM another process could use, and in stdio mode keeps a
+// process-global CUDA context alive that only exit reclaims.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

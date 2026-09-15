@@ -12,6 +12,7 @@ external eval rather than by us — an agent cannot call a tool it has no way to
 learn about, so an undocumented tool is a tool that does not exist.
 """
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -161,6 +162,74 @@ def main():
         for t in sorted(phantom):
             print(f"   - {t}")
         failed = True
+
+    # ── And every OTHER public doc, because the rename only reached one ──────
+    #
+    # The check above covers `man_agent.md` alone. `ingest_historic_version` was
+    # renamed to `ingest_history` and the manual was updated, so this file went
+    # green — while README.md, docs/MCP_SERVER.md, docs/GIT.md (twice) and
+    # docs/specs/MCP_INTERFACE.md all kept naming the dead tool. Four public
+    # pages told agents to call something `tools/call` has never dispatched, and
+    # a test existed specifically to prevent that.
+    #
+    # The rule is "a list of tools contains only tools", which needs no guessing
+    # about what looks tool-shaped:
+    #
+    #   collect every list/table entry whose FIRST cell is a backticked
+    #   snake_case name. If any entry in that document names a dispatched tool,
+    #   the document is a tool list, so every other entry must be one too.
+    #
+    # Deliberately narrow. A first cut flagged any backticked snake_case name
+    # sharing a leading word with a tool, which reported `code_aware` in
+    # CONFIG.md and CHUNKING_STRATEGY.md — both correct prose, documenting a
+    # retired chunking strategy. A check that cries wolf on accurate
+    # documentation gets switched off.
+    entry_re = re.compile(r"^\s*(?:\|\s*|[*-]\s+)`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`")
+    print()
+    print("Running public-doc tool-name checks...")
+    print("--------------------------------------")
+    # TRACKED docs only — "public" means shipped, not present on disk.
+    #
+    # This globbed the filesystem, which is not the same set: `.gitignore`
+    # excludes every docs/ subdirectory except vecq and specs, so a working tree
+    # legitimately carries private notes there that no clone ever receives.
+    # Walking them made the gate fail on tool names that were accurate when
+    # those notes were written.
+    doc_files = [
+        ROOT / p
+        for p in subprocess.run(
+            ["git", "ls-files", "README.md", "docs/*.md", "docs/**/*.md"],
+            cwd=ROOT, capture_output=True, text=True, check=True,
+        ).stdout.split()
+    ]
+    doc_failures = []
+    # Bullets under a `### `tool`` heading are that tool's PARAMETERS, not a list
+    # of tools — `confirmation_code` under `### delete_collection` is correct and
+    # must not be reported. Track the heading and skip those sections.
+    heading_re = re.compile(r"^#{2,4}\s+`?([a-z][a-z0-9_]*)`?")
+    for doc in doc_files:
+        entries, in_tool_section = set(), False
+        for line in doc.read_text().splitlines():
+            if h := heading_re.match(line):
+                in_tool_section = h.group(1) in tools
+                continue
+            if in_tool_section:
+                continue
+            if m := entry_re.match(line):
+                entries.add(m.group(1))
+        # Not a tool list unless it actually lists tools.
+        if not entries & tools:
+            continue
+        for name in entries - tools:
+            doc_failures.append((doc.relative_to(ROOT), name))
+    if doc_failures:
+        print("❌ FAIL: public docs name MCP tools the server does not dispatch:")
+        for doc, name in sorted(set(doc_failures)):
+            print(f"   - {doc}: `{name}`")
+        print(f"   dispatched: {sorted(tools)}")
+        failed = True
+    else:
+        print(f"✅ PASS: {len(doc_files)} public docs name no phantom tools.")
 
     sys.exit(1 if failed else 0)
 

@@ -89,9 +89,12 @@ pub async fn ensure_write_target(
     allow_quantization_delta: bool,
     target_dim: Option<usize>,
     // `chunking` is recorded into genesis only when THIS call creates the
-    // collection. Ignored when it already exists: chunking describes how the
-    // existing points were cut, and a later run at different parameters must
+    // collection. It is never written back afterwards: chunking describes how
+    // the existing points were cut, and a later run at different parameters must
     // not rewrite that claim into looking like it was always so.
+    //
+    // On an existing collection it is COMPARED instead — a granularity change is
+    // refused outright, a ceiling change is reported. See the guard below.
     chunking: Option<crate::types::ChunkingIdentity>,
 ) -> Result<usize> {
     let identity = embedder.identity().await?;
@@ -198,6 +201,50 @@ pub async fn ensure_write_target(
     if let Some(w) = report.warning() {
         if OUTPUT.is_interactive {
             eprintln!("warning: {w}");
+        }
+    }
+
+    // Chunking is baked into the vectors exactly as permanently as the model is,
+    // and the space guard above is blind to it: two runs at different
+    // granularity produce perfectly valid vectors in the same space. So a
+    // collection quietly becomes a mixture of two corpora, every later search
+    // ranks them against each other, and nothing anywhere reports an error.
+    //
+    // That is not hypothetical. A collection's own `target_chunk_size` was
+    // skipped for every bare `vecdb ingest ./` (no `-c`, no `.vecdbrc`), so the
+    // same collection was written at two different ceilings depending on how the
+    // caller happened to name it — for months, invisibly. The resolver bug is
+    // fixed; this is the gate that would have made it loud on day one.
+    //
+    // Graded, not a plain `!=` — see `ChunkingDelta`. Granularity is refused
+    // because it changes where the cuts land. The ceiling is only reported,
+    // because it fires solely on already-oversized chunks and is clamped at
+    // ingest time to what the local model accepts, so it moves between machines
+    // without anyone reconfiguring anything.
+    if let (Some(recorded), Some(current)) = (&genesis.chunking, &chunking) {
+        let delta = recorded.delta(current);
+        if delta.is_breaking() {
+            anyhow::bail!(
+                "chunking mismatch for collection '{collection}'\n\
+                 \n\
+                 \x20 {}\n\
+                 \n\
+                 \x20 The existing vectors were cut with different parameters. Ingesting now\n\
+                 \x20 would leave one collection holding two corpora chunked two different\n\
+                 \x20 ways, which no later search can tell apart.\n\
+                 \n\
+                 \x20 fix: drop and re-ingest — `vecdb delete {collection}` — or restore the\n\
+                 \x20      recorded parameters in config.toml / .vecdbrc.",
+                delta.granularity.join("\n  "),
+            );
+        }
+        if let Some((was, now)) = delta.ceiling {
+            if OUTPUT.is_interactive {
+                eprintln!(
+                    "warning: max_chunk_bytes for '{collection}' was {was} at creation, {now} now.\n\
+                     \x20        Only oversized chunks are affected; granularity is unchanged."
+                );
+            }
         }
     }
 
@@ -388,16 +435,26 @@ pub async fn ingest_path(
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| rel_path.to_string_lossy().to_string());
 
-            let coll =
-                crate::vecdbrc::resolve_route(routes, &match_path, Some(&options_arc.collection)).0;
+            let route_default = options_arc
+                .route_default_collection
+                .as_deref()
+                .unwrap_or(&options_arc.collection);
+            let coll = crate::vecdbrc::resolve_route(routes, &match_path, Some(route_default)).0;
             if coll.is_empty() {
-                options_arc.collection.clone()
+                route_default.to_string()
             } else {
                 coll
             }
         } else {
             options_arc.collection.clone()
         };
+
+        // Another pass owns this file — see `only_collection`.
+        if let Some(ref only) = options_arc.only_collection {
+            if &file_collection != only {
+                return Ok(());
+            }
+        }
 
         if let Ok(meta_hash) = crate::state::compute_file_metadata_hash(&path) {
             if !state.update_file(&file_collection, rel_path.clone(), meta_hash.clone()) {
@@ -496,7 +553,21 @@ pub async fn ingest_path(
         // a dry run silently cancelling the run it was previewing.
         if state_changed && !options_arc.dry_run {
             state.touch_collection(&file_collection);
-            let _ = state.save(&root_path);
+            // Reported, not swallowed. A failed state write is not fatal — the
+            // vectors are already in Qdrant — but it silently costs a full
+            // re-scan on the next run, and "why does incremental ingest never
+            // skip anything" is not a question you can answer from a run that
+            // said nothing. The directory path at :1015 already warns; this was
+            // `let _ =`, so the two disagreed about the same failure.
+            if let Err(e) = state.save(&root_path) {
+                if OUTPUT.is_interactive {
+                    eprintln!(
+                        "warning: could not save ingestion state to {}: {e}. \
+                         The next ingest will re-scan every file.",
+                        root_path.display()
+                    );
+                }
+            }
         }
 
         eprintln!(
@@ -697,38 +768,53 @@ pub async fn ingest_path(
                     };
 
                     // Determine target collection via .vecdbrc routing (if active)
-                    let file_collection: String =
-                        if let Some(ref routes) = options_arc.vecdbrc_routes {
-                            let match_path = options_arc
-                                .vecdbrc_root
-                                .as_ref()
-                                .and_then(|root| path.strip_prefix(root).ok())
-                                .map(|p| p.to_string_lossy().to_string())
-                                .unwrap_or_else(|| rel_path.to_string_lossy().to_string());
+                    let file_collection: String = if let Some(ref routes) =
+                        options_arc.vecdbrc_routes
+                    {
+                        let match_path = options_arc
+                            .vecdbrc_root
+                            .as_ref()
+                            .and_then(|root| path.strip_prefix(root).ok())
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|| rel_path.to_string_lossy().to_string());
 
-                            let coll = crate::vecdbrc::resolve_route(
-                                routes,
-                                &match_path,
-                                Some(&options_arc.collection),
-                            )
-                            .0;
-                            // Fall back to options collection if route returned empty
-                            let effective_coll = if coll.is_empty() {
-                                options_arc.collection.clone()
-                            } else {
-                                coll
-                            };
-                            if OUTPUT.is_interactive {
-                                eprintln!(
-                                    "  → '{}' → collection '{}'",
-                                    rel_path.display(),
-                                    effective_coll
-                                );
-                            }
-                            effective_coll
+                        let route_default = options_arc
+                            .route_default_collection
+                            .as_deref()
+                            .unwrap_or(&options_arc.collection);
+                        let coll =
+                            crate::vecdbrc::resolve_route(routes, &match_path, Some(route_default))
+                                .0;
+                        // Fall back to the ROUTE default, never this pass's
+                        // write target — see `route_default_collection`.
+                        let effective_coll = if coll.is_empty() {
+                            route_default.to_string()
                         } else {
-                            options_arc.collection.clone()
+                            coll
                         };
+                        if OUTPUT.is_interactive {
+                            eprintln!(
+                                "  → '{}' → collection '{}'",
+                                rel_path.display(),
+                                effective_coll
+                            );
+                        }
+                        effective_coll
+                    } else {
+                        options_arc.collection.clone()
+                    };
+
+                    // Another pass owns this file — see `only_collection`. Not
+                    // counted as skipped: it is not this pass's work, and
+                    // reporting it would double-count across passes.
+                    if let Some(ref only) = options_arc.only_collection {
+                        if &file_collection != only {
+                            if let Some(ref pb) = pb {
+                                pb.inc(1);
+                            }
+                            continue;
+                        }
+                    }
 
                     if let Ok(meta_hash) = crate::state::compute_file_metadata_hash(&path) {
                         if !state.update_file(&file_collection, rel_path.clone(), meta_hash.clone())
@@ -986,10 +1072,15 @@ pub async fn ingest_memory(
     target_dim: Option<usize>,
 ) -> Result<()> {
     let options = IngestionOptions {
+        // AST granularity. `None` takes the run default; a routed
+        // destination overrides it via `route_chunking`.
+        pack_target_bytes: None,
         path: "memory".to_string(),
         collection: collection.to_string(),
         vecdbrc_routes: None,
         vecdbrc_root: None,
+        only_collection: None,
+        route_default_collection: None,
         target_chunk_size: target_chunk_size.unwrap_or(512),
         max_chunk_bytes,
         on_oversize: Default::default(),

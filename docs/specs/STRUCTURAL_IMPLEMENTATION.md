@@ -42,5 +42,5 @@ When Agents implement "fake" functions from documentation, use these `vecq` audi
 
 ---
 
-## 💡 The "Sleipnir" Pro-Tip
+## 💡 Pro-Tip: keep docs and code in one context
 By keeping your documentation and code in the same **AST-aware context**, you prevent the Agent from hallucinating incompatible types. If the documentation says `[Boid]`, the Agent is significantly less likely to try and use `Vec<Bird>`.

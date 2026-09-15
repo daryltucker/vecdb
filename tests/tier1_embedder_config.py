@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""
-Tier 1 Functional Test: Embedder Configuration & End-to-End Flow
+"""Tier 1: a local (fastembed) embedder ingests and retrieves.
 
-This test verifies:
-1. Configuration loading (embedder_type)
-2. Local embedder initialization
-3. Ingestion with local embeddings
-4. Search with local embeddings
-5. Configuration switching (if Ollama available)
+Asserts, each as a hard failure:
 
-Requires: Qdrant running on localhost:6336 (test instance, see tests/fixtures/config.toml)
+1. the CLI loads with this config;
+2. the LOCAL embedder is the one that ran — a config naming a fastembed
+   backend that silently resolved elsewhere would still ingest;
+3. a query matching the fixture's text returns results;
+4. the collection appears in `vecdb list`.
+
+Item 5 of the previous list, "Configuration switching (if Ollama available)",
+described something this file never did: `create_test_config(..., "ollama")`
+exists and is never called with that argument.
+
+Requires the test Qdrant (6336 gRPC / 6335 HTTP) — see
+tests/fixtures/config.toml.
 """
 
 import subprocess
@@ -73,6 +78,35 @@ def cleanup_collection():
         log(f"Cleaned up collection: {TEST_COLLECTION}")
     except:
         pass  # Collection might not exist
+
+def genesis_model(collection):
+    """The model name a collection's genesis point records, or None.
+
+    Genesis lives at the nil UUID and is fetched by id — never by filtering on
+    `__meta_vecdb`, whose value is a version string rather than a boolean, so a
+    match filter on `true` silently returns nothing and the check passes for the
+    wrong reason.
+    """
+    import urllib.request
+
+    http_url = QDRANT_URL.replace(":6336", ":6335").replace(":6334", ":6333")
+    try:
+        req = urllib.request.Request(
+            f"{http_url}/collections/{collection}/points",
+            data=json.dumps(
+                {"ids": ["00000000-0000-0000-0000-000000000000"], "with_payload": True}
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as r:
+            points = json.load(r)["result"]
+    except Exception as e:
+        return f"<unreadable: {e}>"
+    if not points:
+        return None
+    return points[0]["payload"].get("__meta_embedder_model")
+
 
 def create_test_config(tmpdir, embedder_type="local"):
     """Write a test config file into tmpdir. Returns the config file path.
@@ -150,50 +184,108 @@ def test_local_embedder():
     config_path = create_test_config(tmpdir, "local")
     fixture_dir = create_test_fixtures()
 
+    # Every check below FAILS the run.
+    #
+    # They used to log and continue — "⚠ Search returned no results (embedding
+    # might need time)", "⚠ Collection not in list" — and `test_local_embedder`
+    # returned True regardless. The one thing this file is named for, that a
+    # local embedder ingests and retrieves, could not be falsified. It ran in
+    # the gate and was counted in the total.
+    #
+    # `tests/tier0_tests_can_fail.py` now refuses that shape mechanically.
+    failures = []
     try:
-        # 1. Verify CLI loads
+        # 1. The CLI must load with this config at all.
         result = run_vecdb(["--help"], check=False, config_path=config_path)
-        if result.returncode == 0:
-            log("✓ CLI loads successfully")
+        if result.returncode != 0:
+            failures.append(
+                f"`vecdb --help` exited {result.returncode} with this config; "
+                f"nothing below is meaningful.\n      {result.stderr[:300]}"
+            )
+        else:
+            log("✓ CLI loads")
 
-        # 2. Ingest test files
+        # 2. Ingest. `run_vecdb(check=True)` already fails the run on non-zero.
         log("Ingesting test files...")
         result = run_vecdb(["ingest", fixture_dir, "-c", TEST_COLLECTION], config_path=config_path)
-        log(f"Ingest output: {result.stdout[:200] if result.stdout else '(no output)'}")
 
-        # Check stderr for embedder type message
-        if "Using local embedder" in result.stderr:
-            log("✓ Local embedder confirmed in use")
+        # The configured model must be the one that wrote the collection.
+        #
+        # Asserted against GENESIS, not against stderr. A first cut here checked
+        # for "Using local embedder" in the output — but `Core::new` prints that
+        # only when `OUTPUT.is_interactive`, and a captured subprocess has no
+        # TTY, so the check failed on a correct run. That is the same defect
+        # this file is being repaired for: asserting a log line instead of the
+        # artifact. The collection records the model that created it; that is
+        # the fact worth pinning.
+        # Two claims, deliberately separate:
+        #   `fastembed:`         the LOCAL backend ran, not an Ollama one
+        #   `bge-small-en-v1.5`  and it ran the configured model
+        #
+        # Not an equality check against the configured string. fastembed
+        # resolves `BAAI/bge-small-en-v1.5` to Xenova's ONNX repo, so genesis
+        # records `fastembed:Xenova/bge-small-en-v1.5`. That is correct — the
+        # digest is what the space guard compares — and pinning the literal
+        # would break on any upstream repo rename while proving nothing extra.
+        model = genesis_model(TEST_COLLECTION) or ""
+        if not model.startswith("fastembed:"):
+            failures.append(
+                f"genesis records model {model!r} — not a fastembed model, so "
+                f"the local embedder is not what wrote this collection."
+            )
+        elif "bge-small-en-v1.5" not in model:
+            failures.append(
+                f"genesis records model {model!r}; the config names "
+                f"'BAAI/bge-small-en-v1.5'. A different model embedded."
+            )
         else:
-            log(f"Note: stderr = {result.stderr[:200] if result.stderr else '(empty)'}")
+            log(f"✓ genesis records a local fastembed run of the configured model ({model})")
 
-        # 3. Search for known content
+        # 3. Retrieval. The fixture contains "Vector embeddings are numerical
+        #    representations of text", so this query must hit it.
         log("Searching for 'vector embeddings'...")
-        result = run_vecdb(["search", "-c", TEST_COLLECTION, "--json", "vector embeddings"], config_path=config_path)
-
-        if result.stdout:
+        result = run_vecdb(
+            ["search", "-c", TEST_COLLECTION, "--json", "vector embeddings"],
+            config_path=config_path,
+        )
+        if not result.stdout.strip():
+            failures.append("`search --json` produced no output at all")
+        else:
             try:
                 results = search_results(json.loads(result.stdout),
                                          context="vecdb search --json")
-                if len(results) > 0:
-                    log(f"✓ Search returned {len(results)} results")
-                    log(f"  Top result score: {results[0].get('score', 'N/A')}")
-                else:
-                    log("⚠ Search returned no results (embedding might need time)")
-            except json.JSONDecodeError:
-                log(f"⚠ Could not parse search output: {result.stdout[:100]}")
-        else:
-            log("⚠ No search output")
+            except json.JSONDecodeError as e:
+                failures.append(f"`search --json` did not emit JSON ({e}): "
+                                f"{result.stdout[:200]}")
+                results = []
+            if not results:
+                # Not a timing problem: ingest is synchronous and returned
+                # already. An empty result set here means the corpus is empty
+                # or the query embedded in a different space.
+                failures.append(
+                    "search returned no results from a collection just ingested. "
+                    "Ingest is synchronous, so this is not indexing lag."
+                )
+            else:
+                log(f"✓ search returned {len(results)} result(s), "
+                    f"top score {results[0].get('score', 'N/A')}")
 
-        # 4. List collections
-        log("Listing collections...")
+        # 4. The collection must be visible to `list`.
         result = run_vecdb(["list"], config_path=config_path)
-        if TEST_COLLECTION in result.stdout:
-            log(f"✓ Test collection appears in list")
+        if TEST_COLLECTION not in result.stdout:
+            failures.append(
+                f"'{TEST_COLLECTION}' was ingested but does not appear in "
+                f"`vecdb list`:\n      {result.stdout[:300]}"
+            )
         else:
-            log(f"⚠ Collection not in list: {result.stdout[:200]}")
+            log("✓ collection appears in list")
 
-        log("✓ Local embedder test completed")
+        if failures:
+            for f in failures:
+                print(f"[FAIL] {f}", file=sys.stderr)
+            fail(f"{len(failures)} local-embedder check(s) failed")
+
+        log("✓ Local embedder test passed")
         return True
 
     finally:

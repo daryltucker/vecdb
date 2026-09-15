@@ -90,7 +90,12 @@ impl FileType {
             Self::Html => vec!["html", "htm", "xml", "xhtml"],
             Self::Toml => vec!["toml"],
             Self::Yaml => vec!["yaml", "yml"],
-            Self::Text => vec!["txt", "log", "cfg", "ini", "conf", "yaml", "yml"],
+            // No "yaml"/"yml" here: they belong to `Self::Yaml` and are claimed
+            // by it in `from_extension`. This list kept them after that change,
+            // so the two functions disagreed — which surfaced as a clap panic
+            // ("command name `yaml` is duplicated") in every debug build of
+            // `vecq elements`, since it derives subcommand aliases from here.
+            Self::Text => vec!["txt", "log", "cfg", "ini", "conf"],
             Self::Unknown => vec![],
         }
     }
@@ -284,6 +289,89 @@ impl fmt::Display for FileType {
 pub trait FileTypeDetector: Send + Sync {
     /// Detect file type from path and content
     fn detect(&self, path: &Path, content: &[u8]) -> FileType;
+}
+
+#[cfg(test)]
+mod extension_table_tests {
+    use super::FileType;
+
+    /// Every variant except `Unknown`. Listed by hand because `FileType` has no
+    /// derived iterator; adding a variant without adding it here makes the
+    /// round-trip test below silently stop covering it, so keep them together.
+    const ALL: &[FileType] = &[
+        FileType::Markdown,
+        FileType::Rust,
+        FileType::Python,
+        FileType::C,
+        FileType::Cpp,
+        FileType::Cuda,
+        FileType::Go,
+        FileType::Bash,
+        FileType::Json,
+        FileType::Html,
+        FileType::Toml,
+        FileType::Yaml,
+        FileType::Text,
+    ];
+
+    /// `file_extensions()` and `from_extension()` must be inverses.
+    ///
+    /// They are two hand-maintained tables describing one fact, and they drifted:
+    /// `from_extension` was corrected to map `yaml`/`yml` to [`FileType::Yaml`],
+    /// but `Text::file_extensions()` went on claiming them. Nothing detected the
+    /// disagreement, because each table is self-consistent on its own. It
+    /// surfaced only as a clap panic in debug builds of `vecq elements`, which
+    /// derives its subcommand aliases from `file_extensions()`.
+    #[test]
+    fn every_listed_extension_maps_back_to_its_own_type() {
+        let mut wrong = Vec::new();
+
+        for &ft in ALL {
+            for ext in ft.file_extensions() {
+                match FileType::from_extension(ext) {
+                    Some(resolved) if resolved == ft => {}
+                    other => wrong.push(format!(
+                        "{:?}.file_extensions() lists {:?}, but from_extension({:?}) = {:?}",
+                        ft, ext, ext, other
+                    )),
+                }
+            }
+        }
+
+        assert!(
+            wrong.is_empty(),
+            "extension tables disagree:\n  {}",
+            wrong.join("\n  "),
+        );
+    }
+
+    /// No extension may be claimed by two file types — an ambiguous extension
+    /// makes detection order-dependent, and breaks any consumer that builds a
+    /// lookup keyed on extension.
+    #[test]
+    fn no_extension_is_claimed_by_two_file_types() {
+        let mut seen: Vec<(&'static str, FileType)> = Vec::new();
+        let mut collisions = Vec::new();
+
+        for &ft in ALL {
+            for ext in ft.file_extensions() {
+                if let Some((_, owner)) = seen.iter().find(|(e, _)| *e == ext) {
+                    collisions.push(format!(
+                        "{:?} claimed by both {:?} and {:?}",
+                        ext, owner, ft
+                    ));
+                } else {
+                    seen.push((ext, ft));
+                }
+            }
+        }
+
+        assert!(
+            collisions.is_empty(),
+            "duplicate extension claims:\n  {}",
+            collisions.join("\n  "),
+        );
+    }
 }
 
 #[cfg(test)]

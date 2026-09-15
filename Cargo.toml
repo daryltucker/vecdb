@@ -24,7 +24,7 @@ exclude = [
 resolver = "2"
 
 [workspace.package]
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 authors = ["Sextant <daryl@daryltucker.com>"]
 license-file = "LICENSE"
@@ -32,9 +32,9 @@ repository = "https://github.com/daryltucker/vecdb"
 
 [workspace.dependencies]
 # Core
-vecdb-common = { path = "vecdb-common", version = "1.1.0" }
-vecdb-core = { path = "vecdb-core", version = "1.1.0" }
-vecq = { path = "vecq", version = "1.1.0" }
+vecdb-common = { path = "vecdb-common", version = "1.1.1" }
+vecdb-core = { path = "vecdb-core", version = "1.1.1" }
+vecq = { path = "vecq", version = "1.1.1" }
 tokio = { version = "1.50.0", features = ["full"] }
 serde = { version = "1.0.128", features = ["derive"] }
 serde_json = "1.0.149"

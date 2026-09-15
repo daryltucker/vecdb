@@ -26,7 +26,10 @@ pub async fn ingest_memory(
 
 ### Usage Pattern
 1.  **Agent Search**: Agent queries SearXNG -> gets search snippets/pages.
-2.  **Memory Store**: Agent calls `vecdb:upsert_content` (MCP tool mapping to `ingest_memory`).
+2.  **Memory Store**: `ingest_memory` is a `vecdb-core` function; **no MCP tool
+    exposes it yet.** This step named a tool `vecdb:upsert_content` that the
+    server has never dispatched. Until one exists, reach it in-process or ingest
+    the fetched content from a file with `ingest_path`.
 3.  **Metadata Tagging**:
     - `source_type`: "web"
     - `url`: `https://example.com/foo`

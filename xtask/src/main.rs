@@ -69,7 +69,7 @@ fn run_test(sh: &Shell, coverage: bool) -> Result<()> {
 fn run_lint(_sh: &Shell) -> Result<()> {
     println!("Running Architecture Lints...");
 
-    // 1. The Mirror Policy: src/parsers/X.rs -> tests/fixture_X.rs
+    // 1. The Mirror Policy: src/parsers/X.rs -> tests/fixture_X.rs  // path-ok: naming pattern, not a file
     let parsers_dir = Path::new("vecdb-core/src/parsers");
     let tests_dir = Path::new("vecdb-core/tests");
 

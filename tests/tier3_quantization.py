@@ -68,18 +68,40 @@ def main():
     print("[1] Initializing...")
     run_vecdb(["init"])
 
-    # Patch init config to use test Qdrant (init defaults to production default port).
-    # We avoid hardcoding the production port literal here to satisfy the isolation guard;
-    # instead we read the actual qdrant_url from the generated config and replace it.
+    # Point the generated config at test Qdrant.
+    #
+    # This test runs against a config `vecdb init` writes into a temp HOME, not
+    # against the shared fixture, so the isolation gate cannot vet it — the gate
+    # inspects the fixture and the test sources, and this file is created at
+    # runtime. The endpoint therefore has to be pinned here, and PROVEN pinned
+    # before anything is written.
+    #
+    # It used to be a regex replacing `qdrant_url = "http://localhost:NNNN"`.
+    # Once `init` moved to named stores it emitted no such line, the substitution
+    # silently matched nothing, and the ingest fell through to the default
+    # endpoint — writing a `test_` collection into PRODUCTION. A patch that
+    # quietly does nothing is worse than no patch, so this appends an explicit
+    # setting and then verifies it took.
     test_grpc_url = os.environ.get("VECDB_TEST_QDRANT_URL", "http://localhost:6336")
+    test_port = test_grpc_url.rsplit(":", 1)[-1]
     config_path = os.path.join(TEMP_HOME, ".config/vecdb/config.toml")
     with open(config_path, "r") as f:
         cfg = f.read()
-    # Find the qdrant_url line and replace whatever URL init wrote with the test URL.
-    import re as _re
-    cfg = _re.sub(r'qdrant_url = "http://localhost:\d+"', f'qdrant_url = "{test_grpc_url}"', cfg)
+    if "[profiles.default]" not in cfg:
+        print("FAILURE: generated config has no [profiles.default] to pin")
+        sys.exit(1)
+    cfg = cfg.replace("[profiles.default]",
+                      f'[profiles.default]\nqdrant_url = "{test_grpc_url}"', 1)
     with open(config_path, "w") as f:
         f.write(cfg)
+
+    # Prove it. `config show` reports the endpoint actually resolved, so this
+    # catches a pin that did not take for ANY reason, not just a stale regex.
+    shown = run_vecdb(["config", "show"]).stdout
+    if test_port not in shown:
+        print("FAILURE: config does not resolve to test Qdrant — refusing to write.")
+        print(f"  expected port {test_port} in resolved config; got:\n{shown[:600]}")
+        sys.exit(1)
 
     # 2. Config Set-Quantization
     print("[2] Setting quantization to 'binary'...")

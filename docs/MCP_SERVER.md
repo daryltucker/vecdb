@@ -61,11 +61,18 @@ Required for localized MCP clients that spawn the server process directly.
 | :--- | :--- | :--- |
 | `search_vectors` | `vecdb search` | Semantic search with smart routing support. |
 | `ingest_path` | `vecdb ingest` | Ingest local files or directories. |
-| `ingest_historic_version` | `vecdb history ingest` | Ingest a specific git revision (Time Travel). |
+| `ingest_history` | `vecdb history ingest` | **[WIP]** Ingest a specific git revision (Time Travel). |
 | `code_query` | `vecq <PATH> <QUERY>` | Structural analysis using Tree-sitter + JQ. |
+| `project_overview` | `vecq map <PATH>` | Whole-project structure graph. |
 | `list_collections` | `vecdb list` | List available collections and stats. |
 | `delete_collection` | `vecdb delete` | Delete a collection with safety confirmation. |
 | `embed` | N/A | Generate vectors from raw text. |
+| `get_job_status` | N/A | Progress of a running ingest job. |
+
+This table is the complete dispatch list. The name is what `tools/call` accepts:
+`ingest_history` was documented here as `ingest_historic_version` — a name the
+server has never dispatched — so every agent that trusted this page called a tool
+that does not exist.
 
 ### `search_vectors`
 Semantic search.

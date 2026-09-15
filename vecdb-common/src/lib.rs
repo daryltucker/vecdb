@@ -5,9 +5,10 @@
  *   Provides common patterns and utilities used across vecq, vecdb-core,
  *   vecdb-cli, and vecdb-server. Designed to be minimal and dependency-free.
  *
- * PHILOSOPHY:
- *   See docs/planning/PHILOSOPHY.md - "Codified Correctness"
- *   This crate embodies the principle: correctness through structure, not discipline.
+ * PHILOSOPHY — "Codified Correctness":
+ *   Correctness through structure, not discipline. Where a rule can be made
+ *   unrepresentable it is; where it cannot, it is checked. Nothing here relies
+ *   on a caller remembering to do the right thing.
  *
  * MODULES:
  *   - output: TTY-aware output handling (OutputContext pattern)

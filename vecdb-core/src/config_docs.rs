@@ -1,6 +1,6 @@
 //! Generate the configuration reference from the config structs themselves.
 //!
-//! `docs/CONFIG.md` used to be hand-written, with `tests/tier2_config_compliance.py`
+//! `docs/CONFIG.md` used to be hand-written, with `tests/run_all.sh (T2.5)`
 //! checking after the fact that every field appeared *somewhere* in it. That
 //! catches an undocumented field, and nothing else: a field could be documented
 //! with the wrong type, the wrong default, or a description contradicting the
@@ -152,6 +152,7 @@ pub fn undocumented() -> Vec<String> {
     };
     check("Config", &table::<crate::config::Config>());
     check("backend", &table::<crate::config::Backend>());
+    check("store", &table::<crate::config::Store>());
     check("embedder", &table::<crate::config::EmbedderSpec>());
     check("profiles", &table::<crate::config::Profile>());
     check("collections", &table::<crate::config::CollectionConfig>());
@@ -175,6 +176,9 @@ pub fn generate() -> String {
 
     out.push_str("\n#### Backend Options (`[backend.<name>]`)\n\n");
     out.push_str(&table::<crate::config::Backend>());
+
+    out.push_str("\n#### Store Options (`[store.<name>]`)\n\n");
+    out.push_str(&table::<crate::config::Store>());
 
     out.push_str("\n#### Embedder Options (`[embedder.<name>]`)\n\n");
     out.push_str(&table::<crate::config::EmbedderSpec>());

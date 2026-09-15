@@ -4,8 +4,9 @@
 #
 # `make test` MUST run the COMPLETE test suite.
 # Partial test runs are a release blocker.
-# See: docs/planning/TESTING.md §4 (Tiered Testing Framework)
-# See: docs/planning/V1_AUDIT.md §8 (Test Manifest)
+# The tier definitions and the manifest live in tests/run_all.sh itself — it is
+# the single source of truth, and `tests` below simply runs it. A pointer here
+# must name a file a fresh clone actually has; run_all.sh is that file.
 #
 
 PROJECT_NAME := vecdb
@@ -13,13 +14,40 @@ IMAGE_NAME   := daryltucker/vecdb-mcp
 TAG          := latest
 DEBIAN_VER   := trixie
 
-# Colors
-YELLOW := \033[1;33m
-GREEN  := \033[1;32m
-RED    := \033[1;31m
-RESET  := \033[0m
+# Which CUDA major the prebuilt ONNX Runtime links against.
+#
+# Left unset, ort-sys GUESSES from the build machine — it checks CUDA_HOME,
+# NV_CUDA_CUDART_VERSION and `nvcc --version`, falling back to 12. That makes
+# the artifact a property of the workstation rather than of the commit: two
+# people building the same tag get binaries needing different libcudart
+# sonames, silently. Pin it so builds are reproducible.
+#
+# 12 rather than 13 because the two flavours carry the IDENTICAL kernel set
+# (sm_75/sm_80/sm_90 — measured, see docs/GPU.md), so the only difference is
+# which CUDA the user must have installed, and CUDA 12 is more widely deployed
+# and needs a lower minimum driver. This is NOT a compatibility knob for old
+# GPUs; see docs/GPU_LEGACY.md for those.
+#
+# Override deliberately: `make install ORT_CUDA_VERSION=13`.
+ORT_CUDA_VERSION ?= 12
+export ORT_CUDA_VERSION
 
-.PHONY: all check guard-paths guard-workspace test tests test-rust test-perf test-full doc build install clean help run-stdio run
+# Colors
+#
+# ESC holds a REAL escape byte, produced once by printf, rather than the
+# four-character text `\033`. Recipes run under /bin/sh, and whether its `echo`
+# expands backslash escapes is implementation-defined — bash's does not. With
+# the literal sequence, every `@echo "$(GREEN)Installed:$(RESET)"` in this file
+# printed `\033[1;32mInstalled:\033[0m` verbatim; only the handful using printf
+# came out coloured. Substituting the byte here makes all 17 call sites correct
+# without touching any of them, and works with echo and printf alike.
+ESC    := $(shell printf '\033')
+YELLOW := $(ESC)[1;33m
+GREEN  := $(ESC)[1;32m
+RED    := $(ESC)[1;31m
+RESET  := $(ESC)[0m
+
+.PHONY: all check guard-paths guard-workspace test tests test-rust test-perf test-full doc build install install-cuda-dynamic clean help run-stdio run
 
 all: check tests build
 
@@ -186,11 +214,32 @@ run:
 # $(INSTALL_ROOT)/bin).
 INSTALL_ROOT ?= $(HOME)/.cargo
 
+# cargo install normally builds in a private temp target dir, which would
+# discard the ORT provider-lib symlinks we need to install below. Pin the
+# target dir (respecting an externally-set CARGO_TARGET_DIR) so the symlinks
+# land somewhere known — and the build cache is reused as a bonus.
+EFFECTIVE_TARGET_DIR := $(or $(CARGO_TARGET_DIR),$(CURDIR)/target)
+
 install:
 	@echo "$(YELLOW)Installing to $(INSTALL_ROOT)/bin (locked)...$(RESET)"
-	CARGO_INSTALL_ROOT="$(INSTALL_ROOT)" cargo install --path vecdb-cli --locked --force
-	CARGO_INSTALL_ROOT="$(INSTALL_ROOT)" cargo install --path vecdb-server --locked --force
+	CARGO_TARGET_DIR="$(EFFECTIVE_TARGET_DIR)" CARGO_INSTALL_ROOT="$(INSTALL_ROOT)" cargo install --path vecdb-cli --locked --force
+	CARGO_TARGET_DIR="$(EFFECTIVE_TARGET_DIR)" CARGO_INSTALL_ROOT="$(INSTALL_ROOT)" cargo install --path vecdb-server --locked --force
 	CARGO_INSTALL_ROOT="$(INSTALL_ROOT)" cargo install --path vecq --locked --force
+	@# ORT resolves the CUDA provider libraries relative to dirname(argv[0]) of
+	@# the RUNNING EXECUTABLE — not ldconfig, not /usr/local/lib. They must also
+	@# come from the exact ONNX Runtime build the binary links (a mismatched
+	@# pair aborts the process with free():invalid pointer), which is why we
+	@# copy the build's own symlinked artifacts (ort's copy-dylibs feature)
+	@# instead of a downloaded release tarball. Without these next to the
+	@# binary, use_gpu=true cannot register the CUDA EP (BUG-2026-254).
+	@for lib in libonnxruntime_providers_shared.so libonnxruntime_providers_cuda.so; do \
+		if [ -e "$(EFFECTIVE_TARGET_DIR)/release/$$lib" ]; then \
+			cp -fL "$(EFFECTIVE_TARGET_DIR)/release/$$lib" "$(INSTALL_ROOT)/bin/$$lib" && \
+			echo "  installed $$lib (CUDA execution provider)"; \
+		else \
+			echo "  $(YELLOW)note:$(RESET) $$lib not in $(EFFECTIVE_TARGET_DIR)/release — GPU (use_gpu=true) will not work"; \
+		fi; \
+	done
 	@echo ""
 	@echo "$(GREEN)Installed:$(RESET)"
 	@for b in vecdb vecdb-server vecq; do \
@@ -198,4 +247,48 @@ install:
 	done
 	@echo ""
 	@echo "$(YELLOW)Verify the binary on PATH is the one just built:$(RESET)"
+	@vecdb --version 2>/dev/null || true
+
+# Bring-your-own ONNX Runtime install (docs/GPU_LEGACY.md): for GPUs the
+# prebuilt runtime has dropped. The binaries dlopen the libonnxruntime.so
+# named by ORT_DYLIB_PATH at runtime — no provider libs are copied next to
+# the binary (they resolve next to YOUR libonnxruntime.so instead). The ORT
+# you point at is built once per machine per ORT version; vecdb upgrades
+# through this target reuse it unchanged.
+install-cuda-dynamic:
+	@echo "$(YELLOW)Installing cuda-dynamic (BYO ONNX Runtime) to $(INSTALL_ROOT)/bin (locked)...$(RESET)"
+	CARGO_TARGET_DIR="$(EFFECTIVE_TARGET_DIR)" CARGO_INSTALL_ROOT="$(INSTALL_ROOT)" cargo install --path vecdb-cli --locked --force --features cuda-dynamic
+	CARGO_TARGET_DIR="$(EFFECTIVE_TARGET_DIR)" CARGO_INSTALL_ROOT="$(INSTALL_ROOT)" cargo install --path vecdb-server --locked --force --features cuda-dynamic
+	CARGO_INSTALL_ROOT="$(INSTALL_ROOT)" cargo install --path vecq --locked --force
+	@printf '\n'
+	@# printf, not echo: make runs recipes under /bin/sh, whose `echo` does NOT
+	@# expand \033 escapes — the colour codes printed literally as `\033[1;32m`.
+	@printf '$(GREEN)Installed:$(RESET)\n'
+	@for b in vecdb vecdb-server vecq; do \
+		printf '  %-14s %s\n' "$$b" "$$(command -v $$b || echo 'NOT ON PATH')"; \
+	done
+	@printf '\n'
+	@# These binaries load ONNX Runtime at run time and cannot embed without one.
+	@# THE USER SETS NO ENVIRONMENT VARIABLE: `ort_dylib_path` in config.toml is
+	@# the whole integration — vecdb applies it to ORT_DYLIB_PATH itself at
+	@# startup (vecdb-core/src/lib.rs:124), so shells, editors, cron and the MCP
+	@# server inherit it without being told. An exported ORT_DYLIB_PATH still
+	@# wins, for one-off overrides. This block used to instruct users to "set it
+	@# everywhere vecdb runs", which was true before the config key existed and
+	@# has been wrong since.
+	@printf '$(YELLOW)Runtime check — the ONNX Runtime these binaries will load:$(RESET)\n'
+	@# `vecdb config show` picks its format from the TTY, and a make recipe's
+	@# stdout is a PIPE — so this gets JSON (`"onnx_runtime": {...}`), never the
+	@# human table (`onnx runtime  <path>`). Matching only the table form printed
+	@# a "is it on PATH?" error for a command that had just succeeded. Match
+	@# either spelling, and carry the following lines so the JSON object's
+	@# path/source/exists come through.
+	@vecdb config show 2>/dev/null | grep -iA4 'onnx[ _]runtime' || \
+		printf '  $(RED)"vecdb config show" reported no ONNX Runtime — is $(INSTALL_ROOT)/bin on PATH?$(RESET)\n'
+	@printf '\n'
+	@printf '  Missing, or pointing at the wrong build? Set it once, in\n'
+	@printf '  ~/.config/vecdb/config.toml, at the TOP LEVEL (not under a profile):\n'
+	@printf '    ort_dylib_path = "/path/to/libonnxruntime.so"\n'
+	@printf '  Building that runtime: docs/GPU_LEGACY.md\n'
+	@printf '\n'
 	@vecdb --version 2>/dev/null || true

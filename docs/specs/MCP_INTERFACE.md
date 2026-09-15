@@ -19,7 +19,7 @@ The `vecdb-server` implements the Model Context Protocol (MCP) via JSON-RPC 2.0 
 | `search_vectors` | Semantic search with `profile` and `collection` overrides. |
 | `list_collections` | Discovery tool for available indices and their compatibility. |
 | `ingest_path` | Ingest local files (Requires `--allow-local-fs`). |
-| `ingest_historic_version` | Git-based "Time Travel" ingestion. |
+| `ingest_history` | **[WIP]** Git-based "Time Travel" ingestion. |
 | `code_query` | Structural analysis using `vecq` AST filters. |
 | `delete_collection` | Protected deletion tool with safety confirmation. |
 | `embed` | Raw text-to-vector conversion. |

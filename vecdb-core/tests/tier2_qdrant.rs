@@ -24,8 +24,10 @@ async fn test_qdrant_backend_integration() {
 
     // 1. Config
     let profile = Profile {
+        pack_target_bytes: None,
         embedder: "default".to_string(),
-        qdrant_url: qdrant_url.clone(),
+        store: None,
+        qdrant_url: Some(qdrant_url.clone()),
         qdrant_api_key: None,
         default_collection_name: Some("test_tier2_rust".to_string()),
         quantization: None,
@@ -37,8 +39,11 @@ async fn test_qdrant_backend_integration() {
 
     // 2. Init Backend
     // Note: QdrantBackend::new takes URL string and is synchronous
-    let backend = QdrantBackend::new(&profile.qdrant_url, profile.qdrant_api_key.clone())
-        .expect("Failed to create QdrantBackend");
+    let backend = QdrantBackend::new(
+        profile.qdrant_url.as_deref().unwrap(),
+        profile.qdrant_api_key.clone(),
+    )
+    .expect("Failed to create QdrantBackend");
     let collection = profile.default_collection_name.as_deref().unwrap();
 
     // 3. Health Check
@@ -52,8 +57,15 @@ async fn test_qdrant_backend_integration() {
         .expect("Failed to create collection"); // Size 4 for test
 
     // 5. Upsert
+    //
+    // A REAL UUID. This said `"chunk-1"`, which is not one — and the backend
+    // used to fall back to `Uuid::default()`, the NIL uuid, which is the genesis
+    // point. So this test spent its life writing its chunk into the genesis slot
+    // and reading it back out again: green, for the wrong reason, while
+    // demonstrating the exact corruption the backend now refuses. See the
+    // refusal asserted at the end.
     let chunk = Chunk {
-        id: "chunk-1".to_string(),
+        id: "11111111-2222-4333-8444-555555555555".to_string(),
         document_id: "doc-1".to_string(),
         content: "rust integration test".to_string(),
         vector: Some(vec![0.1, 0.2, 0.3, 0.4]),
@@ -86,7 +98,58 @@ async fn test_qdrant_backend_integration() {
     assert!(!results.is_empty(), "Should find the inserted chunk");
     assert_eq!(results[0].content, "rust integration test");
 
-    // 7. Cleanup
+    // 7. A chunk id that is not a UUID must be REFUSED, not silently rewritten.
+    //
+    // `Uuid::default()` is the nil UUID, which is where genesis lives. Accepting
+    // an unparseable id meant replacing a collection's model and chunking record
+    // with a content chunk — after which `read_genesis` finds no `__meta_vecdb`
+    // marker, every guard concludes the collection belongs to another tool, and
+    // nothing can be recovered. Unreachable in production is not a reason to
+    // keep a fallback whose failure mode is unrecoverable.
+    let bad = Chunk {
+        id: "chunk-1".to_string(),
+        document_id: "doc-1".to_string(),
+        content: "not a uuid".to_string(),
+        vector: Some(vec![0.1, 0.2, 0.3, 0.4]),
+        metadata: HashMap::new(),
+        page_num: None,
+        byte_start: 0,
+        byte_end: 10,
+        start_line: None,
+        end_line: None,
+    };
+    let err = backend
+        .upsert(collection, vec![bad])
+        .await
+        .expect_err("a non-UUID chunk id must be refused, not mapped onto genesis")
+        .to_string();
+    assert!(
+        err.contains("genesis"),
+        "the refusal must say WHY it matters, so nobody \"fixes\" it by \
+         restoring the fallback. Got: {err}"
+    );
+
+    // And a chunk that reached the backend without a vector, for the same reason:
+    // an empty vector is not a vector, and Qdrant would fail on dimension several
+    // layers away from the chunk that caused it.
+    let unembedded = Chunk {
+        id: "99999999-8888-4777-8666-555555555555".to_string(),
+        document_id: "doc-1".to_string(),
+        content: "never embedded".to_string(),
+        vector: None,
+        metadata: HashMap::new(),
+        page_num: None,
+        byte_start: 0,
+        byte_end: 14,
+        start_line: None,
+        end_line: None,
+    };
+    backend
+        .upsert(collection, vec![unembedded])
+        .await
+        .expect_err("a chunk with no vector must be refused at the backend boundary");
+
+    // 8. Cleanup
     backend
         .delete_collection(collection)
         .await

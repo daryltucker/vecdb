@@ -27,12 +27,15 @@ use vecdb_core::types::ChunkingIdentity;
 /// configuration anyone should be able to reach by accident.
 fn options_for(collection: &str, target: usize, overlap: usize) -> IngestionOptions {
     IngestionOptions {
+        pack_target_bytes: None,
         path: ".".to_string(),
         file_allowlist: None,
         project_root: None,
         collection: collection.to_string(),
         vecdbrc_routes: None,
         vecdbrc_root: None,
+        only_collection: None,
+        route_default_collection: None,
         target_chunk_size: target,
         max_chunk_bytes: None,
         route_chunking: std::collections::HashMap::new(),
@@ -63,6 +66,7 @@ fn options_for(collection: &str, target: usize, overlap: usize) -> IngestionOpti
 #[test]
 fn chunking_identity_carries_its_unit() {
     let id = ChunkingIdentity {
+        pack_target_bytes: 2048,
         target_chunk_size: 512,
         chunk_overlap: 50,
         max_chunk_bytes: 3072,
@@ -77,6 +81,7 @@ fn chunking_identity_carries_its_unit() {
 #[test]
 fn chunking_identity_round_trips() {
     let id = ChunkingIdentity {
+        pack_target_bytes: 2048,
         target_chunk_size: 12000,
         chunk_overlap: 50,
         max_chunk_bytes: 72000,
@@ -125,6 +130,7 @@ fn each_destination_records_its_own_chunking() {
     options.route_chunking.insert(
         "test_routed".to_string(),
         ChunkSpec {
+            pack_target_bytes: None,
             target_chunk_size: 12000,
             chunk_overlap: 0,
             max_chunk_bytes: None,

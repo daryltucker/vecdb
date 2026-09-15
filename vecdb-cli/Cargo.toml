@@ -38,6 +38,9 @@ rustls = { workspace = true }
 [features]
 default = ["cuda"]
 cuda = ["vecdb-core/cuda"]
+# BYO ONNX Runtime via ORT_DYLIB_PATH for GPUs the prebuilt dropped
+# (docs/GPU_LEGACY.md). Build with --features cuda-dynamic (additive to cuda).
+cuda-dynamic = ["vecdb-core/cuda-dynamic"]
 
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 tikv-jemallocator = "0.6"

@@ -253,7 +253,7 @@ async fn handle_delete_collection(
 ///
 /// Queries ALL configured Qdrant backends (not just the boot core) by connecting
 /// directly to each unique Qdrant URL with a lightweight client — no embedder
-/// initialization required. This ensures remote collections (e.g. `docs-lts` on
+/// initialization required. This ensures remote collections (e.g. `notes-archive` on
 /// a separate Qdrant instance) are visible to agents even when their profile's
 /// embedder type (Ollama) differs from the boot profile.
 async fn handle_list_collections(
@@ -270,20 +270,18 @@ async fn handle_list_collections(
 
     let mut endpoints: std::collections::HashSet<QdrantEndpoint> = std::collections::HashSet::new();
 
-    for name in config.profiles.keys() {
-        if let Ok(prof) = config.get_profile(Some(name)) {
-            endpoints.insert(QdrantEndpoint {
-                url: prof.qdrant_url.clone(),
-                api_key: prof.qdrant_api_key.clone(),
-            });
+    for (name, prof) in &config.profiles {
+        // A dangling store name is a load-time error, so this only skips for
+        // configs that bypassed validation; the sweep is best-effort anyway.
+        if let Ok((url, api_key)) = config.profile_endpoint(name, prof) {
+            endpoints.insert(QdrantEndpoint { url, api_key });
         }
     }
     // Ensure default profile is included even if not explicitly listed
     if let Ok(default_prof) = config.get_profile(None) {
-        endpoints.insert(QdrantEndpoint {
-            url: default_prof.qdrant_url.clone(),
-            api_key: default_prof.qdrant_api_key.clone(),
-        });
+        if let Ok((url, api_key)) = config.profile_endpoint(&config.default_profile, default_prof) {
+            endpoints.insert(QdrantEndpoint { url, api_key });
+        }
     }
 
     let mut all_results: Vec<serde_json::Value> = Vec::new();
@@ -432,9 +430,6 @@ async fn handle_ingest_path(
             data: None,
         })?;
 
-    let max_chunk_bytes = Some(resolution.max_chunk_bytes.value);
-    let chunk_overlap = resolution.chunk_overlap.value;
-
     let collection = args
         .collection
         .as_deref()
@@ -460,28 +455,65 @@ async fn handle_ingest_path(
             data: None,
         })?;
 
-    core.ingest(
-        &args.path,
-        &collection,
-        None,
-        max_chunk_bytes,
-        Some(chunk_overlap),
-        None,
-        None,
-        false,
-        None,
-        args.concurrency,
-        args.gpu_concurrency,
-        resolution.quantization.clone(),
-        None,
-        args.ignore_vectorignore,
-    )
-    .await
-    .map_err(|e| JsonRpcError {
-        code: -32000,
-        message: e.to_string(),
-        data: None,
-    })?;
+    // Build the options here, as the CLI does, rather than through a convenience
+    // wrapper that fills in chunking for us.
+    //
+    // `Core::ingest` did that, and what it filled in was wrong: it pinned
+    // `pack_target_bytes: None`, so `chunking_identity()` recorded the 2048
+    // default while the CLI recorded the collection's configured value. Since
+    // `pack_target_bytes` is a GRANULARITY field, the chunking guard in
+    // `ensure_write_target` then refused every MCP ingest into a collection the
+    // CLI had created — and before that guard existed, the same gap silently
+    // produced one collection holding two granularities.
+    //
+    // It also hardcoded `strategy` and `tokenizer` past the config. There is one
+    // ingestion entry point now, `ingest_with_options`, and the caller states
+    // every parameter it means.
+    let opts = vecdb_core::ingestion::IngestionOptions {
+        path: args.path.clone(),
+        collection: collection.clone(),
+        target_chunk_size: resolution.target_chunk_size.value,
+        // Clamped to what the model can embed, exactly as the CLI does: the
+        // oversize policy splits DOWN TO this ceiling, so a ceiling above the
+        // model's capacity makes the split produce parts that still do not fit.
+        max_chunk_bytes: Some(resolution.effective_max_chunk_bytes()),
+        chunk_overlap: resolution.chunk_overlap.value,
+        // The knob that actually governs granularity for parsed content.
+        pack_target_bytes: Some(resolution.pack_target_bytes.value),
+        on_oversize: config.resolve_oversize_policy().value,
+        strategy: config.ingestion.default_strategy.clone(),
+        tokenizer: config.ingestion.tokenizer.clone(),
+        respect_gitignore: config.ingestion.respect_gitignore,
+        ignore_vectorignore: args.ignore_vectorignore,
+        path_rules: config.ingestion.path_rules.clone(),
+        max_concurrent_requests: args
+            .concurrency
+            .unwrap_or(config.ingestion.max_concurrent_requests),
+        gpu_batch_size: args.gpu_concurrency.unwrap_or(2),
+        quantization: resolution.quantization.clone(),
+        // MCP has no `.vecdbrc` routing, no allowlist and no dry run.
+        vecdbrc_routes: None,
+        vecdbrc_root: None,
+        route_chunking: Default::default(),
+        only_collection: None,
+        route_default_collection: None,
+        file_allowlist: None,
+        project_root: None,
+        git_ref: None,
+        extensions: None,
+        excludes: None,
+        dry_run: false,
+        metadata: None,
+        allow_quantization_delta: false,
+    };
+
+    core.ingest_with_options(opts, None)
+        .await
+        .map_err(|e| JsonRpcError {
+            code: -32000,
+            message: e.to_string(),
+            data: None,
+        })?;
 
     Ok(json!({
         "content": [
@@ -558,7 +590,17 @@ async fn handle_ingest_history(
         &args.repo_path,
         &args.git_ref,
         &collection,
-        512,
+        // The collection's own resolved chunking, not a literal. Same defect as
+        // the CLI carried: `512` here wrote the collection at a granularity
+        // nothing in the config mentioned, while a plain `ingest` used the
+        // configured one. `ensure_write_target`'s chunking guard refuses that.
+        vecdb_core::ingestion::options::ChunkSpec {
+            target_chunk_size: resolution.target_chunk_size.value,
+            chunk_overlap: resolution.chunk_overlap.value,
+            // Clamped to the model's capacity, exactly as `ingest` does.
+            max_chunk_bytes: Some(resolution.effective_max_chunk_bytes()),
+            pack_target_bytes: Some(resolution.pack_target_bytes.value),
+        },
         resolution.quantization.clone(),
         None,
     )

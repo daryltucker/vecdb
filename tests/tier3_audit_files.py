@@ -10,58 +10,51 @@ import os
 import sys
 
 def get_tracked_dirs():
-    """Get list of directories tracked by git."""
+    """Directories containing at least one tracked file.
+
+    Derived from `git ls-files`, NOT from `git ls-files --directory`. The
+    latter returns *file* paths — `--directory` only collapses output when
+    combined with `--others`. This function used to return those file paths,
+    which `os.walk()` then yielded nothing for, so the audit scanned zero
+    directories and reported "no untracked files" unconditionally. It was a
+    permanently-passing test inside the release gate.
+    """
     result = subprocess.run(
-        ["git", "ls-files", "--directory"], 
+        ["git", "ls-files"],
         capture_output=True, text=True, check=True
     )
-    return [d.strip().rstrip('/') for d in result.stdout.splitlines() if d.strip()]
+    dirs = set()
+    for f in result.stdout.splitlines():
+        f = f.strip()
+        if f:
+            dirs.add(os.path.dirname(f) or ".")
+    return sorted(dirs)
 
-def get_tracked_files():
-    """Get set of all tracked files."""
+def get_untracked_files():
+    """Files git considers untracked and not ignored.
+
+    `--exclude-standard` applies .gitignore/.git/info/exclude exactly as git
+    itself does, which is both faster and more faithful than one
+    `git check-ignore` subprocess per file.
+    """
     result = subprocess.run(
-        ["git", "ls-files"], 
+        ["git", "ls-files", "--others", "--exclude-standard"],
         capture_output=True, text=True, check=True
     )
-    return set(f.strip() for f in result.stdout.splitlines() if f.strip())
-
-def is_ignored(path):
-    """Check if a path is ignored by git."""
-    result = subprocess.run(
-        ["git", "check-ignore", "-q", path],
-        capture_output=True
-    )
-    return result.returncode == 0
+    return [f.strip() for f in result.stdout.splitlines() if f.strip()]
 
 def main():
-    tracked_dirs = get_tracked_dirs()
-    tracked_files = get_tracked_files()
-    
-    warnings = []
-    
+    tracked_dirs = set(get_tracked_dirs())
+
     print("=== Tier 3: Auditing Untracked Files ===")
-    
-    for d in tracked_dirs:
-        if d == ".": continue
-        
-        for root, _, files in os.walk(d):
-            # Skip .git directories
-            if ".git" in root.split(os.sep):
-                continue
-                
-            for file in files:
-                file_path = os.path.join(root, file)
-                
-                # Check if tracked
-                if file_path in tracked_files:
-                    continue
-                
-                # Check if ignored
-                if is_ignored(file_path):
-                    continue
-                
-                # If neither, it's a loose file in a tracked dir
-                warnings.append(file_path)
+
+    # A loose file is one git does not track, is not ignored, and which sits in
+    # a directory that already holds tracked files — i.e. somewhere that looks
+    # like it belongs to the project.
+    warnings = [
+        path for path in get_untracked_files()
+        if (os.path.dirname(path) or ".") in tracked_dirs
+    ]
 
     if warnings:
         print("\n[WARNING] Found untracked files in tracked directories:")

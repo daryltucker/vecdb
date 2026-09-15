@@ -41,15 +41,20 @@ from lib_envelope import search_results
 
 import sys, os as _os
 sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-from paths import bin_path
+from paths import bin_path, cuda_samples_dir
+from lib_stdio import drain_stderr
 
 
 DEFAULT_TEST_GRPC_PORT = 6336
 COLLECTION_NAME = "test_tier4_mixed_formats"
 
 # Use a subset of cuda-samples that has good format diversity
-# Samples/2_Concepts_and_Techniques has .cu, .cpp, .h, .doc, .pdf, .ppm, .bin
-CUDA_SUBSET = "tests/fixtures/external/cuda-samples/Samples/2_Concepts_and_Techniques"
+# 2_Concepts_and_Techniques has .cu, .cpp, .h, .doc, .pdf, .ppm, .bin
+#
+# The parent directory is RESOLVED, not hardcoded: upstream renamed `Samples/`
+# to `cpp/` and the old hardcoded path turned this test into a silent skip that
+# the gate reported as OK. See paths.cuda_samples_dir.
+CUDA_SUBSET = "2_Concepts_and_Techniques"
 
 
 class Tier4MixedFormats(unittest.TestCase):
@@ -61,13 +66,10 @@ class Tier4MixedFormats(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        cls.fixture_path = os.path.join(cls.root, CUDA_SUBSET)
-
-        if not os.path.isdir(cls.fixture_path):
-            raise unittest.SkipTest(
-                f"Fixture not found: {cls.fixture_path}. "
-                "Run: bash tests/fixtures/init.sh"
-            )
+        # Raises SystemExit (a gate FAILURE) when the corpus is absent. It used
+        # to raise SkipTest, which the gate prints as OK — see the docstring on
+        # cuda_samples_dir for why that is never the right answer here.
+        cls.fixture_path = str(cuda_samples_dir(CUDA_SUBSET))
 
         # Inventory: count file types for later assertions
         cls.file_types = {}
@@ -108,10 +110,6 @@ target_chunk_size = 512
 """)
 
         # Build
-        subprocess.run(
-            ["cargo", "build", "-p", "vecdb-server"],
-            check=True, capture_output=True, cwd=cls.root,
-        )
         cls.server_bin = os.path.join(cls.root, bin_path("vecdb-server"))
 
     @classmethod
@@ -137,6 +135,12 @@ target_chunk_size = 512
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=env,
         )
+        # Drain stderr continuously — see tests/lib_stdio.py. Undrained, the
+        # server blocks writing to a full stderr pipe and never replies on
+        # stdout, and the readline() below waits forever. Closing stderr in the
+        # `finally` (as this did) is far too late: the deadlock happens during
+        # the request, not at teardown.
+        drain_stderr(proc)
         try:
             init = json.dumps({"jsonrpc": "2.0", "method": "initialize", "id": 0}) + "\n"
             proc.stdin.write(init)
@@ -165,6 +169,8 @@ target_chunk_size = 512
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=env,
         )
+        # Drain stderr continuously — see tests/lib_stdio.py.
+        self._stderr = drain_stderr(self._proc)
         req = json.dumps({"jsonrpc": "2.0", "method": "initialize", "id": 0}) + "\n"
         self._proc.stdin.write(req)
         self._proc.stdin.flush()

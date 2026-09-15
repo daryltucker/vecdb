@@ -233,6 +233,7 @@ async fn test_large_file_bifurcation_ast() {
     let factory: Arc<dyn vecdb_core::parsers::ParserFactory> = Arc::new(PassThroughFactory);
 
     let options = IngestionOptions {
+        pack_target_bytes: None,
         path: file_path.to_str().unwrap().to_string(),
         collection: "test_large_ast".to_string(),
         target_chunk_size: 512,
@@ -244,6 +245,8 @@ async fn test_large_file_bifurcation_ast() {
         ignore_vectorignore: false,
         vecdbrc_routes: None,
         vecdbrc_root: None,
+        only_collection: None,
+        route_default_collection: None,
         strategy: "code_aware".to_string(),
         tokenizer: "bytes".to_string(),
         git_ref: None,
@@ -304,6 +307,7 @@ async fn test_large_file_streaming_json() {
     let factory: Arc<dyn vecdb_core::parsers::ParserFactory> = Arc::new(PassThroughFactory);
 
     let options = IngestionOptions {
+        pack_target_bytes: None,
         path: file_path.to_str().unwrap().to_string(),
         collection: "test_large_json".to_string(),
         target_chunk_size: 512,
@@ -315,6 +319,8 @@ async fn test_large_file_streaming_json() {
         ignore_vectorignore: false,
         vecdbrc_routes: None,
         vecdbrc_root: None,
+        only_collection: None,
+        route_default_collection: None,
         strategy: "recursive".to_string(),
         tokenizer: "bytes".to_string(),
         git_ref: None,

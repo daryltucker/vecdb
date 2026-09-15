@@ -24,7 +24,7 @@ qdrant_url = "http://localhost:6334"
 That is the whole thing — the local embedder needs no external services (except
 Qdrant).
 
-### The three layers
+### The four layers
 
 Configuration is split by *what a thing actually is*, so one setting can never
 silently apply to something it does not describe:
@@ -32,31 +32,39 @@ silently apply to something it does not describe:
 | Layer | Answers | Contains |
 |---|---|---|
 | `[backend.<name>]` | **WHERE** a model runs | connection only — `kind`, `url`, credentials |
+| `[store.<name>]` | **WHERE** vectors persist | connection only — `url`, `api_key` |
 | `[embedder.<name>]` | **WHAT** model, **HOW** tuned | `backend`, `model`, `num_ctx`, batch size, `dimension` |
-| `[profiles.<name>]` | **WHICH** embedder + **WHICH** store | `embedder`, `qdrant_url`, chunking overrides |
+| `[profiles.<name>]` | **WHICH** embedder + **WHICH** store | `embedder`, `store`, chunking overrides |
+
+A backend and a store are both "where", deliberately kept apart: a backend is
+where embedding *compute* runs, a store is where the resulting *vectors* live.
+A profile is the tie between one embedder and one store, and a collection is
+assigned a profile. `store = "<name>"` and the inline `qdrant_url` are two
+spellings of the same thing — the named form is reusable, and setting both at
+one level is a load-time error rather than a precedence rule.
 
 The split exists because one Ollama instance serves many models. Two embedders
 may share one backend:
 
 ```toml
-[backend.blade]
+[backend.gpu]
 kind = "ollama"
-url  = "http://blade.lan:11434"
+url  = "http://ollama.example.com:11434"
 
 [embedder.small]
-backend = "blade"
+backend = "gpu"
 model   = "qwen3-embedding:0.6b-q8_0"
 num_ctx = 16384
 
 [embedder.large]
-backend = "blade"          # same instance
+backend = "gpu"            # same instance
 model   = "qwen3-embedding:4b-q8_0"
 num_ctx = 8192
 ```
 
 **Backend names are free-form** — `kind` says what it is, so the name need not
-repeat it. Dots must be quoted: `[backend."ollama.blade"]` is a backend named
-`ollama.blade`, while `[backend.ollama.blade]` is a *nested table* and will not
+repeat it. Dots must be quoted: `[backend."ollama.gpu"]` is a backend named
+`ollama.gpu`, while `[backend.ollama.gpu]` is a *nested table* and will not
 parse.
 
 Every reference is validated when the config loads, so a typo in `embedder = `
@@ -83,10 +91,10 @@ a single embed host becomes everyone's queue:
 
 ```bash
 # terminal 1 — this repo, on the embedder's own backend
-vecdb --profile code ingest -c code ./
+vecdb --profile prose ingest -c notes ./
 
 # terminal 2 — another repo, same collection, different GPU
-vecdb --profile code --backend blade ingest -c code ./
+vecdb --profile prose --backend gpu ingest -c notes ./
 ```
 
 This is safe only because `--backend` cannot change what a vector *is*. Both
@@ -112,7 +120,7 @@ enumerate *stores*, so an embedder override across all of them is meaningless.
 points at a table that does not explain it:
 
 ```
-embedder   baby_qwen  (qwen3-embedding:0.6b-q8_0 on backend blade — ollama)
+embedder   baby_qwen  (qwen3-embedding:0.6b-q8_0 on backend gpu — ollama)
            backend  selected by --backend (model and tuning unchanged)
 ```
 
@@ -129,11 +137,19 @@ smart_routing_keys = ["source_type", "language"]
 [backend.local]
 kind = "fastembed"                  # in-process ONNX, no endpoint
 
-[backend.blade]
+[backend.gpu]
 kind = "ollama"
-url  = "http://blade.lan:11434"
+url  = "http://ollama.example.com:11434"
 # api_key = "..."
 # accept_invalid_certs = true       # staging / self-signed
+
+# ═══ STORES — where vectors persist ════════════════════════════
+[store.local]
+url = "http://localhost:6334"
+
+[store.public]
+url = "https://qdrant.example.com"
+# api_key = "..."
 
 # ═══ EMBEDDERS — what model, how tuned ═════════════════════════
 [embedder.micro]
@@ -143,7 +159,7 @@ use_gpu    = false                  # fastembed only
 batch_rows = 2                      # ONNX rows per inference
 
 [embedder.code]
-backend      = "blade"
+backend      = "gpu"
 model        = "qwen3-embedding:0.6b-q8_0"
 num_ctx      = 16384                # ollama only — the EFFECTIVE ceiling
 batch_inputs = 8                    # inputs per /api/embed request
@@ -152,28 +168,31 @@ batch_inputs = 8                    # inputs per /api/embed request
 # ═══ PROFILES — which embedder, which store ════════════════════
 [profiles.default]
 embedder     = "micro"
-qdrant_url   = "http://localhost:6334"
+store        = "local"
 quantization = "none"
 
 [profiles.high]
-embedder   = "code"
-qdrant_url = "http://localhost:6334"
+embedder = "code"
+store    = "local"
 target_chunk_size = 12000
 
+# qdrant_url = "http://localhost:6334" is the inline spelling of a store,
+# still accepted anywhere `store =` is. A profile may use either, not both.
+
 # ═══ COLLECTIONS — overrides ═══════════════════════════════════
-[collections.docs]
-name    = "docs"
+[collections.notes]
+name    = "notes"
 profile = "high"
 
-[collections.docs-lts]
-name       = "docs-lts"
-profile    = "high"
-embedder   = "micro"                        # different model, same profile
-qdrant_url = "https://qdrant.example.com"   # different store
+[collections.notes-archive]
+name     = "notes-archive"
+profile  = "high"
+embedder = "micro"                  # different model, same profile
+store    = "public"                 # different store
 target_chunk_size = 2048
 
 [collection_aliases]
-b = "brain"
+n = "notes"
 
 # ═══ INGESTION — chunking policy ═══════════════════════════════
 [ingestion]
@@ -203,16 +222,18 @@ target_chunk_size = 1024
 
 | Key | Type | Required | Description |
 |-----|------|----------|-------------|
-| `backend` | table | no | Where models run. Connection details only, reusable by many embedders. — Names are free-form; `kind` says what it is, so the name need not repeat it. Dots are allowed if quoted — `[backend."ollama.blade"]` — but a bare `[backend.ollama.blade]` is a *nested* TOML table and will not parse. |
+| `backend` | table | no | Where models run. Connection details only, reusable by many embedders. — Names are free-form; `kind` says what it is, so the name need not repeat it. Dots are allowed if quoted — `[backend."ollama.gpu"]` — but a bare `[backend.ollama.gpu]` is a *nested* TOML table and will not parse. |
 | `collection_aliases` | table | no | Simple aliases: short_name -> collection key |
 | `collections` | table | no | Collection-level overrides. |
 | `default_profile` | string | no | Profile used when `--profile` is not given. |
 | `embedder` | table | no | Which model, and how it is tuned. Each references a backend. — This is the unit the storage layer already treats as primary: genesis records model name, digest, architecture, parameter size, quantization and dimension, and the space guard holds every write to that identity. Naming it here means config can finally refer to the thing the database tracks. |
 | `fastembed_cache_path` | string | no | Where fastembed caches downloaded models. Genuinely global — it is a disk location, not a property of any one embedder. |
 | `ingestion` | `IngestionConfig` | no | Chunking and discovery policy. Applies to every profile — it describes how documents are cut up, which is independent of which model embeds them. |
+| `ort_dylib_path` | string | no | Path to `libonnxruntime.so` for `cuda-dynamic` builds (BYO ONNX Runtime, docs/GPU_LEGACY.md). Applied to the `ORT_DYLIB_PATH` environment variable at startup unless that variable is already set — an explicit environment always wins. Genuinely global for the same reason as `fastembed_cache_path`: it is a disk location, not a property of any one embedder. Ignored by default (static-ORT) builds. |
 | `profiles` | table | no | Which embedder to use, and which vector store to write to. |
 | `server` | `ServerConfig` | no | Server-side runtime tuning (idle eviction, watchdog cadence). Only consulted by `vecdb-server`; CLI commands ignore it. |
 | `smart_routing_keys` | array | no | Keys to use for Smart Routing (Facet Auto-Detection). |
+| `store` | table | no | Where vectors persist. Connection details only, reusable by many profiles. — The storage counterpart of `[backend.*]`: a backend is where embedding compute runs, a store is where the resulting vectors live. Deliberately a separate table rather than a backend `kind` — the two have different knobs and different failure modes, and reusing the word "backend" for both is exactly the confusion this table exists to end. |
 
 #### Backend Options (`[backend.<name>]`)
 
@@ -222,6 +243,13 @@ target_chunk_size = 1024
 | `accept_invalid_certs` | boolean | no | Accept invalid TLS certificates (staging / self-signed endpoints). |
 | `api_key` | string | no | Bearer token, for an authenticated proxy in front of the endpoint. |
 | `url` | string | no | Endpoint. Required for `ollama`, meaningless for `fastembed`. |
+
+#### Store Options (`[store.<name>]`)
+
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `url` | string | **yes** | Qdrant endpoint. |
+| `api_key` | string | no | API key for Qdrant authentication. |
 
 #### Embedder Options (`[embedder.<name>]`)
 
@@ -243,9 +271,11 @@ target_chunk_size = 1024
 | `chunk_overlap` | integer | no | Override `[ingestion].chunk_overlap` for this profile. |
 | `default_collection_name` | string | no | Default collection when `-c` is not given. |
 | `max_chunk_bytes` | integer | no | Override the byte ceiling above which a chunk is re-split. Unset derives from `target_chunk_size`; it must never sit below it. |
+| `pack_target_bytes` | integer | no | Override AST packing granularity, in non-whitespace characters. — This — not `target_chunk_size` — governs chunk size for code, markdown, JSON and YAML. `target_chunk_size` drives the generic chunker (used for file types with no parser) and the derived byte ceiling. |
 | `qdrant_api_key` | string | no | API key for Qdrant authentication. |
-| `qdrant_url` | string | no | Qdrant endpoint for collections under this profile. |
+| `qdrant_url` | string | no | Qdrant endpoint for collections under this profile — the inline, anonymous spelling of a store. Unset (and no `store`) falls back to the `QDRANT_URL` environment variable, then `http://localhost:6334`. |
 | `quantization` | `QuantizationType` | no | Default quantization for collections created under this profile. |
+| `store` | string | no | Name of the `[store.*]` entry vectors persist to. Exclusive with the inline `qdrant_url`/`qdrant_api_key` below — setting both is a load-time error, so which one applies is never a precedence puzzle. |
 | `target_chunk_size` | integer | no | Override `[ingestion].target_chunk_size` for this profile. Counted in whatever `tokenizer` counts — tokens under the default `cl100k_base`. |
 
 #### Collection Profile Options (`[collections.<name>]`)
@@ -257,10 +287,12 @@ target_chunk_size = 1024
 | `description` | string | no | Free-text note shown by `vecdb list`. |
 | `embedder` | string | no | Override: use a different embedder for this collection. |
 | `max_chunk_bytes` | integer | no | Override the byte ceiling above which a chunk is re-split. |
+| `pack_target_bytes` | integer | no | Override AST packing granularity, in non-whitespace characters. — This — not `target_chunk_size` — governs chunk size for code, markdown, JSON and YAML. `target_chunk_size` drives the generic chunker (used for file types with no parser) and the derived byte ceiling. |
 | `profile` | string | no | Profile to inherit from. |
 | `qdrant_api_key` | string | no | Override the profile's Qdrant API key. |
 | `qdrant_url` | string | no | Override: a different Qdrant instance. |
 | `quantization` | `QuantizationType` | no | Vector quantization for this collection: `"scalar"`, `"binary"` or `"none"`. Fixed when the collection is created. |
+| `store` | string | no | Override: persist this collection's vectors to a named `[store.*]` instead of the profile's store. Exclusive with the inline `qdrant_url`/`qdrant_api_key` below. |
 | `target_chunk_size` | integer | no | Override the chunk target for this collection. Baked into the vectors at ingest — changing it later means a re-ingest. |
 
 ### Ingestion Options (`[ingestion]`)
@@ -275,6 +307,7 @@ target_chunk_size = 1024
 | `max_concurrent_requests` | integer | no | Concurrency Limit: Max number of file processing tasks running in parallel |
 | `on_oversize` | `OversizePolicy` | no | What to do with a chunk that exceeds the resolved ceiling: `"split"` or `"skip"`. Defaults to `split`. |
 | `overrides` | table | no | Per-glob overrides, e.g. `[ingestion.overrides."*.rs"]`. Lets source files chunk differently from prose without a separate collection. |
+| `pack_target_bytes` | integer | no | Bytes to pack consecutive sibling AST elements up to, before emitting a chunk. Defaults to 2048. — This is the knob that decides retrieval granularity for every file vecq can parse — which is most of them. `target_chunk_size` does not: no chunker runs on a parsed file, so the parser's packing is the only thing setting size. Before this existed, every AST element became its own vector and `code` had a median chunk of 39 bytes against a 6000-token target that was never once reached. — Raise it for coarser, more contextual chunks; lower it for sharper, more numerous ones. An element already larger than this is never split — a function stays whole. Baked into the vectors at ingest: changing it means a re-ingest. |
 | `path_rules` | array | no | Path parsing rules for metadata extraction Path parsing rules for metadata extraction |
 | `respect_gitignore` | boolean | no | Consult `.gitignore` when walking. **Off, and stays off.** — `.gitignore` is a build-artifact list, not an indexing policy, and the two disagree constantly. `.vectorignore` is the knob that governs indexing. This is an escape hatch for people driving the system who expect git semantics — it is never the default and never inferred. |
 | `target_chunk_size` | integer | no | Target chunk size, counted in whatever `tokenizer` counts — **tokens** under the default `cl100k_base`, not bytes. Compare `max_chunk_bytes`. |
@@ -316,7 +349,7 @@ If a chunk does exceed the ceiling, vecdb now says so, naming the file.
 
 #### Smart Ingestion (Path Parsing)
 You can configure `path_rules` to extract metadata from file paths (e.g., years, versions).
-See [VECTOR_FACETS.md](VECTOR_FACETS.md) for details and [TRAINING_GOLD.md](internal/TRAINING_GOLD.md) for 10 fun examples!
+See [VECTOR_FACETS.md](VECTOR_FACETS.md) for details.
 
 #### Chunking Strategies
 

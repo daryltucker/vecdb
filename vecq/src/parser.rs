@@ -70,8 +70,8 @@
 //   2. Add comprehensive error handling for malformed input
 //   3. Ensure line number preservation in all DocumentElements
 //   4. Add parser to ParserRegistry in src/detection.rs
-//   5. Add unit tests in tests/unit/parsers/
-//   6. Add property tests for new language in tests/property/
+//   5. Add a case to vecq/tests/parser_compliance.rs
+//   6. Add property tests, e.g. vecq/tests/property_rust_parsing.rs
 //
 //   When modifying Parser trait:
 //   1. Update ALL existing parser implementations
@@ -85,7 +85,7 @@
 //   - src/error.rs - Defines VecqError and VecqResult types
 //   - src/detection.rs - Uses Parser trait for file type processing
 //   - src/parsers/*.rs - All language-specific parser implementations
-//   - tests/unit/parser_tests.rs - Parser trait validation tests
+//   - vecq/tests/parser_compliance.rs - Parser trait validation tests
 //
 // MAINTENANCE:
 //   Update when:

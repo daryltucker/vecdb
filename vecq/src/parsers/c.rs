@@ -93,6 +93,26 @@ impl CParser {
                         elements.push(include);
                     }
                 }
+                // `Macro -> "macros"` was mapped but never constructed, so
+                // `#define` was invisible in C output. Both spellings matter:
+                // object-like (`#define N 1`) and function-like (`#define F(x)`).
+                "preproc_def" | "preproc_function_def" => {
+                    if let Some(name) = child
+                        .child_by_field_name("name")
+                        .and_then(|n| n.utf8_text(content.as_bytes()).ok())
+                    {
+                        elements.push(DocumentElement::new(
+                            ElementType::Macro,
+                            Some(name.to_string()),
+                            child
+                                .utf8_text(content.as_bytes())
+                                .unwrap_or("")
+                                .to_string(),
+                            child.start_position().row + 1,
+                            child.end_position().row + 1,
+                        ));
+                    }
+                }
                 "declaration" | "field_declaration" => {
                     // Check for fields if we are inside a struct, or global variables
                     if let Some(field) = self.parse_field(content, child) {

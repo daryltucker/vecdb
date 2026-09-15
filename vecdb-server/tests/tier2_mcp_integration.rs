@@ -76,9 +76,6 @@ async fn test_mcp_full_lifecycle() {
         detector,
         parser_factory,
         Vec::new(),
-        Vec::new(),
-        1,
-        10,
     ));
 
     let mut config = Config::default();
@@ -95,7 +92,7 @@ async fn test_mcp_full_lifecycle() {
         // `test_`-prefixed: a default named after a real collection ("docs")
         // puts a production name in the test's assertions and in the instance.
         profile.default_collection_name = Some(FOREIGN_COLLECTION.to_string());
-        profile.qdrant_url = test_qdrant.clone();
+        profile.qdrant_url = Some(test_qdrant.clone());
     }
 
     // Create the collection this test asserts on, rather than hoping one is
@@ -290,9 +287,6 @@ async fn test_mcp_multiprofile_dispatch() {
         detector.clone(),
         Arc::new(MockParserFactory),
         Vec::new(),
-        Vec::new(),
-        1,
-        10,
     ));
 
     let core_alternate = Arc::new(Core::with_backends(
@@ -301,9 +295,6 @@ async fn test_mcp_multiprofile_dispatch() {
         detector.clone(),
         parser,
         Vec::new(),
-        Vec::new(),
-        1,
-        10,
     ));
 
     // ── Build a config with two profiles and one collection ──────────────────
@@ -326,8 +317,15 @@ async fn test_mcp_multiprofile_dispatch() {
     config.profiles.insert(
         "alternate".to_string(),
         vecdb_core::config::Profile {
+            pack_target_bytes: None,
             embedder: "alternate".to_string(),
-            qdrant_url: "http://localhost:6334".to_string(),
+            store: None,
+            // TEST port. This said `:6334` — the production gRPC port — in a
+            // shipped test, while the comment at the top of this file records
+            // the bug that came from exactly that. `tier0_qdrant_isolation`
+            // scanned only `tests/*.py`, so Rust tests were a blind spot; it
+            // now scans them too and this literal would fail the gate.
+            qdrant_url: Some("http://localhost:6336".to_string()),
             qdrant_api_key: None,
             default_collection_name: Some("test_alt_col".to_string()),
             quantization: None,
@@ -341,10 +339,12 @@ async fn test_mcp_multiprofile_dispatch() {
     config.collections.insert(
         "test_alt_col".to_string(),
         vecdb_core::config::CollectionConfig {
+            pack_target_bytes: None,
             name: "test_alt_col".to_string(),
             description: None,
             profile: Some("alternate".to_string()),
             embedder: None,
+            store: None,
             qdrant_url: None,
             qdrant_api_key: None,
             target_chunk_size: None,

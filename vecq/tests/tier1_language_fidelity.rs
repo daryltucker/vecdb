@@ -3,7 +3,7 @@
 //! Every other compliance test in this repo checks that a parser *exists* and
 //! *does not crash*: `parser_compliance.rs` asserts the fixture parses, that
 //! `metadata.file_type` round-trips (which the parser sets itself), and that
-//! `line_end >= line_start`. `vecdb-core/tests/parser_compliance.rs` was weakened
+//! `line_end >= line_start`. `vecdb-core's parser compliance tests` was weakened
 //! further, to `assert!(!result.is_empty())` — with a comment saying the stronger
 //! check had failed.
 //!

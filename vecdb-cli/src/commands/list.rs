@@ -17,7 +17,7 @@ pub async fn run(
     std::env::set_var("VECDB_SKIP_PROBE", "true");
 
     let file_detector = Arc::new(HybridDetector::new());
-    let parser_factory = Arc::new(VecqParserFactory);
+    let parser_factory = Arc::new(VecqParserFactory::default());
 
     // One resolution per distinct Qdrant endpoint. Listing is about *stores*,
     // not embedders, so profiles that differ only in which model they use would
@@ -71,7 +71,16 @@ pub async fn run(
         // That is the most expensive wrong answer this command can give.
         match core.list_collections_with_genesis().await {
             Ok(cols) => {
-                results.push((resolution.qdrant_url, cols));
+                // `vecdb list` lists vecdb's collections, and nothing else.
+                //
+                // Foreign collections were previously shown with a label, on the
+                // reasoning that a taken name should never be invisible. But the
+                // taken name is already declared, loudly and at the only moment
+                // it matters: creating or writing one is refused by the genesis
+                // ownership check. Listing them a second time here just puts
+                // another tool's data in vecdb's inventory.
+                let mine: Vec<_> = cols.into_iter().filter(|(_, g)| g.is_vecdb()).collect();
+                results.push((resolution.qdrant_url, mine));
             }
             Err(e) => {
                 eprintln!(
@@ -180,7 +189,6 @@ pub async fn run(
                         "  {:-<20}-+-{:-<12}-+-{:-<6}-+-{:-<8}-+-{:-<30}",
                         "", "", "", "", ""
                     )?;
-                    let mut foreign = 0usize;
                     for (c, genesis) in collections {
                         let count_val = c.vector_count.unwrap_or(0);
                         let dim_val = c.vector_size.unwrap_or(0);
@@ -218,17 +226,9 @@ pub async fn run(
                             _ => "None",
                         };
 
-                        // Foreign collections are listed, never hidden — a name
-                        // that is absent here but rejects an ingest is a support
-                        // ticket. The Model column carries the label because
-                        // "which model is this?" and "is this ours?" are the
-                        // same question.
-                        let model = if genesis.is_vecdb() {
-                            genesis.model.describe()
-                        } else {
-                            foreign += 1;
-                            "— not a vecdb collection".to_string()
-                        };
+                        // Every row here is vecdb's; foreign collections were
+                        // filtered out at the source.
+                        let model = genesis.model.describe();
 
                         writeln!(
                             out,
@@ -253,14 +253,6 @@ pub async fn run(
                                 )?;
                             }
                         }
-                    }
-                    if foreign > 0 {
-                        writeln!(
-                            out,
-                            "\n  {} collection(s) on this backend were not created by vecdb.\n  \
-                             They are shown for visibility; vecdb will not read or write them.",
-                            foreign
-                        )?;
                     }
                 }
                 writeln!(out)?;

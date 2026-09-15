@@ -14,6 +14,7 @@ from lib_envelope import search_results
 import sys, os as _os
 sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from paths import bin_path
+from lib_stdio import drain_stderr
 
 class Tier3HistoryTest(unittest.TestCase):
     def setUp(self):
@@ -66,7 +67,6 @@ accept_invalid_certs = true
         self.env["VECDB_ALLOW_LOCAL_FS"] = "true"
         
         # Build
-        subprocess.run(["cargo", "build", "-p", "vecdb-server"], check=True, capture_output=True)
         self.server_bin = bin_path("vecdb-server")
         
         self.process = subprocess.Popen(
@@ -77,6 +77,10 @@ accept_invalid_certs = true
             text=True,
             env=self.env
         )
+        # Drain stderr continuously so the server can never block writing to
+        # a full stderr pipe while this test blocks reading stdout.
+        # See tests/lib_stdio.py for the deadlock this prevents.
+        self._stderr = drain_stderr(self.process)
         time.sleep(1)
 
     def tearDown(self):
@@ -101,7 +105,7 @@ accept_invalid_certs = true
         self.process.stdin.flush()
         line = self.process.stdout.readline()
         if not line:
-             err = self.process.stderr.read()
+             err = self._stderr()
              raise Exception(f"Server died: {err}")
         return json.loads(line)
 

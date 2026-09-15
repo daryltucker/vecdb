@@ -17,7 +17,7 @@ Uses **Qdrant** as the robust storage backend.
 ## 🚀 Quick Start
 
 ```bash
-install.sh
+cargo install --git https://github.com/daryltucker/vecdb --locked vecdb-cli vecdb-server vecq
 vecdb ingest ./
 docsize "How do I install and use vecq?"
 ```
@@ -116,7 +116,10 @@ vecdb completions zsh > ~/.zfunc/_vecdb
 
 Then add to `~/.zshrc`: `fpath=(~/.zfunc $fpath); autoload -Uz compinit; compinit`
 
-> See `install.sh` for more install options
+> `install.sh` is a **contributor helper**, not an install method — it builds
+> from a checkout and does not set up GPU provider libraries. Users should use
+> `cargo install` / `cargo binstall` above; see [`docs/BUILDING.md`](docs/BUILDING.md)
+> for building from source and [`docs/GPU.md`](docs/GPU.md) for GPU setup.
 
 ### 3. Start Qdrant (Vector Database)
 
@@ -130,7 +133,7 @@ docker run -d -p 6333:6333 \
     qdrant/qdrant
 ```
 
-See [Examples README.md](examples/README.md#qdrant) and [docker-compose.qdrant](examples/docker-compose.qdrant)
+See [Examples README.md](examples/README.md#qdrant) and [docker-compose.qdrant.yml](examples/docker-compose.qdrant.yml)
 
 **Option B: Manual / Cloud**
 Install/Sign-up at [qdrant.tech](https://qdrant.tech/documentation/quick-start/).
@@ -153,8 +156,17 @@ vecdb ingest ./docs --collection my_knowledge -P 4 -G 2
 ```
 ## ⚡ CUDA Support
 
-By default, `vecdb` is built with CUDA support enabled. The ONNX Runtime is
-downloaded as prebuilt shared libraries and dynamically loaded at runtime.
+By default, `vecdb` is built with CUDA support enabled (`cuda` is a **default**
+feature — you do not add it). The ONNX Runtime itself is **statically linked**;
+only the optional CUDA execution-provider libraries are loaded at runtime.
+
+> **Supported GPUs: compute capability 7.5, 8.0–8.9, 9.0** — Turing, Ampere,
+> Ada and Hopper. The prebuilt ONNX Runtime carries `sm_75`/`sm_80`/`sm_90`
+> kernels and no PTX, so both older cards (Maxwell, Pascal, Volta) **and newer
+> ones (Blackwell / RTX 50 series)** fall outside it and need
+> [`docs/GPU_LEGACY.md`](docs/GPU_LEGACY.md). Check yours with
+> `nvidia-smi --query-gpu=name,compute_cap --format=csv`. Full matrix:
+> [`docs/GPU.md`](docs/GPU.md).
 
 1.  **Prerequisites**:
     *   NVIDIA Drivers (v550+ recommended)
@@ -163,12 +175,19 @@ downloaded as prebuilt shared libraries and dynamically loaded at runtime.
 
 2.  **Install with `--locked`**:
     ```bash
-    cargo install --git https://github.com/daryltucker/vecdb --locked vecdb-cli
+    ORT_CUDA_VERSION=12 cargo install --git https://github.com/daryltucker/vecdb --locked vecdb-cli
     ```
-    The workspace `Cargo.lock` pins `ort-sys 2.0.0-rc.11` which downloads
-    the ONNX Runtime 1.23.2 CUDA binary. Building without `--locked` may resolve
-    a newer `ort-sys` that downloads an incompatible ORT binary. See
-    [docs/internal/ORT_BINARY_DEPENDENCY.md](docs/internal/ORT_BINARY_DEPENDENCY.md).
+    `ORT_CUDA_VERSION` picks which CUDA major the prebuilt ONNX Runtime links
+    against — `12` needs `libcudart.so.12`, `13` needs `libcudart.so.13`. Both
+    support exactly the same GPUs. **If you omit it, the `ort` crate guesses
+    from your build machine's `nvcc`**, so the binary's runtime requirement
+    depends on the box you compiled on. Set it to the CUDA you actually have.
+    The workspace `Cargo.lock` pins the `ort-sys` version that downloads a
+    matching prebuilt ONNX Runtime. Building without `--locked` may resolve a
+    newer `ort-sys` and download an ORT binary the rest of the build does not
+    expect. The exact pair is in `Cargo.lock`; `docs/GPU_LEGACY.md` carries the
+    compatibility contract and is checked against the lockfile by the test
+    suite.
 
 3.  **Configuration**:
     *   Set `use_gpu = true` on the `[embedder.<name>]` you use, in
@@ -250,7 +269,7 @@ To use with an MCP client (like Claude Desktop or an IDE):
 *   `project_overview`: Full-project AST analysis with architecture graph + Mermaid diagram.
 *   `embed`: Generate embeddings from text.
 *   `ingest_path`: Ingest local files/folders.
-*   `ingest_historic_version`: Time-travel ingestion (Git).
+*   `ingest_history`: **[WIP]** Time-travel ingestion (Git).
 *   `list_collections`: List collections with stats and compatibility info.
 *   `delete_collection`: Delete a collection with safety confirmation.
 *   `get_job_status`: Check background job progress.

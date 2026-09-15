@@ -73,7 +73,7 @@
 //   - src/parser.rs - Produces ParsedDocument that gets converted to JSON
 //   - src/query.rs - Consumes JSON output for jq querying
 //   - src/parsers/*.rs - Language parsers that create elements for conversion
-//   - tests/unit/converter_tests.rs - JSON conversion validation
+//   - vecq/tests/tier3_roundtrip.rs - JSON conversion validation
 //
 // MAINTENANCE:
 //   Update when:
@@ -226,7 +226,27 @@ impl SchemaRegistry {
             .with_element_mapping(ElementType::Implementation, "implementations".to_string())
             .with_attribute_definition(ElementType::Implementation, "docstring".to_string())
             .with_element_mapping(ElementType::Import, "imports".to_string())
-            .with_attribute_definition(ElementType::Import, "visibility".to_string());
+            .with_attribute_definition(ElementType::Import, "visibility".to_string())
+            // `mod_item` has been extracted since the parser was written, but
+            // had no mapping, so modules never reached the output at all.
+            .with_element_mapping(ElementType::Module, "modules".to_string())
+            .with_attribute_definition(ElementType::Module, "visibility".to_string())
+            .with_attribute_definition(ElementType::Module, "docstring".to_string())
+            .with_element_mapping(ElementType::TypeAlias, "type_aliases".to_string())
+            .with_attribute_definition(ElementType::TypeAlias, "visibility".to_string())
+            .with_attribute_definition(ElementType::TypeAlias, "docstring".to_string())
+            .with_element_mapping(ElementType::Constant, "constants".to_string())
+            .with_attribute_definition(ElementType::Constant, "visibility".to_string())
+            .with_attribute_definition(ElementType::Constant, "docstring".to_string())
+            .with_element_mapping(ElementType::Variable, "statics".to_string())
+            .with_attribute_definition(ElementType::Variable, "visibility".to_string())
+            .with_attribute_definition(ElementType::Variable, "docstring".to_string())
+            .with_element_mapping(ElementType::Union, "unions".to_string())
+            .with_attribute_definition(ElementType::Union, "visibility".to_string())
+            .with_attribute_definition(ElementType::Union, "docstring".to_string())
+            .with_element_mapping(ElementType::Macro, "macros".to_string())
+            .with_attribute_definition(ElementType::Macro, "visibility".to_string())
+            .with_attribute_definition(ElementType::Macro, "docstring".to_string());
         self.register(rust_schema);
 
         // Python schema
@@ -240,7 +260,13 @@ impl SchemaRegistry {
             .with_attribute_definition(ElementType::Function, "is_async".to_string())
             .with_attribute_definition(ElementType::Function, "signature".to_string())
             .with_element_mapping(ElementType::Import, "imports".to_string())
-            .with_element_mapping(ElementType::Decorator, "decorators".to_string());
+            .with_attribute_definition(ElementType::Function, "decorators".to_string());
+        // No `ElementType::Decorator` mapping: the Python visitor models
+        // decorators as a `decorators` *attribute* on the thing they decorate
+        // (`parsers/python/visitor.rs`), which is the more useful shape — a
+        // bare decorator element loses what it was applied to. The mapping used
+        // to exist and nothing ever constructed one, so a top-level
+        // `decorators` field was advertised and permanently empty.
         self.register(python_schema);
 
         // Markdown schema

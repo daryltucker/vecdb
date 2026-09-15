@@ -66,6 +66,14 @@ fetch_tarball() {
 # fetch_git "https://github.com/torvalds/linux.git" "linux-kernel"
 
 # 2. CUDA Samples (for .cu parser testing)
+#
+# UNPINNED — tracks upstream `master`, so the corpus is not identical across
+# machines or across time. In 2026 upstream moved every sample from `Samples/`
+# to `cpp/`; two Tier 4 tests hardcoded the old path and degraded to a SKIP that
+# the gate printed as OK. The layout is now resolved by `paths.cuda_samples_dir`,
+# which accepts either and FAILS LOUDLY on neither — so a future restructuring
+# stops the gate instead of hollowing it out. Pinning a SHA here would also need
+# fetch+checkout rather than --depth 1, and is the better long-term fix.
 fetch_git "https://github.com/NVIDIA/cuda-samples.git" "cuda-samples" "master"
 
 

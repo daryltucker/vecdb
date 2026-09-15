@@ -29,7 +29,7 @@ pub async fn run(
     let profile_name = resolution.profile_name.clone();
 
     let file_detector = Arc::new(HybridDetector::new());
-    let parser_factory = Arc::new(VecqParserFactory);
+    let parser_factory = Arc::new(VecqParserFactory::default());
 
     let services = vecdb_core::CoreServices::from_config(
         config,
@@ -257,13 +257,31 @@ pub async fn run(
         }
     }
 
+    // "Providers" here means compiled-in availability (GetAvailableProviders),
+    // not what a session actually registers — a CUDA build lists CUDA even when
+    // the provider libraries are missing at runtime (BUG-2026-254).
     skin.print_text(&format!(
-        "* **Providers**: [{}]",
+        "* **Providers (compiled in)**: [{}]",
         providers_formatted.join(", ")
     ));
-    if !providers_formatted.iter().any(|p| p.contains("CUDA")) && resolution.use_gpu.value {
-        skin.print_text("\n> [!WARNING]\n> CUDA provider missing but GPU requested!");
-        skin.print_text("> See `docs/vecq/GPU.md` to install `libonnxruntime_providers_cuda.so`");
+    if resolution.use_gpu.value {
+        // The runtime check that matters: ORT resolves the CUDA provider
+        // libraries relative to the running executable's directory, so their
+        // presence there decides whether GPU registration can succeed.
+        let provider_libs_present = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|d| d.to_path_buf()))
+            .map(|dir| {
+                dir.join("libonnxruntime_providers_shared.so").exists()
+                    && dir.join("libonnxruntime_providers_cuda.so").exists()
+            })
+            .unwrap_or(false);
+        if !provider_libs_present {
+            skin.print_text(
+                "\n> [!WARNING]\n> GPU requested but `libonnxruntime_providers_shared.so` / `libonnxruntime_providers_cuda.so`\n> are not next to the vecdb executable — CUDA registration will fail.",
+            );
+            skin.print_text("> Re-run `make install`, or see `docs/GPU.md`.");
+        }
     }
 
     println!();

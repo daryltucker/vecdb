@@ -225,11 +225,30 @@ impl Backend for QdrantBackend {
     }
 
     async fn collection_exists(&self, name: &str) -> Result<bool> {
-        let result = self.client.collection_info(name).await;
-        match result {
-            Ok(_) => Ok(true),
-            Err(_) => Ok(false),
-        }
+        // "Does not exist" and "could not ask" are DIFFERENT ANSWERS and this
+        // must never collapse them.
+        //
+        // This was `collection_info(name)` with `Err(_) => Ok(false)`, so an
+        // unreachable host, a refused connection, a TLS failure, a bad API key
+        // and a genuine absence all returned the same `false`. Measured against
+        // an unroutable endpoint (192.0.2.1, TEST-NET-1):
+        //
+        //     $ vecdb delete some_collection -P <that profile>
+        //     Deleting 'some_collection' at http://192.0.2.1:6333... not found
+        //       — nothing deleted
+        //     $ echo $?
+        //     0
+        //
+        // The operator is told their data is already gone, with exit 0, while
+        // the store holding it was never contacted. `commands/delete.rs` added
+        // this existence check specifically so that "a wrong endpoint, a typo,
+        // or an already-deleted name" could not all report success — and the
+        // swallowed error put every one of those back.
+        //
+        // Qdrant answers the question directly, and the client propagates
+        // transport failures instead of flattening them, so `?` is correct
+        // here: absence is `Ok(false)`, unreachable is `Err`.
+        Ok(self.client.collection_exists(name).await?)
     }
 
     async fn delete_collection(&self, name: &str) -> Result<()> {
@@ -243,8 +262,39 @@ impl Backend for QdrantBackend {
         let points: Vec<PointStruct> = chunks
             .into_iter()
             .map(|chunk| {
-                let id = Uuid::parse_str(&chunk.id).unwrap_or_default();
-                let vector = chunk.vector.unwrap_or_default();
+                // Both of these were `unwrap_or_default()`, and both defaults are
+                // the worst available answer for the case they cover:
+                //
+                //   - `Uuid::default()` is the NIL uuid, which is the genesis
+                //     point. An unparseable chunk id would therefore overwrite a
+                //     collection's model and chunking record with a content
+                //     chunk — after which `read_genesis` finds no `__meta_vecdb`
+                //     marker, every guard concludes the collection belongs to
+                //     another tool, and the damage is unrecoverable.
+                //   - an empty vector is not a vector. Qdrant rejects it on
+                //     dimension, so the run dies anyway, several layers from the
+                //     chunk that caused it.
+                //
+                // Neither should be reachable — ids are generated as UUIDv5 and
+                // the embedding worker fills every vector before flushing. That
+                // is the argument for failing loudly here, not for papering over
+                // it: an unreachable state that silently destroys genesis is
+                // exactly the thing to make representable as an error.
+                let id = Uuid::parse_str(&chunk.id).map_err(|e| {
+                    anyhow::anyhow!(
+                        "chunk id '{}' in document '{}' is not a UUID ({e}). Refusing to \
+                         upsert: the fallback is the nil UUID, which is the genesis point.",
+                        chunk.id,
+                        chunk.document_id
+                    )
+                })?;
+                let vector = chunk.vector.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "chunk {} in document '{}' reached the backend without a vector",
+                        chunk.id,
+                        chunk.document_id
+                    )
+                })?;
 
                 let mut payload: HashMap<String, Value> = HashMap::new();
 
@@ -303,9 +353,13 @@ impl Backend for QdrantBackend {
                     },
                 );
 
-                PointStruct::new(PointId::from(id.to_string()), vector, payload)
+                Ok(PointStruct::new(
+                    PointId::from(id.to_string()),
+                    vector,
+                    payload,
+                ))
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         // New API: use upsert_points instead of blocking, pass UpsertPoints struct or builder
         self.client
@@ -777,6 +831,10 @@ impl Backend for QdrantBackend {
                 iv(c.max_chunk_bytes as u64),
             );
             payload.insert("__meta_chunk_tokenizer".to_string(), sv(&c.tokenizer));
+            payload.insert(
+                "__meta_pack_target_bytes".to_string(),
+                iv(c.pack_target_bytes as u64),
+            );
         }
 
         let point = PointStruct::new(
@@ -859,15 +917,24 @@ impl Backend for QdrantBackend {
                 get_i("__meta_chunk_overlap"),
                 get_i("__meta_chunk_max_bytes"),
                 get_s("__meta_chunk_tokenizer"),
+                get_i("__meta_pack_target_bytes"),
             ) {
-                (Some(target), Some(overlap), Some(max_bytes), Some(tokenizer)) => {
-                    Some(crate::types::ChunkingIdentity {
-                        target_chunk_size: target as usize,
-                        chunk_overlap: overlap as usize,
-                        max_chunk_bytes: max_bytes as usize,
-                        tokenizer,
-                    })
-                }
+                (
+                    Some(target),
+                    Some(overlap),
+                    Some(max_bytes),
+                    Some(tokenizer),
+                    Some(pack_target),
+                ) => Some(crate::types::ChunkingIdentity {
+                    target_chunk_size: target as usize,
+                    chunk_overlap: overlap as usize,
+                    max_chunk_bytes: max_bytes as usize,
+                    tokenizer,
+                    pack_target_bytes: pack_target as usize,
+                }),
+                // A genesis missing any of these predates the current record and
+                // is not adopted. Corpora are re-derivable from source; drop and
+                // re-ingest rather than infer a value nobody wrote.
                 _ => None,
             },
             created_at: get_s("__meta_created_at"),

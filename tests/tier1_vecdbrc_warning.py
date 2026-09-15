@@ -60,20 +60,25 @@ def test_warning_spam():
         
         # Create .vecdbrc with multiple routes different from CLI collection
         vecdbrc = test_dir / ".vecdbrc"
+        # test_-prefixed on purpose. These names are never created as real
+        # collections — the run is only counting warnings — but the routing file
+        # is read and the names surface on the test instance, where an
+        # unprefixed one is indistinguishable from a production collection and
+        # so cannot be safely purged.
         vecdbrc.write_text("""[default]
-collection = "code-lts"
+collection = "test_rcwarn_default"
 
 [[routes]]
 glob = "*.md"
-collection = "brain-lts"
+collection = "test_rcwarn_md"
 
 [[routes]]
 glob = "*.rs"
-collection = "docs-lts"
+collection = "test_rcwarn_rs"
 
 [[routes]]
 glob = "*.py"
-collection = "code-lts"
+collection = "test_rcwarn_default"
 """)
         
         # Create dummy files
@@ -83,7 +88,7 @@ collection = "code-lts"
         
         # Run with collection "code" (different from all routes)
         # Use simulated TTY to trigger interactive mode
-        cmd = [VECDB_BIN, "ingest", str(test_dir), "-c", "code"]
+        cmd = [VECDB_BIN, "ingest", str(test_dir), "-c", "test_rcwarn_cli"]
         result = run_interactive(cmd, str(test_dir))
         
         # Combine stdout + stderr for checking
