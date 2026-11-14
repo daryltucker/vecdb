@@ -114,7 +114,7 @@ pub struct IngestPathArgs {
     /// Ignore .vectorignore files during file walking
     #[arg(long, default_value_t = false)]
     #[serde(default)]
-    pub ignore_vectorignore: bool,
+    pub bypass_vectorignore: bool,
 }
 
 /// Tool: Ingest a historic version of a repository
@@ -187,7 +187,7 @@ pub struct ProjectOverviewArgs {
     /// This is the vecdb standard pattern: default false = respect the ignore file,
     /// set true to opt out for one-off overrides.
     #[arg(long)]
-    pub ignore_vectorignore: Option<bool>,
+    pub bypass_vectorignore: Option<bool>,
 
     /// Whether to skip hidden files/directories (default: true)
     #[arg(long)]

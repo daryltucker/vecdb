@@ -40,6 +40,7 @@ This test verifies each value against the repository:
 """
 
 import re
+import paths  # noqa: F401  (pins the test Qdrant — see paths.py)
 import subprocess
 import sys
 from pathlib import Path

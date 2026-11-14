@@ -249,6 +249,40 @@ def check_collection_names_are_test_prefixed():
     return True
 
 
+IMPORTS_PATHS = re.compile(r"^\s*(import paths\b|from paths import)", re.MULTILINE)
+# paths.py is the pin itself. This guard must NOT import it: it audits the
+# environment run_all.sh exported, and importing the pin would make that check
+# vacuous.
+PIN_EXEMPT = {"paths.py", "tier0_qdrant_isolation.py"}
+
+
+def check_every_python_test_imports_the_pin():
+    """Every `tests/*.py` imports `paths`, which pins the test Qdrant on import.
+
+    Prevention for the standalone run. run_all.sh forces the test config, but a
+    test run by hand inherits whatever the caller's shell has — and a test that
+    supplied its own default got it wrong (a relative path, resolved from a temp
+    dir to nothing, so vecdb fell back to production: 2026-11-10). With the pin
+    in an import, there is nothing left for a test to remember.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    missing = []
+    for fname in sorted(os.listdir(here)):
+        if not fname.endswith(".py") or fname in PIN_EXEMPT:
+            continue
+        with open(os.path.join(here, fname), encoding="utf-8") as f:
+            if not IMPORTS_PATHS.search(f.read()):
+                missing.append(fname)
+    if missing:
+        log("Python tests that do not import `paths` (the test-Qdrant pin):", "FAIL")
+        for m in missing:
+            log(f"    tests/{m}", "FAIL")
+        log("Add `import paths  # noqa: F401  (pins the test Qdrant)` near the top.", "FAIL")
+        return False
+    log("Every Python test imports `paths` — standalone runs are pinned to test Qdrant.", "PASS")
+    return True
+
+
 def check_rust_test_url():
     """Verify VECDB_TEST_QDRANT_URL is set to a test port for Rust integration tests."""
     url = os.environ.get("VECDB_TEST_QDRANT_URL", "")
@@ -368,6 +402,9 @@ def main():
         ok = False
 
     if not check_test_files_for_hardcoded_prod():
+        ok = False
+
+    if not check_every_python_test_imports_the_pin():
         ok = False
 
     if not check_collection_names_are_test_prefixed():

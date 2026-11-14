@@ -133,25 +133,60 @@ pub async fn run_main_command(mut args: Args) -> VecqResult<()> {
             &mut handle,
         )?;
     } else {
+        // A query that errors on one input is reported for that input and the
+        // rest still run — as jq does — and the run exits non-zero. Before,
+        // errors were dropped inside the engine: no output, exit 0.
+        let mut failed: Vec<String> = Vec::new();
         for input in resolved_inputs {
             let values = extract_json_from_input(&input, &(&args).into()).await?;
             for val in values {
+                let origin = val
+                    .pointer("/metadata/path")
+                    .and_then(|p| p.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| input.display().to_string());
                 // Synchronous call (no await)
-                process_json_value(
+                match process_json_value(
                     val,
                     &query_string,
                     &engine,
                     &output_format,
                     &format_options,
                     &mut handle,
-                )?;
+                ) {
+                    Ok(()) => {}
+                    Err(VecqError::QueryError { message, .. }) => {
+                        eprintln!("vecq: {origin}: {message}");
+                        failed.push(origin);
+                    }
+                    Err(other) => return Err(other),
+                }
             }
+        }
+        if !failed.is_empty() {
+            let _ = handle.flush();
+            return Err(VecqError::query_error(
+                query_string.clone(),
+                format!(
+                    "the query failed on {} input(s) (each reported above)",
+                    failed.len()
+                ),
+                Some(
+                    "`.key[]` errors when a file has no `key`; use `.key[]?` or `(.key // [])[]`"
+                        .to_string(),
+                ),
+            ));
         }
     }
 
-    // Ensure we flush at the end
+    // Ensure we flush at the end. A reader that stopped early (`| head`)
+    // is success, exactly as `process_json_value` treats it per line — this
+    // last flush used to turn it into "Error: Broken pipe", exit 1.
     use std::io::Write;
-    handle.flush().map_err(VecqError::IoError)?;
+    match handle.flush() {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
+        other => other.map_err(VecqError::IoError)?,
+    }
 
     Ok(())
 }
@@ -168,6 +203,8 @@ pub async fn handle_subcommand(command: Commands) -> VecqResult<()> {
                 max_depth: None,
                 enable_usages: false,
                 raw_json: false,
+                source_info: false,
+                no_content: false,
             };
             let values = extract_json_from_input(&input, &options).await?;
             let engine = JqQueryEngine::new_hermetic();
@@ -286,7 +323,51 @@ pub async fn handle_subcommand(command: Commands) -> VecqResult<()> {
             Ok(())
         }
         Commands::Map(args) => handle_map_command(args).await,
+        Commands::Refs(args) => handle_refs_command(args).await,
     }
+}
+
+/// `vecq refs`: a thin shell over [`vecq::find_references`].
+async fn handle_refs_command(args: crate::cli::args::RefsArgs) -> VecqResult<()> {
+    let paths = if args.paths.is_empty() {
+        vec![std::path::PathBuf::from(".")]
+    } else {
+        args.paths
+    };
+    let report = vecq::find_references(&paths, &args.symbol).await?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .map_err(|e| VecqError::json_error("serialising refs".to_string(), Some(e)))?
+        );
+    } else {
+        for r in &report.references {
+            let file = r.file.as_deref().unwrap_or(std::path::Path::new("-"));
+            let kind = match r.kind {
+                vecq::ReferenceKind::Call => "call",
+                vecq::ReferenceKind::Import => "import",
+            };
+            println!(
+                "{}:{} {}  {} {}",
+                file.display(),
+                r.line,
+                r.scope.join("."),
+                kind,
+                r.name
+            );
+        }
+    }
+    // A file that failed to parse is a hole in the answer: said every time,
+    // on stderr so piped output stays clean.
+    for f in &report.failed {
+        eprintln!(
+            "vecq refs: not searched (parse failed): {}: {}",
+            f.file.display(),
+            f.error
+        );
+    }
+    Ok(())
 }
 
 /// Print supported file types
@@ -320,11 +401,49 @@ fn print_query_suggestions(description: &str) {
     let mut suggestions = Vec::new();
     let desc = description.to_lowercase();
 
+    // Words of the description, singular: "functions that call execute" →
+    // function, that, call, execute. Matching the WHOLE description against a
+    // field name only ever hit one-word input.
+    let words: Vec<String> = desc
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|w| w.len() >= 3)
+        .map(|w| w.trim_end_matches('s').to_string())
+        .collect();
+    let mentions = |stems: &[&str]| words.iter().any(|w| stems.iter().any(|s| w.starts_with(s)));
+
+    // Calls and string literals: the expression layer, the
+    // questions an agent otherwise answers with grep.
+    if mentions(&["call", "caller", "invo", "use", "usage"]) {
+        suggestions.push("[.. | .calls? // empty | .[] | .callee] | unique".to_string());
+        suggestions.push(
+            "[.. | .calls? // empty | .[] | select(.callee | endswith(\"NAME\"))]".to_string(),
+        );
+        suggestions.push(
+            "vecq refs NAME [PATHS]    (every call site and import, across files)".to_string(),
+        );
+    }
+    if mentions(&["string", "literal", "sql", "query", "message", "url"]) {
+        suggestions.push("[.. | .strings? // empty | .[] | .value]".to_string());
+        suggestions.push(
+            "[.. | .calls? // empty | .[] | {callee, line, sql: .args[0].value} | select(.sql | test(\"^\\\\s*(SELECT|INSERT|UPDATE|DELETE)\"; \"i\"))]"
+                .to_string(),
+        );
+    }
+    if mentions(&["import", "depend"]) {
+        suggestions.push("vecq refs MODULE [PATHS]    (who imports it)".to_string());
+    }
+
     // Dynamically build suggestions based on registered schemas (D026: Elements Discovery)
     for schema in registry.list_schemas() {
         for (el_type, field_name) in &schema.element_mappings {
             let el_str = el_type.to_string().to_lowercase();
-            if el_str.contains(&desc) || field_name.to_lowercase().contains(&desc) {
+            let field = field_name.to_lowercase();
+            if el_str.contains(&desc)
+                || field.contains(&desc)
+                || words
+                    .iter()
+                    .any(|w| field.trim_end_matches('s') == w || el_str == *w)
+            {
                 suggestions.push(format!(".{}[]", field_name));
                 suggestions.push(format!(".{}[] | .name", field_name));
                 suggestions.push(format!(
@@ -390,19 +509,9 @@ fn print_available_filters() {
 /// Format user-friendly error messages
 pub fn format_user_error(error: &VecqError) -> String {
     match error {
-        VecqError::ParseError {
-            file,
-            line,
-            message,
-            ..
-        } => {
-            format!(
-                "Parse error in {} at line {}: {}",
-                file.display(),
-                line,
-                message
-            )
-        }
+        // One rendering, the error's own: a second copy of the format here
+        // printed "in <string> at line 0" after `Display` stopped.
+        VecqError::ParseError { .. } => error.to_string(),
         VecqError::QueryError {
             query,
             message,
@@ -459,7 +568,7 @@ async fn handle_map_command(args: MapArgs) -> VecqResult<()> {
         max_depth: args.depth,
         ignore_patterns: args.ignore_patterns,
         respect_gitignore: !args.no_gitignore,
-        ignore_vectorignore: false,
+        bypass_vectorignore: false,
         skip_hidden: !args.no_skip_hidden,
     })
     .await?;
@@ -471,13 +580,15 @@ async fn handle_map_command(args: MapArgs) -> VecqResult<()> {
             println!("{}", overview.mermaid);
         }
         MapOutputFormat::Json => {
+            // The full symbol graph: every declaration kind, including the
+            // functions and implementations the architectural graph prunes.
             println!(
                 "{}",
-                serde_json::to_string_pretty(&overview.graph).unwrap_or_default()
+                serde_json::to_string_pretty(&overview.graph_full).unwrap_or_default()
             );
         }
         MapOutputFormat::Graph => {
-            // Pruned architectural graph - same as JSON but already pruned by library
+            // Pruned architectural graph: files, modules, structs, classes, interfaces.
             println!(
                 "{}",
                 serde_json::to_string_pretty(&overview.graph).unwrap_or_default()

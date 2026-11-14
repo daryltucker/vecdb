@@ -135,6 +135,15 @@ const BASH: Case = Case {
     source: "#!/bin/bash\n\nalpha() {\n    echo hi\n}\n",
 };
 
+// Exported, as most JavaScript functions are: the element is the `export`
+// statement, still on the line of its first byte.
+const JAVASCRIPT: Case = Case {
+    file_type: FileType::JavaScript,
+    symbol: "alpha",
+    expected_line: 3,
+    source: "import fs from \"node:fs\";\n\nexport function alpha(a) {\n  return a;\n}\n",
+};
+
 /// Recursively find the first element with this name.
 fn find<'a>(elements: &'a [DocumentElement], name: &str) -> Option<&'a DocumentElement> {
     for e in elements {
@@ -277,6 +286,11 @@ async fn cuda_line_numbers_are_1_indexed() {
 #[tokio::test]
 async fn bash_line_numbers_are_1_indexed() {
     assert_line_convention(&BASH).await;
+}
+
+#[tokio::test]
+async fn javascript_line_numbers_are_1_indexed() {
+    assert_line_convention(&JAVASCRIPT).await;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -515,6 +529,7 @@ fn every_extractor_language_has_a_line_index_case() {
         FileType::Cpp,
         FileType::Cuda,
         FileType::Bash,
+        FileType::JavaScript,
     ];
 
     let missing: Vec<_> = available_parsers()
@@ -544,6 +559,7 @@ fn is_code_language(file_type: FileType) -> bool {
             | FileType::Cpp
             | FileType::Cuda
             | FileType::Bash
+            | FileType::JavaScript
     )
 }
 
@@ -557,6 +573,7 @@ fn fixture_dir(file_type: FileType) -> Option<&'static str> {
         FileType::Cuda => "cuda",
         FileType::Go => "go",
         FileType::Bash => "bash",
+        FileType::JavaScript => "javascript",
         FileType::Html => "html",
         FileType::Text => "text",
         FileType::Toml => "toml",

@@ -66,17 +66,24 @@ impl Parser for TextParser {
 
         let line_count = content.lines().count();
 
-        let element = DocumentElement::new(
+        // The block is the text itself; the whitespace around it (the file's
+        // final newline) is its trivia, so the file reconstructs byte for byte
+        // and `content` carries no line break.
+        let mut element = DocumentElement::new(
             ElementType::Block,
             None, // No name for a generic block
             content.to_string(),
             1,
             line_count.max(1),
-        );
+        )
+        .with_source_span(0, content.len());
+        element.tighten_span(content);
 
         let mut elements = Vec::new();
         if !content.is_empty() {
             elements.push(element);
+            let lines = vecdb_common::LineCounter::new(content);
+            super::ownership::assign_trivia(&mut elements, content, &lines, &[], |_| true);
         }
 
         let mut doc = ParsedDocument::new(

@@ -99,9 +99,11 @@ pub mod attributes;
 pub mod document;
 pub mod element_type;
 pub mod metadata;
+pub mod refs;
 
 pub use attributes::*;
-pub use document::{DocumentElement, ParsedDocument};
+pub use document::{attr, DocumentElement, ParsedDocument, SourceInfo};
 pub use element_type::ElementType;
 pub use metadata::DocumentMetadata;
+pub use refs::{Arg, ArgKind, Call, Scope, StringKind, StringLiteral};
 pub use vecdb_common::FileType;

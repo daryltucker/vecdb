@@ -15,6 +15,8 @@ result set. That mistake was live in three tests at once; centralising the
 access is what stops it recurring.
 """
 
+import paths  # noqa: F401  (pins the test Qdrant — see paths.py)
+
 REQUIRED_FIELDS = ("collection", "query", "result_count", "results")
 
 

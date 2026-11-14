@@ -967,6 +967,48 @@ impl GoParser {
     }
 }
 
+/// Coverage spec: every kind tree-sitter-go can produce at top level or inside the
+/// wrappers walked (`bodies`), classified. `ts_coverage::complete` emits whatever the
+/// walker above did not; the completeness test fails on any grammar kind missing here.
+pub(crate) const COVERAGE: crate::parsers::ts_coverage::Spec = {
+    use crate::parsers::ts_coverage::Kind::{Comment, Unit};
+    use crate::types::ElementType as E;
+    crate::parsers::ts_coverage::Spec {
+        bodies: &["source_file"],
+        kinds: &[
+            ("assignment_statement", Unit(E::Block)),
+            ("block", Unit(E::Block)),
+            ("break_statement", Unit(E::Block)),
+            ("comment", Comment),
+            ("const_declaration", Unit(E::Constant)),
+            ("continue_statement", Unit(E::Block)),
+            ("dec_statement", Unit(E::Block)),
+            ("defer_statement", Unit(E::Block)),
+            ("empty_statement", Unit(E::Block)),
+            ("expression_statement", Unit(E::Block)),
+            ("expression_switch_statement", Unit(E::Block)),
+            ("fallthrough_statement", Unit(E::Block)),
+            ("for_statement", Unit(E::Block)),
+            ("function_declaration", Unit(E::Function)),
+            ("go_statement", Unit(E::Block)),
+            ("goto_statement", Unit(E::Block)),
+            ("if_statement", Unit(E::Block)),
+            ("import_declaration", Unit(E::Import)),
+            ("inc_statement", Unit(E::Block)),
+            ("labeled_statement", Unit(E::Block)),
+            ("method_declaration", Unit(E::Function)),
+            ("package_clause", Unit(E::Package)),
+            ("return_statement", Unit(E::Block)),
+            ("select_statement", Unit(E::Block)),
+            ("send_statement", Unit(E::Block)),
+            ("short_var_declaration", Unit(E::Variable)),
+            ("type_declaration", Unit(E::TypeAlias)),
+            ("type_switch_statement", Unit(E::Block)),
+            ("var_declaration", Unit(E::Variable)),
+        ],
+    }
+};
+
 #[async_trait]
 impl Parser for GoParser {
     fn file_extensions(&self) -> &[&str] {
@@ -1025,6 +1067,18 @@ impl Parser for GoParser {
                 .with_line_count(content)
                 .with_file_type(FileType::Go),
         );
+        doc.metadata.syntax_errors = crate::parsers::ts_coverage::complete(
+            &mut elements,
+            tree.root_node(),
+            content,
+            &COVERAGE,
+        );
+        doc.module = Some(crate::parsers::ts_refs::attach(
+            &mut elements,
+            tree.root_node(),
+            content,
+            &crate::parsers::ts_refs::GO,
+        ));
         doc.elements = elements;
 
         Ok(doc)

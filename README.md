@@ -211,7 +211,7 @@ cargo install --path vecdb-cli --no-default-features
     *   Works exactly like `.gitignore`.
     *   Place it in your project root or subdirectories.
     *   Example: `vecdb-asm/` or `*.secret`.
-    *   Use `--ignore-vectorignore` to skip `.vectorignore` rules entirely
+    *   Use `--bypass-vectorignore` to skip `.vectorignore` rules entirely
         (ingests everything regardless of ignore patterns).
 
 2.  **`.gitignore`** (Optional):

@@ -16,6 +16,13 @@ fn main() {
     // An explicit override always wins: distro packagers, reproducible builds,
     // and vendored source drops can stamp a known value with no git checkout.
     println!("cargo:rerun-if-env-changed=VECDB_GIT_HASH");
+    // The dirty bit has no file cargo can watch: editing a tracked file
+    // changes neither HEAD nor a ref. tests/run_all.sh exports the tree state
+    // (`<hash>` or `<hash>-dirty`) so the stamp is redone exactly when it
+    // flips; without it a clean-built binary on a since-dirtied tree failed
+    // the gate's provenance check (2026-11-10). Unset is fine: then only the
+    // HEAD-file triggers below apply, as before.
+    println!("cargo:rerun-if-env-changed=VECDB_TREE_STATE");
     if let Ok(explicit) = std::env::var("VECDB_GIT_HASH") {
         if !explicit.trim().is_empty() {
             println!("cargo:rustc-env=VECDB_GIT_HASH={}", explicit.trim());

@@ -45,7 +45,7 @@
 //   let content = std::fs::read_to_string("example.rs")?;
 //   let parsed = parse_file(&content, FileType::Rust).await?;
 //   let json = vecq::convert_to_json(parsed)?;
-//   let result = query_json(&json, ".functions[] | select(.visibility == \"pub\")")?;
+//   let result = query_json(&json, ".functions[] | select(.attributes.visibility == \"pub\")")?;
 //
 //   // Advanced usage - custom parsers and formatters
 //   use vecq::{ParserRegistry, FormatterRegistry, UnifiedJsonConverter};
@@ -115,7 +115,7 @@
 //!     let json = convert_to_json(parsed)?;
 //!     
 //!     // Query with jq syntax
-//!     let functions = query_json(&json, ".functions[] | select(.visibility == \"pub\")")?;
+//!     let functions = query_json(&json, ".functions[] | select(.attributes.visibility == \"pub\")")?;
 //!     
 //!     println!("{}", serde_json::to_string_pretty(&functions)?);
 //!     Ok(())
@@ -206,6 +206,10 @@ pub mod enrich;
 pub mod project;
 pub use project::{project_overview, ProjectOverview, ProjectOverviewArgs};
 
+// Cross-file references: call sites and imports of a symbol
+pub mod refs;
+pub use refs::{find_references, references_in, Reference, ReferenceKind, RefsReport};
+
 // Re-export essential types and traits
 pub use converter::{JsonConverter, SchemaRegistry, UnifiedJsonConverter};
 pub use detection::{DetectionConfig, FileTypeDetector, HybridDetector};
@@ -292,6 +296,14 @@ pub fn create_parser_with_options(
             }
         }
         FileType::Bash => Ok(Box::new(BashParser::new())),
+        FileType::JavaScript => {
+            let parser = JavaScriptParser::new();
+            if enable_usages {
+                Ok(Box::new(parser.with_usages(true)))
+            } else {
+                Ok(Box::new(parser))
+            }
+        }
         FileType::Text => Ok(Box::new(TextParser::new())),
         FileType::Html => Ok(Box::new(HtmlParser::new())),
         FileType::Toml => Ok(Box::new(TomlParser::new())),
@@ -313,6 +325,20 @@ pub fn enrich_document(doc: ParsedDocument) -> VecqResult<ParsedDocument> {
 /// Convert parsed document to JSON
 pub fn convert_to_json(document: ParsedDocument) -> VecqResult<serde_json::Value> {
     let converter = UnifiedJsonConverter::with_default_schemas();
+    converter.convert(document)
+}
+
+/// Convert a parsed document to JSON with every element's source span and
+/// owned trivia, as `"source": {"start", "end", "leading", "trailing"}`
+/// see [`UnifiedJsonConverter::with_source_info`].
+///
+/// For a document from [`parse_file`], each element's `content` is
+/// `source[start..end]` of the file as parsed, its `line_start`/`line_end` are
+/// the inclusive lines of its first and last byte, and the top-level elements'
+/// `leading + content + trailing`, in order, rebuild the file byte for byte.
+/// The field is plain JSON, so [`query_json`] results carry it unchanged.
+pub fn convert_to_json_with_source(document: ParsedDocument) -> VecqResult<serde_json::Value> {
+    let converter = UnifiedJsonConverter::with_default_schemas().with_source_info(true);
     converter.convert(document)
 }
 
@@ -490,10 +516,11 @@ mod tests {
 
     #[test]
     fn test_query_explanation() {
-        let explanation = explain_query(".functions[] | select(.visibility == \"pub\")").unwrap();
+        let explanation =
+            explain_query(".functions[] | select(.attributes.visibility == \"pub\")").unwrap();
         assert_eq!(
             explanation.query,
-            ".functions[] | select(.visibility == \"pub\")"
+            ".functions[] | select(.attributes.visibility == \"pub\")"
         );
         assert!(!explanation.operations.is_empty());
     }

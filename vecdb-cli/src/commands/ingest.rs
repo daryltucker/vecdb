@@ -40,11 +40,22 @@ pub struct IngestArgs {
 
     /// Ignore .vectorignore files (skip reading .vectorignore during file walking)
     #[arg(long, default_value_t = false)]
-    pub ignore_vectorignore: bool,
+    pub bypass_vectorignore: bool,
 
     /// Target chunk size (tokens for text, chars for default). Overrides config.
+    ///
+    /// NOT the chunk size for parsed files (code, Markdown, JSON, YAML, …):
+    /// there it only derives the `max_chunk_bytes` ceiling. Their size is
+    /// `--pack-target-bytes`.
     #[arg(long)]
     pub target_chunk_size: Option<usize>,
+
+    /// How much a parsed file (code, Markdown, JSON, YAML, …) packs into one
+    /// chunk, counted in NON-WHITESPACE characters. Overrides config for every
+    /// destination of this run, routed ones included. Check the result with
+    /// `--dry-run --show-chunks`.
+    #[arg(long)]
+    pub pack_target_bytes: Option<usize>,
 
     /// Chunk overlap (tokens for text, chars for default). Overrides config.
     #[arg(long, short = 'o')]
@@ -58,9 +69,17 @@ pub struct IngestArgs {
     #[arg(long, value_delimiter = ',', num_args = 1..)]
     pub excludes: Option<Vec<String>>,
 
-    /// Dry run: List files that would be ingested without processing
+    /// Dry run: List files that would be ingested without processing — they ARE
+    /// parsed and chunked (that is how chunk counts are known); nothing is
+    /// embedded or written.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// With --dry-run: print every chunk exactly as it would be embedded
+    /// (after the oversize split, labels included), with its crumbtrail, size
+    /// and line span. One JSON object per chunk under --json.
+    #[arg(long, requires = "dry_run")]
+    pub show_chunks: bool,
 
     /// Max concurrent file processing tasks
     #[arg(long, short = 'P')]
@@ -76,6 +95,7 @@ pub async fn run(
     config: &Config,
     profile_name: Option<&str>,
     overrides: vecdb_core::config::Overrides<'_>,
+    format: vecdb_common::output::OutputFormat,
 ) -> anyhow::Result<()> {
     // `.vecdbrc` is discovered BEFORE resolution, because its `[default]
     // collection` is one of the answers to "which collection?".
@@ -204,7 +224,7 @@ pub async fn run(
     let clamp_ceiling = |v: usize| -> usize { ceiling_cap.map_or(v, |cap| v.min(cap)) };
 
     if let (Some(cap), Some(ctx)) = (ceiling_cap, context_tokens) {
-        let configured = resolution.max_chunk_bytes.value;
+        let configured = Sizing::of(&args, &resolution).max_chunk_bytes;
         if configured > cap {
             // Never gated on `is_interactive`: a caller reading JSON is exactly
             // who needs to know the ceiling it configured is not the one in force.
@@ -223,7 +243,8 @@ pub async fn run(
     // configured differently. Baked into the vectors either way — changing it
     // later means a re-ingest.
     let parser_factory = Arc::new(VecqParserFactory::with_pack_target(
-        resolution.pack_target_bytes.value,
+        args.pack_target_bytes
+            .unwrap_or(resolution.pack_target_bytes.value),
     ));
 
     let services = vecdb_core::CoreServices::from_config(
@@ -246,7 +267,8 @@ pub async fn run(
 
     // Clamped: see `clamp_ceiling` above. The pipeline must never be handed a
     // ceiling the model cannot embed, because that is what it splits down to.
-    let resolved_max_chunk_bytes = Some(clamp_ceiling(resolution.max_chunk_bytes.value));
+    let run_sizing = Sizing::of(&args, &resolution);
+    let resolved_max_chunk_bytes = Some(clamp_ceiling(run_sizing.max_chunk_bytes));
     let final_chunk_size = args
         .target_chunk_size
         .or(Some(resolution.target_chunk_size.value));
@@ -399,7 +421,10 @@ pub async fn run(
         target_chunk_size: final_chunk_size
             .unwrap_or(vecdb_core::config::DEFAULT_TARGET_CHUNK_SIZE),
         max_chunk_bytes: resolved_max_chunk_bytes,
-        pack_target_bytes: Some(resolution.pack_target_bytes.value),
+        pack_target_bytes: Some(
+            args.pack_target_bytes
+                .unwrap_or(resolution.pack_target_bytes.value),
+        ),
         on_oversize: config.resolve_oversize_policy().value,
         // Chunk parameters per routed destination.
         //
@@ -426,17 +451,20 @@ pub async fn run(
                         Some((
                             coll,
                             vecdb_core::ingestion::options::ChunkSpec {
-                                target_chunk_size: r.target_chunk_size.value,
+                                target_chunk_size: Sizing::of(&args, &r).target_chunk_size,
                                 chunk_overlap: r.chunk_overlap.value,
                                 // Per-route ceiling, clamped the same way: a
                                 // route naming a collection with a looser
                                 // ceiling must not smuggle one past the model.
-                                max_chunk_bytes: Some(clamp_ceiling(r.max_chunk_bytes.value)),
+                                max_chunk_bytes: Some(clamp_ceiling(
+                                    Sizing::of(&args, &r).max_chunk_bytes,
+                                )),
                                 // The knob that actually governs AST content.
                                 // Resolved per destination for the same reason
                                 // as the rest: chunk size belongs to the
                                 // collection, not to the run.
-                                pack_target_bytes: Some(r.pack_target_bytes.value),
+                                // `--pack-target-bytes` wins for every destination.
+                                pack_target_bytes: Some(Sizing::of(&args, &r).pack_target_bytes),
                             },
                         ))
                     })
@@ -445,18 +473,35 @@ pub async fn run(
             .unwrap_or_default(),
         chunk_overlap: final_overlap.unwrap_or(50),
         respect_gitignore: final_respect_gitignore,
-        ignore_vectorignore: args.ignore_vectorignore,
+        bypass_vectorignore: args.bypass_vectorignore,
         strategy: "recursive".to_string(),
         tokenizer: "cl100k_base".to_string(),
         git_ref: None,
         extensions: args.extensions.clone(),
         excludes: args.excludes.clone(),
-        dry_run: args.dry_run,
+        dry_run: match (args.dry_run, args.show_chunks) {
+            (false, _) => vecdb_core::ingestion::DryRun::Off,
+            (true, false) => vecdb_core::ingestion::DryRun::Files,
+            (true, true) => vecdb_core::ingestion::DryRun::Chunks {
+                json: format == vecdb_common::output::OutputFormat::Json,
+            },
+        },
         metadata: if metadata.is_empty() {
             None
         } else {
             Some(metadata.clone())
         },
+        route_metadata: rc.as_ref().map(|r| {
+            r.routes
+                .iter()
+                .filter_map(|route| {
+                    route
+                        .metadata
+                        .as_ref()
+                        .map(|m| (route.collection.clone(), m.clone()))
+                })
+                .collect()
+        }),
         // ingest_with_options does NOT pull from Core; caller must supply rules explicitly.
         path_rules: config.ingestion.path_rules.clone(),
         max_concurrent_requests: args.concurrency.unwrap_or(4),
@@ -521,7 +566,7 @@ pub async fn run(
         // and are not re-ingested here.
         target_opts.collection = target.clone();
         target_opts.only_collection = Some(target.clone());
-        target_opts.target_chunk_size = target_res.target_chunk_size.value;
+        target_opts.target_chunk_size = Sizing::of(&args, &target_res).target_chunk_size;
         target_opts.chunk_overlap = target_res.chunk_overlap.value;
         target_opts.quantization = target_res.quantization.clone();
 
@@ -551,6 +596,15 @@ async fn run_stdin(
     resolution: &vecdb_core::config::Resolution,
     collection: &str,
 ) -> anyhow::Result<()> {
+    // The stdin path embeds and writes unconditionally; it never read
+    // `--dry-run`, so `ingest - --dry-run` wrote for real. Refused until stdin
+    // has a dry run of its own — a no-op must never do the work.
+    if args.dry_run {
+        anyhow::bail!("--dry-run is not supported for stdin (`-`); it would write. Save to a file and dry-run that.");
+    }
+    if args.pack_target_bytes.is_some() {
+        anyhow::bail!("--pack-target-bytes does not apply to stdin: stdin is chunked as plain text, never parsed.");
+    }
     if OUTPUT.is_interactive {
         println!("Ingesting from stdin into collection: {}...", collection);
     }
@@ -601,10 +655,11 @@ async fn run_stdin(
             .map(|n| n as usize)
     }
     .map(vecdb_core::config::model_byte_cap);
-    let resolved_max_chunk_bytes =
-        Some(stdin_cap.map_or(resolution.max_chunk_bytes.value, |cap| {
-            resolution.max_chunk_bytes.value.min(cap)
-        }));
+    let resolved_max_chunk_bytes = Some(
+        stdin_cap.map_or(Sizing::of(&args, resolution).max_chunk_bytes, |cap| {
+            Sizing::of(&args, resolution).max_chunk_bytes.min(cap)
+        }),
+    );
     let final_chunk_size = args
         .target_chunk_size
         .or(Some(resolution.target_chunk_size.value));
@@ -623,6 +678,38 @@ async fn run_stdin(
         }
     }
     Ok(())
+}
+
+/// Chunk sizing for one destination: its resolved config with this run's
+/// flags on top, before the model-capacity clamp.
+///
+/// The flags apply to EVERY destination, routed ones included, and a ceiling
+/// that config derives from `target_chunk_size` is re-derived from the flag.
+/// Before, `--target-chunk-size` moved neither: the ceiling was derived from the
+/// config value, and routes ignored the flag — so the setting that reads as
+/// "chunk size" did nothing visible for parsed files (Ecosystem Experts,
+/// 2026-300). An explicitly configured `max_chunk_bytes` is left alone.
+struct Sizing {
+    target_chunk_size: usize,
+    max_chunk_bytes: usize,
+    pack_target_bytes: usize,
+}
+
+impl Sizing {
+    fn of(args: &IngestArgs, r: &vecdb_core::config::Resolution) -> Self {
+        let target_chunk_size = args.target_chunk_size.unwrap_or(r.target_chunk_size.value);
+        let max_chunk_bytes = match (&r.max_chunk_bytes.source, args.target_chunk_size) {
+            (vecdb_core::config::Source::Derived(_), Some(t)) => {
+                vecdb_core::config::default_max_chunk_bytes(t)
+            }
+            _ => r.max_chunk_bytes.value,
+        };
+        Sizing {
+            target_chunk_size,
+            max_chunk_bytes,
+            pack_target_bytes: args.pack_target_bytes.unwrap_or(r.pack_target_bytes.value),
+        }
+    }
 }
 
 /// Find the common ancestor directory of a set of paths.

@@ -61,12 +61,23 @@ impl Enricher {
             });
 
             if !already_enriched {
-                let md_doc = parse_markdown_document(&el.content);
+                // The element's content is its markup as written
+                // (`<task>…</task>`); what is Markdown is the
+                // text between its own tags.
+                let (inner_at, inner) = inner_text(&el.content);
+                let md_doc = parse_markdown_document(inner);
                 let mut md_elements = md_doc.elements;
 
-                // Offset line numbers based on parent's start line
-                let offset = el.line_start.saturating_sub(1);
+                // Offset line numbers based on parent's start line, plus the
+                // lines of the start tag itself; and byte spans to where the
+                // inner text sits in the file, so enriched children point at
+                // real bytes.
+                let offset =
+                    el.line_start.saturating_sub(1) + el.content[..inner_at].matches('\n').count();
                 self.offset_elements(&mut md_elements, offset);
+                if let Some((start, _)) = el.source_span() {
+                    shift_spans(&mut md_elements, start + inner_at);
+                }
 
                 el.children.extend(md_elements);
 
@@ -117,9 +128,13 @@ impl Enricher {
             }
         }
 
-        // Heuristic fallback
-        let preview_len = el.content.len().min(self.heuristic_window);
-        let preview = &el.content[..preview_len];
+        // Heuristic fallback, over the text between the element's tags.
+        let (_, inner) = inner_text(&el.content);
+        let mut preview_len = inner.len().min(self.heuristic_window);
+        while !inner.is_char_boundary(preview_len) {
+            preview_len -= 1;
+        }
+        let preview = &inner[..preview_len];
         let trimmed = preview.trim();
 
         if trimmed.len() > 2 {
@@ -141,5 +156,33 @@ impl Enricher {
         }
 
         DetectionResult::None
+    }
+}
+
+/// The text between an element's own start and end tags, and where it begins
+/// in the element's content: `<task id="1">\n# H\n</task>` → `(13, "\n# H\n")`.
+/// Content that is not tag-delimited (no `>` / no closing `</`) is returned
+/// whole — it has nothing to strip.
+fn inner_text(content: &str) -> (usize, &str) {
+    if !content.starts_with('<') {
+        return (0, content);
+    }
+    let Some(open_end) = content.find('>').map(|i| i + 1) else {
+        return (0, content);
+    };
+    let close = content
+        .rfind("</")
+        .filter(|&i| i >= open_end && content.ends_with('>'))
+        .unwrap_or(content.len());
+    (open_end, &content[open_end..close])
+}
+
+/// Move every element's byte span (and its children's) by `by` bytes.
+fn shift_spans(elements: &mut [DocumentElement], by: usize) {
+    for el in elements.iter_mut() {
+        if let Some((s, e)) = el.source_span() {
+            el.set_source_span(s + by, e + by);
+        }
+        shift_spans(&mut el.children, by);
     }
 }

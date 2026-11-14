@@ -13,7 +13,7 @@ These recipes help you understand *how* the code is built.
 **Why**: As an agent, you often need to know "what can I call?" before writing code.
 
 ```bash
-vecq -R src/ -q '(.functions // [])[] | select(.visibility == "pub") | {name, signature}' --compact
+vecq -R src/ -q '(.functions // [])[] | select(.attributes.visibility == "pub") | {name, signature: .attributes.signature}' --compact
 ```
 *   **Tip**: Use `(.functions // [])` to safely handle files that might lack functions.
 
@@ -134,6 +134,15 @@ vecq ARCHITECTURE.md -q '.headers[] | "\("#" * .level) \(.content)"' -r
 **Goal**: Finding all unchecked task list items.
 ```bash
 vecq TODO.md -q '.list_items[] | select(.task == true and .checked == false) | .content'
+```
+
+### 3.3b "Item 1 under X / Y / Tasks"
+**Goal**: Addressing an element by the section it lives in. Every Markdown
+element carries `.attributes.heading_path` — the headings it lies under,
+outermost first — so a section is a path, not a range of line numbers.
+```bash
+vecq PLAN.md -q '[.list_items[] | select(.attributes.heading_path == ["X","Y","Tasks"])][0] | .content' -r
+# Output: - [ ] item one
 ```
 
 ### 3.4 The "Accessibility Audit"

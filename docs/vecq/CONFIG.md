@@ -20,7 +20,7 @@ You can define custom `jq` functions (macros) that are automatically loaded and 
 2.  Add a `.jq` file (e.g., `common.jq`):
     ```jq
     # ~/.config/vecq/functions/common.jq
-    def public_fns: .functions[] | select(.visibility == "pub");
+    def public_fns: .functions[] | select(.attributes.visibility == "pub");
     ```
 
 3.  Use it in your queries:

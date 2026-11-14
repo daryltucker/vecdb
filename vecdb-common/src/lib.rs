@@ -29,5 +29,5 @@ pub use detection::{FileType, FileTypeDetector, ParsingCapability};
 pub use input::{InputContext, INPUT};
 pub use lines::LineCounter;
 pub use output::{OutputContext, OUTPUT};
-pub use text::stitch_text;
+pub use text::{has_meaning, stitch_text};
 pub use version::{revision, short_version, GIT_HASH};

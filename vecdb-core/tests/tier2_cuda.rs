@@ -2,7 +2,7 @@ use anyhow::Result;
 use vecdb_core::embedder::Embedder;
 use vecdb_core::embedders::local::LocalEmbedder;
 
-/// Contract (BUG-2026-254): `use_gpu = true` may only produce two outcomes —
+/// `use_gpu = true` may only produce two outcomes —
 ///
 /// 1. `Ok`: the CUDA EP actually registered on the session (guaranteed by
 ///    `error_on_failure` on the dispatch), and embedding works, or

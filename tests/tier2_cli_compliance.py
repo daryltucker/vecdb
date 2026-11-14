@@ -12,6 +12,7 @@ external eval rather than by us — an agent cannot call a tool it has no way to
 learn about, so an undocumented tool is a tool that does not exist.
 """
 import re
+import paths  # noqa: F401  (pins the test Qdrant — see paths.py)
 import subprocess
 import sys
 from pathlib import Path

@@ -22,9 +22,9 @@ vecq elements rs
 
 Every declaration kind Rust has is listed. Until v1.1.1 only `enums`,
 `functions`, `implementations`, `imports`, `structs` and `traits` appeared, and
-of those `enums` and `traits` could never actually be populated — see
-`BUG_RUST_DECLARATION_COVERAGE-2026-241` in the docs repo. `tier1_declaration_coverage.rs`
-now fails the build if a listed category is unreachable.
+of those `enums` and `traits` could never actually be populated.
+`tier1_declaration_coverage.rs` now fails the build if a listed category is
+unreachable.
 
 ### JSON Output for Scripts
 ```bash

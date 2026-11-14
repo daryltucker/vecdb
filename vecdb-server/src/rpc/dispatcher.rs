@@ -72,6 +72,28 @@ fn handle_tools_list() -> Result<Value, JsonRpcError> {
     let project_overview_schema = schema_for!(ProjectOverviewArgs);
     let job_status_schema = schema_for!(JobStatusArgs);
 
+    // Says WHEN to reach for it, in the agent's words: an agent with this tool
+    // connected wrote a regex scanner instead, because the description read as
+    // "query one file". The language list comes from vecq itself: the hand-written
+    // one advertised JavaScript and SQL, which vecq cannot parse.
+    let code_query_description = format!(
+        "Structural (AST) queries, jq-style, over source and documents. Reach for it BEFORE grepping \
+         for call sites, SQL or string literals across a repo, and before writing a script that \
+         parses source code.\n\n\
+         Examples:\n\
+         code_query(path='src/main.rs', query='.functions[] | select(.name == \"main\")')\n\
+         code_query(path='app.py', query='[.. | .calls? // empty | .[] | select(.callee|endswith(\"execute\")) | .args[0].value]')\n\n\
+         Every function, method, class and the module carry calls[] (callee as written, args with \
+         string values) and strings[]; `.module` is what runs at top level. Lines are 1-indexed and \
+         inclusive. For every caller/importer of a name across a tree, the CLI has `vecq refs NAME PATH`.\n\
+         Supported: {}.",
+        vecq::supported_file_types()
+            .iter()
+            .map(|t| t.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
     let to_json = |val| {
         serde_json::to_value(val).map_err(|e| JsonRpcError {
             code: -32603,
@@ -131,7 +153,7 @@ fn handle_tools_list() -> Result<Value, JsonRpcError> {
             },
             {
                 "name": "code_query",
-                "description": "Execute AST-aware structural queries (jq-style) against code files.\n\nExample: code_query(path='src/main.rs', query='.functions[] | select(.name == \"main\")')\n\nUse case: High-precision extraction of specific code elements (classes, functions, docs) without full file ingestion.\nSupported: Rust (rs), Python (py), Markdown (md), Javascript (js/ts), SQL, Go.",
+                "description": code_query_description,
                 "inputSchema": to_json(vecq_schema)?
             },
             {
@@ -146,4 +168,35 @@ fn handle_tools_list() -> Result<Value, JsonRpcError> {
             }
         ]
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// REGRESSION: the hand-written description advertised JavaScript/TypeScript and
+    /// SQL while vecq parsed neither, and read as "query one file". It now names
+    /// every type vecq actually supports, from vecq, and says when to reach for
+    /// the tool.
+    #[test]
+    fn code_query_description_names_what_vecq_parses_and_when_to_use_it() {
+        let tools = handle_tools_list().unwrap();
+        let description = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "code_query")
+            .and_then(|t| t["description"].as_str())
+            .unwrap()
+            .to_string();
+        for file_type in vecq::supported_file_types() {
+            assert!(
+                description.contains(&file_type.to_string()),
+                "{file_type} missing from: {description}"
+            );
+        }
+        assert!(!description.contains("SQL,") && !description.contains("js/ts"));
+        assert!(description.contains("BEFORE grepping"));
+        assert!(description.contains("calls[]"));
+    }
 }

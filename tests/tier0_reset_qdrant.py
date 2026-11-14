@@ -33,6 +33,7 @@ Runs BEFORE any Qdrant-touching test, immediately after the isolation gate.
 """
 
 import os
+import paths  # noqa: F401  (pins the test Qdrant — see paths.py)
 import sys
 import json
 import urllib.error

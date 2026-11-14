@@ -33,6 +33,9 @@ pub enum ElementType {
     Strikethrough,
     FootnoteDefinition,
     HtmlElement,
+    HtmlBlock,   // Markdown: a raw HTML block (`<details>`, `<!-- -->`, ...)
+    FrontMatter, // Markdown: leading YAML `---` or TOML `+++` metadata block
+    Definition,  // Markdown: link reference definition `[label]: url "title"` (MDAST `Definition`)
 
     // Language-specific
     Trait,          // Rust
@@ -87,6 +90,9 @@ impl fmt::Display for ElementType {
             Self::Strikethrough => "strikethrough",
             Self::FootnoteDefinition => "footnote_definition",
             Self::HtmlElement => "element",
+            Self::HtmlBlock => "html_block",
+            Self::FrontMatter => "front_matter",
+            Self::Definition => "definition",
             Self::Trait => "trait",
             Self::Implementation => "implementation",
             Self::Decorator => "decorator",
@@ -106,5 +112,71 @@ impl fmt::Display for ElementType {
             Self::Unknown => "unknown",
         };
         write!(f, "{}", name)
+    }
+}
+
+impl ElementType {
+    /// The output key an element of this type is listed under when its
+    /// language's schema names no other. Always the plural of a list:
+    /// `.functions[]`, `.variables[]`, `.blocks[]`.
+    ///
+    /// The fallback used to be the singular type name
+    /// (`Display`), so a language whose schema forgot a mapping listed the
+    /// same kind under a second spelling — Python/C/C++/Go `variable` beside
+    /// Bash/JavaScript `variables`, C++/CUDA `struct`/`macro` beside C's
+    /// `structs`/`macros`. A query over a mixed tree silently missed half of
+    /// them. Exhaustive on purpose: a new variant does not compile without its
+    /// key. Mass nouns (`emphasis`, `strong`, …) and names that already
+    /// shipped (`footnotes`, `elements`, `package`) match their schema
+    /// mappings so the fallback never introduces a second spelling.
+    pub fn category_key(self) -> &'static str {
+        match self {
+            Self::Function => "functions",
+            Self::Class => "classes",
+            Self::Struct => "structs",
+            Self::Enum => "enums",
+            Self::Union => "unions",
+            Self::Interface => "interfaces",
+            Self::Module => "modules",
+            Self::Import => "imports",
+            Self::Variable => "variables",
+            Self::Constant => "constants",
+            Self::Comment => "comments",
+            Self::Header => "headers",
+            Self::CodeBlock => "code_blocks",
+            Self::Link => "links",
+            Self::Table => "tables",
+            Self::List => "lists",
+            Self::ListItem => "list_items",
+            Self::Blockquote => "blockquotes",
+            Self::Paragraph => "paragraphs",
+            Self::HorizontalRule => "horizontal_rules",
+            Self::Image => "images",
+            Self::Emphasis => "emphasis",
+            Self::Strong => "strong",
+            Self::Strikethrough => "strikethrough",
+            Self::FootnoteDefinition => "footnotes",
+            Self::HtmlElement => "elements",
+            Self::HtmlBlock => "html_blocks",
+            Self::FrontMatter => "front_matter",
+            Self::Definition => "definitions",
+            Self::Trait => "traits",
+            Self::Implementation => "implementations",
+            Self::Decorator => "decorators",
+            Self::Macro => "macros",
+            Self::Namespace => "namespaces",
+            Self::Package => "package",
+            Self::Kernel => "kernels",
+            Self::DeviceFunction => "device_functions",
+            Self::TypeAlias => "type_aliases",
+            Self::FunctionCall => "function_calls",
+            Self::VariableReference => "variable_references",
+            Self::TypeReference => "type_references",
+            Self::MethodCall => "method_calls",
+            Self::Assignment => "assignments",
+            Self::ImportUsage => "import_usages",
+            Self::Block => "blocks",
+            Self::Unknown => "unknown",
+        }
     }
 }

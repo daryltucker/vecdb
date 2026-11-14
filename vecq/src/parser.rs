@@ -245,24 +245,13 @@ impl ParserRegistry {
 pub mod utils {
     use crate::types::{DocumentElement, ElementType};
 
-    /// Calculate line number from byte offset in content
-    pub fn line_number_from_offset(content: &str, offset: usize) -> usize {
-        content[..offset.min(content.len())]
-            .chars()
-            .filter(|&c| c == '\n')
-            .count()
-            + 1
-    }
+    /// Line math lives once, in vecdb-common (check vecdb-common first);
+    /// these re-exports keep vecq's `parser::utils` API unchanged. They were
+    /// byte-identical private copies.
+    pub use vecdb_common::lines::{line_number_from_offset, line_range_from_span};
 
     /// Fast line counter using pre-calculated offsets
     pub use vecdb_common::LineCounter;
-
-    /// Extract line range for a span of text
-    pub fn line_range_from_span(content: &str, start: usize, end: usize) -> (usize, usize) {
-        let start_line = line_number_from_offset(content, start);
-        let end_line = line_number_from_offset(content, end);
-        (start_line, end_line)
-    }
 
     /// Create a document element with automatic line number calculation
     pub fn create_element_with_span(
@@ -275,6 +264,7 @@ pub mod utils {
     ) -> DocumentElement {
         let (line_start, line_end) = line_range_from_span(content, start_offset, end_offset);
         DocumentElement::new(element_type, name, element_content, line_start, line_end)
+            .with_source_span(start_offset, end_offset)
     }
 
     /// Sanitize content for safe processing
@@ -384,9 +374,11 @@ mod tests {
         assert_eq!(start, 1);
         assert_eq!(end, 1);
 
+        // Bytes 0..14 are `line 1\nline 2\n`: the last byte (13) is line 2's
+        // newline, so the range is 1–2, inclusive. It used to report 3, the line holding byte 14.
         let (start, end) = utils::line_range_from_span(content, 0, 14);
         assert_eq!(start, 1);
-        assert_eq!(end, 3);
+        assert_eq!(end, 2);
     }
 
     #[test]

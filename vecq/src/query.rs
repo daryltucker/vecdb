@@ -226,7 +226,16 @@ impl JqQueryEngine {
             }
         };
 
-        let results = self.execute_jaq_filter(&filter_arc, json)?;
+        let results = self
+            .execute_jaq_filter(&filter_arc, json)
+            .map_err(|e| match e {
+                VecqError::QueryError {
+                    message,
+                    suggestion,
+                    ..
+                } => VecqError::query_error(query.to_string(), message, suggestion),
+                other => other,
+            })?;
 
         let execution_time = start_time.elapsed().as_millis() as u64;
         self.update_stats(|stats| {
@@ -312,9 +321,29 @@ impl JqQueryEngine {
 
         let ctx: Ctx<'_, JustLut<Val>> = Ctx::new(&filter.lut, Vars::new([]));
 
-        let results: Vec<Val> = filter.id.run((ctx, input)).filter_map(|r| r.ok()).collect();
-
-        Ok(results.iter().map(|v| self.jaq_to_serde(v)).collect())
+        // A runtime error is an error, as in jq (which exits 5). This was
+        // `filter_map(|r| r.ok())`: every error dropped, so `.name | .x`,
+        // `.functions[]` on a file with none, or a broken stdlib program
+        // printed nothing and exited 0 — indistinguishable from "no matches".
+        // `vecq doc` went silently blank that way (2026-314).
+        let mut results = Vec::new();
+        for r in filter.id.run((ctx, input)) {
+            match jaq_core::val::unwrap_valr(r) {
+                Ok(v) => results.push(self.jaq_to_serde(&v)),
+                Err(e) => {
+                    self.update_stats(|stats| stats.execution_errors += 1);
+                    return Err(VecqError::query_error(
+                        String::new(),
+                        format!("jq error: {e}"),
+                        Some(
+                            "`.key[]` errors when a file has no `key`; use `.key[]?` or `(.key // [])[]`"
+                                .to_string(),
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(results)
     }
 
     fn serde_to_jaq(&self, value: &Value) -> Val {
@@ -429,7 +458,7 @@ impl JqQueryEngine {
             operations.push(QueryOperation {
                 operation_type: "filter".to_string(),
                 description: "Filter elements based on condition".to_string(),
-                example: Some("select(.visibility == \"pub\")".to_string()),
+                example: Some("select(.attributes.visibility == \"pub\")".to_string()),
             });
         }
 
@@ -557,8 +586,8 @@ impl QueryPatterns {
         match task.to_lowercase().as_str() {
             "list functions" => vec![".functions[]", ".functions[] | .name"],
             "find public functions" => vec![
-                ".functions[] | select(.visibility == \"pub\")",
-                ".functions[] | select(.visibility == \"pub\") | .name",
+                ".functions[] | select(.attributes.visibility == \"pub\")",
+                ".functions[] | select(.attributes.visibility == \"pub\") | .name",
             ],
             "count functions" => vec![".functions | length"],
             "list headers" => vec![".headers[]", ".headers[] | .title"],
@@ -636,11 +665,11 @@ mod tests {
         let engine = JqQueryEngine::new();
 
         let explanation = engine
-            .explain_query(".functions[] | select(.visibility == \"pub\")")
+            .explain_query(".functions[] | select(.attributes.visibility == \"pub\")")
             .unwrap();
         assert_eq!(
             explanation.query,
-            ".functions[] | select(.visibility == \"pub\")"
+            ".functions[] | select(.attributes.visibility == \"pub\")"
         );
         assert!(!explanation.operations.is_empty());
         assert!(matches!(

@@ -51,6 +51,7 @@ WHY ONLY THAT SHAPE
 """
 
 import ast
+import paths  # noqa: F401  (pins the test Qdrant — see paths.py)
 import re
 import sys
 from pathlib import Path

@@ -47,7 +47,7 @@ async fn purge_stale_for_document(
 }
 
 pub use discovery::{build_walker, count_files};
-pub use options::IngestionOptions;
+pub use options::{DryRun, IngestionOptions};
 pub use pipeline::{flush_chunks, process_content, FlushParams, OversizeReport};
 pub use processor::process_single_file;
 
@@ -260,6 +260,10 @@ pub async fn ingest_path(
     options: IngestionOptions,
     target_dim: Option<usize>,
 ) -> Result<()> {
+    // Before anything is registered, created or written — including on
+    // `--dry-run`, which exists to surface exactly this kind of problem early.
+    options.check_user_metadata()?;
+
     let job_registry = crate::jobs::JobRegistry::new().ok();
     let job_id = job_registry
         .as_ref()
@@ -278,7 +282,7 @@ pub async fn ingest_path(
     // collection fail, and it fails in a way that says nothing about the file
     // selection the user actually asked about. It also creates the collection
     // as a side effect, which a dry run must never do.
-    let resolved_dim = if options.dry_run {
+    let resolved_dim = if options.dry_run.is_on() {
         None
     } else {
         Some(
@@ -330,7 +334,7 @@ pub async fn ingest_path(
     // `.vecdb/state.toml` — a side effect a dry run must not have.
     let collection_name = options.collection.clone();
 
-    if !options.dry_run {
+    if !options.dry_run.is_on() {
         // 1. Get or Create Remote ID
         // We already ensured collection exists above.
         let remote_id = match backend.get_collection_id(&collection_name).await? {
@@ -488,6 +492,11 @@ pub async fn ingest_path(
         )
         .await
         {
+            // `process_single_file` already printed the dry-run report. Nothing
+            // below — creating a routed target, purging, flushing — may run.
+            Ok(Some(_)) if options_arc.dry_run.is_on() => {
+                files_processed = 1;
+            }
             Ok(Some(mut chunks)) => {
                 // Guard and size the destination this file actually routed to.
                 //
@@ -551,7 +560,7 @@ pub async fn ingest_path(
         // run must not mutate `.vecdb/state.toml`. Writing it here made the
         // NEXT real ingest treat every file as already-ingested and skip it —
         // a dry run silently cancelling the run it was previewing.
-        if state_changed && !options_arc.dry_run {
+        if state_changed && !options_arc.dry_run.is_on() {
             state.touch_collection(&file_collection);
             // Reported, not swallowed. A failed state write is not fatal — the
             // vectors are already in Qdrant — but it silently costs a full
@@ -689,6 +698,10 @@ pub async fn ingest_path(
             std::collections::HashMap::new();
 
         while let Some((coll, mut batch)) = rx.recv().await {
+            // Nothing to write is never a reason to create a collection.
+            if batch.is_empty() || options_for_worker.dry_run.is_on() {
+                continue;
+            }
             // Routed destinations get the same guard as the primary target —
             // a .vecdbrc route is not a reason to skip the space check.
             let route_dim = match route_dims.get(&coll) {
@@ -898,12 +911,18 @@ pub async fn ingest_path(
                     // A batch belongs to the collection whose chunks are in it,
                     // not to the file that arrived next. Flush under the owner
                     // before switching.
+                    //
+                    // Never an EMPTY batch: the worker's first act for a new
+                    // collection is `ensure_write_target`, which creates it. A
+                    // dry run's buffers are always empty, so every routing
+                    // switch created the routed collection, genesis and all —
+                    // `--dry-run` over a `.vecdbrc` wrote to the store (2026-300).
                     if buffered_coll.as_deref().is_some_and(|b| b != coll) {
                         let owner = buffered_coll
                             .take()
                             .unwrap_or_else(|| collection_name.clone());
                         let batch = std::mem::take(&mut chunks_buffer);
-                        if (tx.send((owner, batch)).await).is_err() {
+                        if !batch.is_empty() && (tx.send((owner, batch)).await).is_err() {
                             break 'discovery_loop;
                         }
                     }
@@ -1024,7 +1043,7 @@ pub async fn ingest_path(
     }
 
     // See the single-file path: a dry run previews, it does not record.
-    if state_changed && !options_arc.dry_run {
+    if state_changed && !options_arc.dry_run.is_on() {
         state.touch_collection(&collection_name);
         if let Err(e) = state.save(root_path) {
             let msg = format!("Warning: Failed to save ingestion state: {}", e);
@@ -1087,14 +1106,15 @@ pub async fn ingest_memory(
         route_chunking: Default::default(),
         chunk_overlap: chunk_overlap.unwrap_or(50),
         respect_gitignore: false,
-        ignore_vectorignore: false,
+        bypass_vectorignore: false,
         strategy: "recursive".to_string(),
         tokenizer: "cl100k_base".to_string(),
         git_ref: None,
         extensions: None,
         excludes: None,
-        dry_run: false,
+        dry_run: crate::ingestion::DryRun::Off,
         metadata: None,
+        route_metadata: None,
         file_allowlist: None,
         project_root: None,
         path_rules: Vec::new(),

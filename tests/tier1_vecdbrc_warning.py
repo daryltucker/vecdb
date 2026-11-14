@@ -24,8 +24,12 @@ sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from paths import bin_path
 
 # Use test config
-TEST_CONFIG = os.environ.get("VECDB_CONFIG", "tests/fixtures/config.toml")
-PROJECT_ROOT = Path(__file__).parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# Absolute, always: vecdb runs with cwd = a temp dir, where a relative path
+# resolves to nothing and vecdb falls back to the operator's PRODUCTION config.
+# A standalone run (no VECDB_CONFIG exported, as run_all.sh does) created
+# test_rcwarn_* collections on production that way (2026-11-10).
+TEST_CONFIG = str(Path(os.environ.get("VECDB_CONFIG", PROJECT_ROOT / "tests/fixtures/config.toml")).resolve())
 VECDB_BIN = os.environ.get("VECDB_BIN", bin_path("vecdb"))
 
 def log(msg, status="INFO"):
@@ -41,8 +45,15 @@ def run_interactive(cmd, cwd):
     """Run command with simulated TTY to trigger interactive mode"""
     # Use `script` to simulate TTY
     full_cmd = ["script", "-q", "-c", " ".join(cmd), "/dev/null"]
+    # stdin=DEVNULL: `script` gives vecdb its OWN pty; it must never touch the
+    # terminal the suite was launched from. run_all.sh wraps every test in
+    # `timeout`, which puts it in a background process group, so when `script`
+    # set up the inherited terminal the kernel stopped it (SIGTTOU) — and this
+    # process with it, so `timeout=30` below never fired. `make test` from a
+    # shell sat stopped until run_all's 30-minute cap (2026-11-10).
     result = subprocess.run(
         full_cmd,
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         cwd=cwd,

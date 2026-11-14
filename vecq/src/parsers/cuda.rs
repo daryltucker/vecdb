@@ -338,6 +338,101 @@ impl Default for CudaParser {
     }
 }
 
+/// Coverage spec: every kind tree-sitter-cuda can produce at top level or inside the
+/// wrappers walked (`bodies`), classified. `ts_coverage::complete` emits whatever the
+/// walker above did not; the completeness test fails on any grammar kind missing here.
+pub(crate) const COVERAGE: crate::parsers::ts_coverage::Spec = {
+    use crate::parsers::ts_coverage::Kind::{Comment, Descend, Unit};
+    use crate::types::ElementType as E;
+    crate::parsers::ts_coverage::Spec {
+        bodies: &[
+            "translation_unit",
+            "preproc_ifdef",
+            "preproc_if",
+            "preproc_else",
+            "preproc_elif",
+            "preproc_elifdef",
+            "linkage_specification",
+            "declaration_list",
+            "template_declaration",
+            "namespace_definition",
+        ],
+        kinds: &[
+            ("attributed_statement", Unit(E::Block)),
+            ("break_statement", Unit(E::Block)),
+            ("case_statement", Unit(E::Block)),
+            ("comment", Comment),
+            ("compound_statement", Unit(E::Block)),
+            ("continue_statement", Unit(E::Block)),
+            ("declaration", Unit(E::Variable)),
+            ("declaration_list", Descend),
+            ("do_statement", Unit(E::Block)),
+            ("enum_specifier", Unit(E::Enum)),
+            ("enumerator", Unit(E::Constant)),
+            ("expression_statement", Unit(E::Block)),
+            ("field_declaration", Unit(E::Variable)),
+            ("for_statement", Unit(E::Block)),
+            ("function_definition", Unit(E::Function)),
+            ("goto_statement", Unit(E::Block)),
+            ("if_statement", Unit(E::Block)),
+            ("labeled_statement", Unit(E::Block)),
+            ("macro_type_specifier", Unit(E::Block)),
+            ("linkage_specification", Descend),
+            ("preproc_call", Unit(E::Macro)),
+            ("preproc_def", Unit(E::Macro)),
+            ("preproc_elif", Descend),
+            ("preproc_elifdef", Descend),
+            ("preproc_else", Descend),
+            ("preproc_function_def", Unit(E::Macro)),
+            ("preproc_if", Descend),
+            ("preproc_ifdef", Descend),
+            ("preproc_include", Unit(E::Import)),
+            ("primitive_type", Unit(E::Block)),
+            ("return_statement", Unit(E::Block)),
+            ("seh_leave_statement", Unit(E::Block)),
+            ("seh_try_statement", Unit(E::Block)),
+            ("sized_type_specifier", Unit(E::Block)),
+            ("struct_specifier", Unit(E::Struct)),
+            ("switch_statement", Unit(E::Block)),
+            ("type_definition", Unit(E::TypeAlias)),
+            ("type_identifier", Unit(E::Block)),
+            ("union_specifier", Unit(E::Union)),
+            ("while_statement", Unit(E::Block)),
+            ("access_specifier", Unit(E::Block)),
+            ("alias_declaration", Unit(E::TypeAlias)),
+            ("attribute_declaration", Unit(E::Decorator)),
+            ("class_specifier", Unit(E::Class)),
+            ("co_return_statement", Unit(E::Block)),
+            ("co_yield_statement", Unit(E::Block)),
+            ("concept_definition", Unit(E::TypeAlias)),
+            ("decltype", Unit(E::Block)),
+            ("dependent_type", Unit(E::Block)),
+            ("for_range_loop", Unit(E::Block)),
+            ("friend_declaration", Unit(E::Block)),
+            ("namespace_alias_definition", Unit(E::TypeAlias)),
+            ("namespace_definition", Descend),
+            ("placeholder_type_specifier", Unit(E::Block)),
+            ("qualified_identifier", Unit(E::Block)),
+            ("requires_clause", Unit(E::Block)),
+            ("static_assert_declaration", Unit(E::Block)),
+            ("template_declaration", Descend),
+            ("template_instantiation", Unit(E::Block)),
+            ("template_type", Unit(E::Block)),
+            ("throw_statement", Unit(E::Block)),
+            ("try_statement", Unit(E::Block)),
+            ("using_declaration", Unit(E::Import)),
+            ("consteval_block_declaration", Unit(E::Block)),
+            ("expansion_statement", Unit(E::Block)),
+            ("export_declaration", Unit(E::Block)),
+            ("global_module_fragment_declaration", Unit(E::Module)),
+            ("import_declaration", Unit(E::Import)),
+            ("module_declaration", Unit(E::Module)),
+            ("private_module_fragment_declaration", Unit(E::Module)),
+            ("splice_type_specifier", Unit(E::Block)),
+        ],
+    }
+};
+
 #[async_trait]
 impl Parser for CudaParser {
     fn file_extensions(&self) -> &[&str] {
@@ -363,9 +458,9 @@ impl Parser for CudaParser {
         // Use C++ parser for CUDA (it's a superset)
         let mut parser = tree_sitter::Parser::new();
         parser
-            .set_language(&tree_sitter_cpp::LANGUAGE.into())
+            .set_language(&tree_sitter_cuda::LANGUAGE.into())
             .map_err(|e| VecqError::ParseError {
-                file: PathBuf::from("<string>"),
+                file: PathBuf::new(),
                 line: 0,
                 message: format!("Failed to set CUDA/C++ language: {}", e),
                 source: None,
@@ -374,19 +469,31 @@ impl Parser for CudaParser {
         let tree = parser
             .parse(content, None)
             .ok_or_else(|| VecqError::ParseError {
-                file: PathBuf::from("<string>"),
+                file: PathBuf::new(),
                 line: 0,
                 message: "Failed to parse CUDA content".to_string(),
                 source: None,
             })?;
 
-        let elements = self.process_nodes(tree.root_node(), content);
+        let mut elements = self.process_nodes(tree.root_node(), content);
 
         let mut doc = ParsedDocument::new(
             DocumentMetadata::new(PathBuf::from("file.cu"), content.len() as u64)
                 .with_line_count(content)
                 .with_file_type(FileType::Cuda),
         );
+        doc.metadata.syntax_errors = crate::parsers::ts_coverage::complete(
+            &mut elements,
+            tree.root_node(),
+            content,
+            &COVERAGE,
+        );
+        doc.module = Some(crate::parsers::ts_refs::attach(
+            &mut elements,
+            tree.root_node(),
+            content,
+            &crate::parsers::ts_refs::C_FAMILY,
+        ));
         doc.elements = elements;
 
         Ok(doc)

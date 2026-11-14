@@ -25,7 +25,7 @@ ort_crate = 2.0.0-rc.12
 
 ## Why the default build can't do it
 
-Two hard constraints, both learned empirically (BUG-2026-254):
+Two hard constraints, both measured:
 
 1. **The prebuilt ONNX Runtime carries kernels for `sm_75`, `sm_80` and
    `sm_90` only, and no PTX.** vecdb's default build statically links pyke's
@@ -188,7 +188,8 @@ naming both options (it does not fall back and does not hang).
 ### 5. Verify — trust the exit code, not vibes
 
 vecdb fails **loudly** when the GPU path doesn't work; there is no silent
-CPU fallback (that silence was the worst part of BUG-2026-254). A cheap
+CPU fallback; a fallback that stays silent is the defect this design exists
+to prevent. A cheap
 read-only probe — a `search` embeds the query with the profile's embedder:
 
 ```bash

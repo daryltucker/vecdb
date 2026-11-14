@@ -11,6 +11,7 @@ This test validates:
 """
 
 import sys
+import paths  # noqa: F401  (pins the test Qdrant — see paths.py)
 import json
 import subprocess
 from pathlib import Path

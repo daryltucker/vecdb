@@ -3,12 +3,17 @@ use predicates::prelude::*;
 use std::fs;
 use tempfile::TempDir;
 
-// Tier 2: Stank Hunt - Ignore Vectorignore Flag
-// Verifies that `--ignore-vectorignore` causes .vectorignore to be skipped
+// Tier 2: Stank Hunt - Bypass Vectorignore Flag
+// Verifies that `--bypass-vectorignore` causes .vectorignore to be skipped
 // during file walking, so files that would normally be excluded are ingested.
+//
+// The rename commit changed the flag to `--bypass-vectorignore` but left this
+// test passing the dead old string, so the gate failed RED before this fix
+// (`test_bypass_vectorignore_flag` FAILED in the full run). Fixed under the
+// fail-first protocol.
 
 #[test]
-fn test_ignore_vectorignore_flag() {
+fn test_bypass_vectorignore_flag() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
 
@@ -28,7 +33,7 @@ fn test_ignore_vectorignore_flag() {
     // Create .vectorignore to exclude "secret.rs" and "target/"
     fs::write(root.join(".vectorignore"), "secret.rs\ntarget/").unwrap();
 
-    // WITHOUT --ignore-vectorignore: secret.rs and target/ should be excluded
+    // WITHOUT --bypass-vectorignore: secret.rs and target/ should be excluded
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_vecdb"));
     cmd.arg("ingest")
         .arg(root.to_str().unwrap())
@@ -46,14 +51,14 @@ fn test_ignore_vectorignore_flag() {
         // target/debug/lib.rs should be excluded via .vectorignore
         .stdout(predicate::str::contains("target/debug/lib.rs").not());
 
-    // WITH --ignore-vectorignore: secret.rs and target/ should NOT be excluded
+    // WITH --bypass-vectorignore: secret.rs and target/ should NOT be excluded
     let mut cmd2 = Command::new(env!("CARGO_BIN_EXE_vecdb"));
     cmd2.arg("ingest")
         .arg(root.to_str().unwrap())
         .arg("-c")
         .arg("test_vecignore_ignored")
         .arg("--dry-run")
-        .arg("--ignore-vectorignore");
+        .arg("--bypass-vectorignore");
 
     let assert2 = cmd2.assert();
     assert2

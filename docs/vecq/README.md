@@ -39,10 +39,10 @@ Use `jq` syntax to filter the output. **Important**: Always use `--` to separate
 vecq src/main.rs -- '.functions[] | .name'
 
 # List public functions
-vecq src/main.rs -- '.functions[] | select(.visibility == "pub") | .name'
+vecq src/main.rs -- '.functions[] | select(.attributes.visibility == "pub") | .name'
 
 # Alternative: use -q flag
-vecq src/main.rs -q '.functions[] | select(.visibility == "pub") | .name'
+vecq src/main.rs -q '.functions[] | select(.attributes.visibility == "pub") | .name'
 
 # Load query from file
 vecq src/main.rs -f queries/public_functions.jq --
@@ -129,8 +129,8 @@ To see the exact schema for a file, run `vecq --convert <file>`.
 
 #### Markdown (`.md`)
 - `.headers[]`: List of headers (`{ content, level, line_start }`)
-- `.code_blocks[]`: Fenced code blocks (`{ language, content }`)
-- `.links[]`: Hyperlinks (`{ text, url }`)
+- `.code_blocks[]`: Code blocks (`content` with its fences; `attributes.code` is the code alone; `attributes.language`)
+- `.links[]`: Hyperlinks (`content` is the markup as written; `attributes.url`, `attributes.title`)
 
 #### Rust/Python/Go/C++
 - `.functions[]`: Function definitions (`{ name, signature, content }`)

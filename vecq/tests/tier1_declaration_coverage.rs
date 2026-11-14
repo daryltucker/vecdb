@@ -4,8 +4,7 @@
 //! `Err`, `line_end >= line_start`. A parser returning zero of a language's
 //! declaration kinds passes it. That is how `vecq` shipped v1.1.0 extracting
 //! two of Rust's nine kinds, with `enums` emitted always-empty and `traits`
-//! never emitted at all. See `BUG_RUST_DECLARATION_COVERAGE-2026-241` in the
-//! docs repo.
+//! never emitted at all.
 //!
 //! Two gates here, answering two different questions:
 //!
@@ -251,6 +250,7 @@ fn fixture_dir(file_type: FileType) -> Option<&'static str> {
         FileType::Cuda => "cuda",
         FileType::Go => "go",
         FileType::Bash => "bash",
+        FileType::JavaScript => "javascript",
         FileType::Html => "html",
         FileType::Text => "text",
         FileType::Toml => "toml",

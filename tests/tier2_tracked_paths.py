@@ -11,9 +11,9 @@ WHAT THIS PROVES
 
 WHY IT EXISTS
     `.gitignore` starts with `/*` and line 10 is `**/docs/**/`, un-ignoring only
-    `docs/vecq` and `docs/specs`. So `docs/planning/`, `docs/internal/`,
-    `docs/inquiries/`, `docs/training/` are deliberately present in a working
-    tree and absent from every clone. Thirteen tracked files linked into them,
+    `docs/vecq` and `docs/specs`. So every other `docs/` subdirectory is
+    deliberately present in a working tree and absent from every clone.
+    Thirteen tracked files linked into them,
     `README.md` among them — sending users to a file their clone does not have
     for the answer to a build problem.
 
@@ -41,6 +41,7 @@ SCOPE
 """
 
 import os
+import paths  # noqa: F401  (pins the test Qdrant — see paths.py)
 import re
 import subprocess
 import sys
@@ -132,6 +133,15 @@ def resolve(ref: str, from_file: str) -> str | None:
     else:
         candidates.append(REPO / base / ref)
         candidates.append(REPO / ref)
+        # A third, for Rust: `cargo test` runs a crate's tests from the CRATE
+        # root, so `vecq/tests/<test>.rs` opening `tests/fixtures/<f>` means
+        # `vecq/tests/fixtures/<f>` — correct, and reported MISSING until this
+        # reading existed (2026-11-10).
+        if from_file.endswith(".rs"):
+            here = REPO / base
+            crate = next((p for p in (here, *here.parents) if (p / "Cargo.toml").exists()), None)
+            if crate is not None:
+                candidates.append(crate / ref)
 
     resolved = []
     for c in candidates:

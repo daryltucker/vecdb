@@ -188,7 +188,7 @@ You can create macros for anything. For example, a Rust helper:
 **`~/.config/vecq/functions/rust.jq`**
 ```jq
 # Select public items
-def pub: select(.visibility == "pub");
+def pub: select(.attributes.visibility == "pub");
 
 # Select items with specific return type
 def returns(t): select(.return_type == t);

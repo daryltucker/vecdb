@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import subprocess
+import paths  # noqa: F401  (pins the test Qdrant — see paths.py)
 import sys
 import shlex
 

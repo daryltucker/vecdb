@@ -27,6 +27,44 @@ impl JsonGenerator {
         // Fallback for elements without "value" attribute (though JsonParser adds it)
         Value::Null
     }
+
+    /// Render elements as JSON text in ELEMENT order.
+    ///
+    /// `element_to_value` hands back a `serde_json::Value`, whose maps are
+    /// alphabetical, so generating from it reordered every object. The parser
+    /// emits members in document order (2026-300), so a round trip must
+    /// generate from the elements themselves; only leaves use `value`.
+    fn render(elements: &[crate::types::DocumentElement], indent: usize) -> String {
+        let is_array = elements
+            .iter()
+            .enumerate()
+            .all(|(i, e)| e.name.as_deref() == Some(format!("[{i}]").as_str()));
+        let pad = "  ".repeat(indent + 1);
+        let close = "  ".repeat(indent);
+        let items: Vec<String> = elements
+            .iter()
+            .map(|e| {
+                let value = if e.children.is_empty() {
+                    let v = Self::element_to_value(e);
+                    serde_json::to_string(&v).unwrap_or_else(|_| "null".to_string())
+                } else {
+                    Self::render(&e.children, indent + 1)
+                };
+                match (is_array, e.name.as_deref()) {
+                    (false, Some(key)) => {
+                        let key = serde_json::to_string(key).unwrap_or_else(|_| "\"\"".into());
+                        format!("{pad}{key}: {value}")
+                    }
+                    _ => format!("{pad}{value}"),
+                }
+            })
+            .collect();
+        let (open, end) = if is_array { ("[", "]") } else { ("{", "}") };
+        if items.is_empty() {
+            return format!("{open}{end}");
+        }
+        format!("{open}\n{}\n{close}{end}", items.join(",\n"))
+    }
 }
 
 impl Generator for JsonGenerator {
@@ -40,31 +78,11 @@ impl Generator for JsonGenerator {
         // This is a simplified generator for round-trip verification.
         // We'll reconstruct a Map if all elements have keys, or an Array if they look like indices.
 
-        let mut map = serde_json::Map::new();
-        let mut arr = Vec::new();
-        let mut is_arr = true;
-
-        for (i, element) in doc.elements.iter().enumerate() {
-            let key = element.name.as_deref().unwrap_or("");
-            if key != format!("[{}]", i) {
-                is_arr = false;
-            }
-
-            let val = Self::element_to_value(element);
-            if !is_arr {
-                map.insert(key.to_string(), val.clone());
-            }
-            arr.push(val);
+        // Built from the elements, in their order — see `render`. An empty
+        // document is `{}`, as it was when this reconstructed a Map.
+        if doc.elements.is_empty() {
+            return Ok("{}".to_string());
         }
-
-        let final_value = if is_arr && !arr.is_empty() {
-            Value::Array(arr)
-        } else {
-            Value::Object(map)
-        };
-
-        serde_json::to_string_pretty(&final_value).map_err(|e| {
-            crate::error::VecqError::json_error("Failed to generate JSON".to_string(), Some(e))
-        })
+        Ok(Self::render(&doc.elements, 0))
     }
 }

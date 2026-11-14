@@ -4,6 +4,7 @@
 use crate::error::VecqResult;
 use crate::types::{DocumentElement, ElementAttributes, ElementType, PythonAttributes};
 use rustpython_parser::ast;
+use rustpython_parser::ast::Ranged;
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -506,6 +507,78 @@ impl super::PythonParser {
         Ok(variables)
     }
 
+    /// Extract module-level executable statements.
+    ///
+    /// Everything already captured by the dedicated extractors — `def`/`async
+    /// def` (extract_functions), `class` (extract_classes), imports
+    /// (extract_imports), plain/annotated assignments at top level
+    /// (extract_variables) — is skipped here. What remains are the executable
+    /// statements the parser used to silently drop: `if`/`for`/`while`/`try`
+    /// blocks (including `if __name__ == "__main__":`), standalone expression
+    /// statements (calls like `main()`), `with`/`match` blocks, etc.
+    ///
+    /// Each is ONE element of its own (`ElementType::Block`, `.blocks[]`), its
+    /// `attributes.kind` the statement's grammar kind — tree-sitter-python's
+    /// names, the same shape every tree-sitter language gives a top-level
+    /// statement (`ts_coverage`). Source text as written.
+    ///
+    /// They were ONE synthetic `Module` element spanning the
+    /// first kept statement to the last — which, with a `def` between two
+    /// calls, contained the `def` too: its text twice in output and chunks,
+    /// and two elements claiming the same bytes. What runs at module level is
+    /// now the module SCOPE (`ParsedDocument::module`: its calls and strings);
+    /// the statements themselves are these blocks.
+    pub fn extract_module_statements(
+        &self,
+        content: &str,
+        body: &[ast::Stmt],
+    ) -> VecqResult<Vec<DocumentElement>> {
+        let mut blocks = Vec::new();
+        for stmt in body {
+            let kind = match stmt {
+                // Covered by dedicated extractors — see fn doc above.
+                ast::Stmt::FunctionDef(_)
+                | ast::Stmt::AsyncFunctionDef(_)
+                | ast::Stmt::ClassDef(_)
+                | ast::Stmt::Assign(_)
+                | ast::Stmt::AnnAssign(_)
+                | ast::Stmt::Import(_)
+                | ast::Stmt::ImportFrom(_) => continue,
+                ast::Stmt::Expr(_) | ast::Stmt::AugAssign(_) => "expression_statement",
+                ast::Stmt::If(_) => "if_statement",
+                ast::Stmt::For(_) | ast::Stmt::AsyncFor(_) => "for_statement",
+                ast::Stmt::While(_) => "while_statement",
+                ast::Stmt::Try(_) | ast::Stmt::TryStar(_) => "try_statement",
+                ast::Stmt::With(_) | ast::Stmt::AsyncWith(_) => "with_statement",
+                ast::Stmt::Match(_) => "match_statement",
+                ast::Stmt::Assert(_) => "assert_statement",
+                ast::Stmt::Raise(_) => "raise_statement",
+                ast::Stmt::Delete(_) => "delete_statement",
+                ast::Stmt::Global(_) => "global_statement",
+                ast::Stmt::Nonlocal(_) => "nonlocal_statement",
+                ast::Stmt::Pass(_) => "pass_statement",
+                ast::Stmt::Break(_) => "break_statement",
+                ast::Stmt::Continue(_) => "continue_statement",
+                ast::Stmt::Return(_) => "return_statement",
+                ast::Stmt::TypeAlias(_) => "type_alias_statement",
+            };
+            let start = stmt.range().start().to_usize();
+            let end = stmt.range().end().to_usize();
+            blocks.push(
+                DocumentElement::new(
+                    ElementType::Block,
+                    None,
+                    self.source_span(content, start, end),
+                    self.byte_offset_to_line_number(content, start),
+                    self.byte_offset_to_line_number(content, end.saturating_sub(1).max(start)),
+                )
+                .with_attribute(crate::types::attr::KIND.to_string(), kind)
+                .with_source_span(start, end),
+            );
+        }
+        Ok(blocks)
+    }
+
     /// Convert AST expression to string representation
     pub fn ast_to_string(&self, expr: &ast::Expr) -> String {
         match expr {
@@ -514,7 +587,11 @@ impl super::PythonParser {
                 ast::Constant::Str(s) => format!("\"{}\"", s),
                 ast::Constant::Int(i) => i.to_string(),
                 ast::Constant::Float(f) => f.to_string(),
-                ast::Constant::Bool(b) => b.to_string(),
+                // Python's spelling, not Rust's: `b.to_string()` rendered
+                // `True` as `true` — not what the file says, and a NameError
+                // for an agent that copies it back (2026-315).
+                ast::Constant::Bool(true) => "True".to_string(),
+                ast::Constant::Bool(false) => "False".to_string(),
                 ast::Constant::None => "None".to_string(),
                 _ => "...".to_string(),
             },

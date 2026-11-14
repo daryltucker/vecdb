@@ -1,0 +1,29 @@
+# Edge cases for the source-span contract: every node spanned, every comment
+# owned, the file rebuilt byte for byte.
+defaults: &base          # an anchor
+  retries: 3
+  timeout: "30s"         # a quoted scalar
+service:
+  <<: *base              # an alias in a merge key
+  name: 'api # not a comment'
+  tags: [web, "edge", 3]   # a flow sequence
+  labels: {tier: front, team: core}
+  empty:
+  tagged: !!str 42
+  script: |
+    echo "block scalar"
+    # not a comment either
+  folded: >-
+    folded
+    text
+
+# describes the list
+items:
+  - one
+  - name: two        # a mapping in a sequence
+    value: 2
+  -
+    - nested
+---
+# a second document
+second: true

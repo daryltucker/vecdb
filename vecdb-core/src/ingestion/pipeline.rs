@@ -118,6 +118,91 @@ impl Default for FlushParams {
     }
 }
 
+/// Cut one oversized chunk into parts that each fit `ceiling`.
+///
+/// Every part carries the chunk's label in its TEXT. The
+/// parser wrote it at the top of `content` and recorded it under
+/// `CONTEXT_LABEL_KEY`; cutting the content as-is left it on part 0 only, and
+/// parts 1..n embedded as anonymous prose whose heading or record key existed
+/// only in the payload, where the vector never sees it.
+///
+/// The body is cut to fit beside the label. A label too large to leave the body
+/// at least half the ceiling is not repeated: the label exists to serve the
+/// content, never to crowd it out.
+pub(crate) async fn split_oversized(chunk: &Chunk, ceiling: usize) -> Result<Vec<Chunk>> {
+    // A label too big to repeat is NOT dropped: the whole content, label
+    // included, is split, so the label is in the text exactly once (the first
+    // part). It can hold the only copy of a record's identity — those members
+    // are not emitted as data — so dropping it, or swapping in a shorter
+    // trail, lost them (tried 2026-300; the T1.19 JSON coverage gate caught it).
+    let labelled = chunk
+        .metadata
+        .get(crate::parsers::vecq_adapter::CONTEXT_LABEL_KEY)
+        .and_then(|v| v.as_str())
+        .and_then(|label| {
+            let body = chunk.content.strip_prefix(label)?.strip_prefix("\n\n")?;
+            let room = ceiling.checked_sub(label.len() + 2)?;
+            (room * 2 >= ceiling).then_some((label, body, room))
+        });
+    let (label, body, room) = match labelled {
+        Some((label, body, room)) => (Some(label), body, room),
+        None => (None, chunk.content.as_str(), ceiling),
+    };
+    let params = crate::chunking::ChunkParams {
+        target_chunk_size: room,
+        max_chunk_bytes: Some(room),
+        chunk_overlap: 0,
+        tokenizer: "bytes".to_string(),
+        file_extension: None,
+    };
+    let sub_chunks = crate::chunking::FixedWidthChunker
+        .chunk(body, &params)
+        .await?;
+
+    let mut parts = Vec::with_capacity(sub_chunks.len());
+    for (idx, sub) in sub_chunks.into_iter().enumerate() {
+        let mut part_chunk = chunk.clone();
+        part_chunk.content = match label {
+            Some(label) => format!("{label}\n\n{}", sub.content),
+            None => sub.content,
+        };
+        // `context_label` promises the content begins with exactly it. When
+        // the label is not repeated, only the part that starts with it — the
+        // first — may say so.
+        let key = crate::parsers::vecq_adapter::CONTEXT_LABEL_KEY;
+        let begins_with_label = chunk
+            .metadata
+            .get(key)
+            .and_then(|v| v.as_str())
+            .is_some_and(|l| part_chunk.content.starts_with(&format!("{l}\n\n")));
+        if !begins_with_label {
+            part_chunk.metadata.remove(key);
+        }
+
+        let seed = format!("{}-part-{}", chunk.id, idx);
+        part_chunk.id = uuid::Uuid::new_v5(&VECDB_NAMESPACE, seed.as_bytes()).to_string();
+
+        part_chunk
+            .metadata
+            .insert("split_part".to_string(), serde_json::json!(idx));
+        part_chunk.metadata.insert(
+            "original_chunk_id".to_string(),
+            serde_json::Value::String(chunk.id.clone()),
+        );
+
+        // Line numbers count from the body: the label is not source text, and
+        // the body begins on the chunk's own first line.
+        if let (Some(base_start), Some(_base_end)) = (chunk.start_line, chunk.end_line) {
+            if let (Some(sub_start), Some(sub_end)) = (sub.line_start, sub.line_end) {
+                part_chunk.start_line = Some(base_start + sub_start - 1);
+                part_chunk.end_line = Some(base_start + sub_end - 1);
+            }
+        }
+        parts.push(part_chunk);
+    }
+    Ok(parts)
+}
+
 pub async fn flush_chunks(
     backend: &Arc<dyn Backend + Send + Sync>,
     embedder: &Arc<dyn Embedder + Send + Sync>,
@@ -160,15 +245,6 @@ pub async fn flush_chunks(
         });
 
         let mut final_chunks: Vec<Chunk> = Vec::with_capacity(new_chunks.len());
-        let fallback_chunker = crate::chunking::FixedWidthChunker;
-        let fallback_params = crate::chunking::ChunkParams {
-            target_chunk_size: active_max_chunk_bytes,
-            max_chunk_bytes: Some(active_max_chunk_bytes),
-            chunk_overlap: 0,
-            tokenizer: "bytes".to_string(),
-            file_extension: None,
-        };
-
         for chunk in new_chunks {
             if chunk.content.len() > active_max_chunk_bytes {
                 // Never truncate. The invariant is that a stored chunk must not
@@ -222,35 +298,7 @@ pub async fn flush_chunks(
                     max_chunk_bytes = active_max_chunk_bytes,
                     "oversized chunk split; structural boundaries discarded for the split parts"
                 );
-                let sub_chunks: Vec<crate::chunking::ChunkResult> = fallback_chunker
-                    .chunk(&chunk.content, &fallback_params)
-                    .await?;
-
-                for (idx, sub) in sub_chunks.into_iter().enumerate() {
-                    let mut part_chunk = chunk.clone();
-                    part_chunk.content = sub.content;
-
-                    let seed = format!("{}-part-{}", chunk.id, idx);
-                    part_chunk.id =
-                        uuid::Uuid::new_v5(&VECDB_NAMESPACE, seed.as_bytes()).to_string();
-
-                    part_chunk
-                        .metadata
-                        .insert("split_part".to_string(), serde_json::json!(idx));
-                    part_chunk.metadata.insert(
-                        "original_chunk_id".to_string(),
-                        serde_json::Value::String(chunk.id.clone()),
-                    );
-
-                    if let (Some(base_start), Some(_base_end)) = (chunk.start_line, chunk.end_line)
-                    {
-                        if let (Some(sub_start), Some(sub_end)) = (sub.line_start, sub.line_end) {
-                            part_chunk.start_line = Some(base_start + sub_start - 1);
-                            part_chunk.end_line = Some(base_start + sub_end - 1);
-                        }
-                    }
-                    final_chunks.push(part_chunk);
-                }
+                final_chunks.extend(split_oversized(&chunk, active_max_chunk_bytes).await?);
             } else {
                 final_chunks.push(chunk);
             }

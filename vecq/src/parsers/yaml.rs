@@ -99,7 +99,13 @@ impl YamlParser {
             line_end,
         );
 
+        // An alias (`<<: *base`, `x: *ref`) is written as the alias, not as
+        // its value: the value's members are the ANCHOR's elements, already
+        // emitted where they are written. Descending here attached them twice,
+        // the second time with no span of their own.
+        let is_alias = span.is_some_and(|s| s.alias);
         match value {
+            _ if is_alias => {}
             serde_yaml_ng::Value::Mapping(map) => {
                 element.element_type = ElementType::Block;
                 for (k, v) in map {
@@ -129,6 +135,14 @@ impl YamlParser {
             _ => {}
         }
 
+        // The node's exact span: `vecq::parse_file` reads
+        // `content` and the lines off it, so a leaf is `key: value` exactly as
+        // written and a container is its whole text — the chunker cuts a
+        // container down to its own frame (`services:`), which is how parent
+        // keys reach chunk text.
+        if let Some(s) = span {
+            element.set_source_span(s.start, s.end);
+        }
         element
             .set_attributes(ElementAttributes::Yaml(YamlAttributes {
                 other: HashMap::new(),
@@ -255,6 +269,43 @@ impl Parser for YamlParser {
                         total_lines,
                     ));
                 }
+            }
+        }
+
+        // Lossless: indicators (`-`, `:`), blank lines,
+        // document markers and `#` comments are trivia owned by the shared rule
+        // (`parsers::ownership`), at the top level and inside every mapping and
+        // sequence. YAML comments were dropped.
+        if spans.is_some() {
+            // A block scalar's span carries its final line break(s); they are
+            // trivia, not content.
+            for e in doc.elements.iter_mut() {
+                e.tighten_span(content);
+            }
+            let lines = vecdb_common::LineCounter::new(content);
+            let mut leaves = Vec::new();
+            fn leaf_spans(e: &DocumentElement, out: &mut Vec<(usize, usize)>) {
+                if e.children.is_empty() {
+                    out.extend(e.source_span());
+                }
+                for c in &e.children {
+                    leaf_spans(c, out);
+                }
+            }
+            for e in &doc.elements {
+                leaf_spans(e, &mut leaves);
+            }
+            leaves.sort_unstable();
+            let comments = yaml_spans::comments(content, &leaves);
+            super::ownership::assign_trivia(&mut doc.elements, content, &lines, &comments, |_| {
+                true
+            });
+            for e in doc.elements.iter_mut() {
+                super::ownership::assign_nested_trivia(e, content, &comments);
+                // `content` and lines read off the span here, not only in
+                // `vecq::parse_file`: a bare `Parser::parse` result (the enricher's
+                // input) must state what its spans say too.
+                e.conform_to_span(content, &lines);
             }
         }
 

@@ -7,6 +7,7 @@ ERROR: Current version > 1 year old AND newer version available.
 """
 
 import subprocess
+import paths  # noqa: F401  (pins the test Qdrant — see paths.py)
 import json
 import sys
 import os

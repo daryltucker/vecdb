@@ -259,7 +259,7 @@ pub async fn run(
 
     // "Providers" here means compiled-in availability (GetAvailableProviders),
     // not what a session actually registers — a CUDA build lists CUDA even when
-    // the provider libraries are missing at runtime (BUG-2026-254).
+    // the provider libraries are missing at runtime.
     skin.print_text(&format!(
         "* **Providers (compiled in)**: [{}]",
         providers_formatted.join(", ")

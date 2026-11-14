@@ -13,6 +13,18 @@ pub struct DocumentMetadata {
     pub encoding: String,
     pub line_count: usize,
     pub hash: Option<String>, // For caching
+    /// How many syntax errors the parser recovered from: the grammar's `ERROR`
+    /// and `MISSING` nodes, for the tree-sitter languages and HTML. `0` for a
+    /// file that parsed cleanly — and for the library parsers (Markdown, JSON,
+    /// TOML, YAML), which have no error recovery: malformed input is an `Err`
+    /// from `parse_file`, never a partial document. Python (rustpython) is the
+    /// same until it moves to tree-sitter.
+    ///
+    /// So a consumer learns whether a file parsed cleanly without walking the
+    /// tree for `attributes.kind == "ERROR"` elements, which remain in place,
+    /// spanned, alongside this count.
+    #[serde(default)]
+    pub syntax_errors: usize,
 }
 
 impl DocumentMetadata {
@@ -27,6 +39,7 @@ impl DocumentMetadata {
             encoding: "utf-8".to_string(),
             line_count: 0,
             hash: None,
+            syntax_errors: 0,
         }
     }
 

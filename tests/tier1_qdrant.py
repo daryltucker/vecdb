@@ -7,6 +7,7 @@ Scope: Docker container management, health check
 """
 
 import sys
+import paths  # noqa: F401  (pins the test Qdrant — see paths.py)
 import subprocess
 import time
 import urllib.request

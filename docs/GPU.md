@@ -82,7 +82,7 @@ objdump -p ~/.cargo/bin/libonnxruntime_providers_cuda.so | grep NEEDED
 #### Grab the ONNX Version
 ```bash
 $ vecdb --version
-vecdb v1.1.1 (git:7ed4cca)
+vecdb v1.2.0 (git:<sha>)
 ONNX Runtime: 1.24.2
 ```
 
@@ -108,8 +108,16 @@ batch_rows = 1          # ONNX rows per inference
 and `libonnxruntime_providers_cuda.so` from the build into the install
 directory, next to the `vecdb` binary. Nothing else is required.
 
-Two facts make every other install flow wrong (learned the hard way,
-BUG-2026-254):
+**Prebuilt archives** from the releases page carry the same two files at the
+archive root, beside the three binaries, for every target whose prebuilt ONNX
+Runtime has a CUDA build (x86_64 Linux always; the release log says when a
+target shipped without them). Extract the archive and keep the libraries in the
+same directory as the binaries you run. `cargo binstall` installs only the
+binaries and discards the rest of the archive, so for a GPU install from a
+prebuilt, download the archive and copy the two libraries next to the
+installed binary yourself.
+
+Two facts, both measured, make every other install flow wrong:
 
 1. **ORT resolves these libraries relative to `dirname(argv[0])`.** Not
    `ldconfig`, not `LD_LIBRARY_PATH` for the initial lookup. Copying them to

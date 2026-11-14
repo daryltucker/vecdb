@@ -1,0 +1,35 @@
+{
+  "empty_object": {},
+  "empty_array": [],
+  "nested_empties": [
+    {},
+    [],
+    [
+      []
+    ],
+    {
+      "inner": {}
+    }
+  ],
+  "null": null,
+  "true": true,
+  "false": false,
+  "numbers": [
+    0,
+    -1,
+    3.5,
+    1e+21,
+    12345678901234567890,
+    -0.25
+  ],
+  "unicode": "Grüße — 日本語 — 🚀",
+  "escapes": "line one\nline two\t\"quoted\" \\ backslash",
+  "": "empty key",
+  "key with spaces": "spaced",
+  "content": "a user key named like a payload field",
+  "list_of_scalars": [
+    "a",
+    "b",
+    "a"
+  ]
+}

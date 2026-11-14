@@ -58,9 +58,9 @@ struct LocalEmbedderInitParams {
 /// `error_on_failure()` is load-bearing: without it, ORT treats a failed EP
 /// registration (most commonly `libonnxruntime_providers_shared.so` missing
 /// from the directory containing the vecdb executable) as a logged warning and
-/// silently builds a CPU session. That is exactly the false-success path of
-/// BUG_GPU_PROVIDER_CWD_RESOLUTION_AND_FALSE_SUCCESS-2026-254: embedding ran
-/// on CPU under a "GPU Accelerated" banner. With the flag set, session
+/// silently builds a CPU session. That is exactly the false-success path:
+/// embedding ran on CPU under a "GPU Accelerated" banner. With the flag set,
+/// session creation fails instead, and the caller's ❌ error path reports the
 /// creation fails instead, and the caller's ❌ error path reports the truth.
 #[cfg(feature = "cuda")]
 fn cuda_execution_provider() -> ExecutionProviderDispatch {
@@ -220,7 +220,7 @@ impl LocalEmbedder {
         // for EVERY fastembed operation, CPU included. If the variable is
         // unset or stale, ort 2.0.0-rc.12 does not report an error — it
         // deadlocks (its error constructor re-enters the API-init OnceLock,
-        // verified by thread stacks, BUG-2026-254 addendum). Refuse loudly
+        // verified by thread stacks). Refuse loudly
         // here, before any ort symbol is touched. Commands that never embed
         // (list, delete, …) are unaffected — this is the embed choke point.
         #[cfg(feature = "cuda-dynamic")]
@@ -787,7 +787,7 @@ mod tests {
         );
     }
 
-    /// Regression test for BUG_GPU_PROVIDER_CWD_RESOLUTION_AND_FALSE_SUCCESS-2026-254.
+    /// Regression test for the GPU-provider false-success bug.
     ///
     /// The CUDA EP dispatch MUST carry `error_on_failure`. Without it, ORT logs
     /// a failed registration (e.g. provider libs missing from the executable's

@@ -109,8 +109,12 @@ pub mod javascript;
 pub mod html;
 pub mod json;
 pub(crate) mod json_spans;
+pub mod ownership;
+pub(crate) mod scopes;
 pub mod text;
 pub mod toml;
+pub(crate) mod ts_coverage;
+pub(crate) mod ts_refs;
 pub mod yaml;
 pub(crate) mod yaml_spans;
 
@@ -156,6 +160,8 @@ pub fn create_parser(file_type: FileType) -> VecqResult<Box<dyn Parser>> {
 
         FileType::Bash => Ok(Box::new(BashParser::new())),
 
+        FileType::JavaScript => Ok(Box::new(JavaScriptParser::new())),
+
         FileType::Text => Ok(Box::new(TextParser::new())),
         FileType::Html => Ok(Box::new(HtmlParser::new())),
         FileType::Toml => Ok(Box::new(TomlParser::new())),
@@ -183,6 +189,8 @@ pub fn available_parsers() -> Vec<FileType> {
     parsers.push(FileType::Go);
 
     parsers.push(FileType::Bash);
+
+    parsers.push(FileType::JavaScript);
 
     parsers.push(FileType::Text);
     parsers.push(FileType::Html);

@@ -104,7 +104,7 @@ pub async fn run() -> anyhow::Result<()> {
             println!("   Edit this file to configure your profiles and keys.");
         }
         Commands::Ingest(args) => {
-            commands::ingest::run(args, &config, profile_arg, overrides).await?
+            commands::ingest::run(args, &config, profile_arg, overrides, format).await?
         }
         Commands::Search(args) => {
             commands::search::run(args, &config, profile_arg, overrides, format).await?

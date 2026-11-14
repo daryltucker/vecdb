@@ -106,6 +106,10 @@ default_collection_name = "test_facets"
         f.write(config_content)
 
 def ingest_data():
+    # Only `platform` is user metadata. `language` is a payload key vecdb writes
+    # itself (the file's detected type, ingestion/processor.rs), so `-m language=`
+    # is refused rather than silently overwritten; nothing here
+    # asserts on it. It stays in smart_routing_keys above as the built-in facet.
     # 1. Windows content
     with open(f"{TEST_DIR}/data/win.txt", "w") as f:
         f.write("PowerShell scripts are great for admin tasks and automation.")
@@ -115,11 +119,11 @@ def ingest_data():
         f.write("Bash scripts are better for servers and cloud infrastructure.")
 
     print("Ingesting Windows data...")
-    cmd = [VECDB_BIN, "ingest", f"{TEST_DIR}/data/win.txt", "-m", "platform=windows", "-m", "language=powershell"]
+    cmd = [VECDB_BIN, "ingest", f"{TEST_DIR}/data/win.txt", "-m", "platform=windows"]
     subprocess.run(cmd, check=True)
 
     print("Ingesting Linux data...")
-    cmd = [VECDB_BIN, "ingest", f"{TEST_DIR}/data/linux.txt", "-m", "platform=linux", "-m", "language=bash"]
+    cmd = [VECDB_BIN, "ingest", f"{TEST_DIR}/data/linux.txt", "-m", "platform=linux"]
     subprocess.run(cmd, check=True)
 
 def run_search(query, smart_routing=False):
@@ -163,7 +167,7 @@ def main():
     print("\n--- Test 2: Explicit qualifier (platform:windows) ---")
     # Faceted search is driven by an explicit `key:value` qualifier. The bare
     # word "windows" appearing in a query is prose, not an instruction — see
-    # BUG_SMART_ROUTING_NAKED_FACET_MATCH-2026-234.
+    # that rule.
     results, filters = run_search("platform:windows automation", smart_routing=True)
     print(f"Qualified results: {len(results)} filters={filters}")
 

@@ -137,6 +137,15 @@ pub async fn process_single_file(
             serde_json::Value::String(git_ref.clone()),
         );
     }
+    // Route metadata (from .vecdbrc) — least specific, merged first so that
+    // global metadata and CLI `-m` flags override it.
+    if let Some(ref route_meta_map) = options.route_metadata {
+        if let Some(route_meta) = route_meta_map.get(&collection) {
+            for (k, v) in route_meta {
+                metadata.insert(k.clone(), serde_json::Value::String(v.clone()));
+            }
+        }
+    }
     if let Some(ref global_meta) = options.metadata {
         for (k, v) in global_meta {
             metadata.insert(k.clone(), v.clone());
@@ -205,7 +214,7 @@ pub async fn process_single_file(
     // Sized for THIS destination, not for the run — see `ChunkSpec::pack_target`.
     let chunks = if let Some(p) = parser_factory.get_parser_sized(
         file_type,
-        Some(options.chunking_for(&collection).pack_target()),
+        Some(options.chunking_for(&collection).parser_sizing()),
     ) {
         match p.parse(&content, &path, meta_val).await {
             Ok(c) => c,
@@ -232,7 +241,7 @@ pub async fn process_single_file(
         process_content(&content, &options, &path, &metadata, file_type, &collection).await?
     };
 
-    if options.dry_run {
+    if options.dry_run.is_on() {
         // Reported after chunking, not before.
         //
         // "Would ingest: <file>" answers a question nobody has — the shell
@@ -250,6 +259,15 @@ pub async fn process_single_file(
 
         let ceiling = options.chunking_for(&collection).ceiling();
         let oversized = chunks.iter().filter(|c| c.content.len() > ceiling).count();
+
+        if let crate::ingestion::DryRun::Chunks { json } = options.dry_run {
+            let report =
+                render_chunks(display_path, &collection, &chunks, ceiling, &options, json).await?;
+            // One write per file: files are processed concurrently, and a
+            // chunk listing interleaved with another file's is unreadable.
+            print!("{report}");
+            return Ok(Some(Vec::new()));
+        }
 
         let bytes: usize = chunks.iter().map(|c| c.content.len()).sum();
         print!(
@@ -278,6 +296,122 @@ pub async fn process_single_file(
     }
 
     Ok(Some(chunks))
+}
+
+/// The chunks of one file as the embedder would receive them.
+///
+/// Applies the same oversize policy the pipeline does, through the same
+/// function (`split_oversized`), so what is printed is what would be embedded,
+/// not the parser's pre-split output. JSON mode emits one object per chunk.
+async fn render_chunks(
+    display_path: &str,
+    collection: &str,
+    chunks: &[Chunk],
+    ceiling: usize,
+    options: &IngestionOptions,
+    json: bool,
+) -> Result<String> {
+    use crate::config::OversizePolicy;
+    use std::fmt::Write as _;
+
+    // (chunk, skipped)
+    let mut embedded: Vec<(Chunk, bool)> = Vec::new();
+    for chunk in chunks {
+        if chunk.content.len() <= ceiling {
+            embedded.push((chunk.clone(), false));
+            continue;
+        }
+        match options.on_oversize {
+            OversizePolicy::Split => embedded.extend(
+                crate::ingestion::pipeline::split_oversized(chunk, ceiling)
+                    .await?
+                    .into_iter()
+                    .map(|c| (c, false)),
+            ),
+            OversizePolicy::Skip => embedded.push((chunk.clone(), true)),
+        }
+    }
+
+    let meta_str = |c: &Chunk, key: &str| {
+        c.metadata
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+
+    let total = embedded.len();
+    let mut out = String::new();
+
+    if !json {
+        let bytes: usize = embedded.iter().map(|(c, _)| c.content.len()).sum();
+        let _ = writeln!(
+            out,
+            "\n════ {display_path} → {collection} — {total} chunk(s), {bytes} bytes \
+             (pack_target_bytes {}, max_chunk_bytes {ceiling}, on_oversize {})",
+            options.chunking_for(collection).pack_target(),
+            options.on_oversize
+        );
+    }
+    for (i, (c, skipped)) in embedded.iter().enumerate() {
+        let crumbtrail = meta_str(c, "crumbtrail");
+        let split_part = c.metadata.get("split_part").and_then(|v| v.as_u64());
+        let packed: Vec<String> = c
+            .metadata
+            .get("packed_element_types")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| t.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let non_ws = crate::parsers::vecq_adapter::density(&c.content);
+        if json {
+            let line = serde_json::json!({
+                "file": display_path,
+                "collection": collection,
+                "index": i,
+                "of": total,
+                "id": c.id,
+                "bytes": c.content.len(),
+                "non_whitespace": non_ws,
+                "line_start": c.start_line,
+                "line_end": c.end_line,
+                "crumbtrail": crumbtrail,
+                "element_type": meta_str(c, "element_type"),
+                "packed_element_types": packed,
+                "context_label": c.metadata.get(crate::parsers::vecq_adapter::CONTEXT_LABEL_KEY),
+                "split_part": split_part,
+                "skipped": skipped,
+                "content": c.content,
+            });
+            let _ = writeln!(out, "{line}");
+            continue;
+        }
+        let lines = match (c.start_line, c.end_line) {
+            (Some(s), Some(e)) => format!("L{s}-{e}"),
+            _ => "L?".to_string(),
+        };
+        let mut head = format!(
+            "──── [{}/{total}] {lines} · {} bytes · {non_ws} non-ws · crumbtrail `{crumbtrail}`",
+            i + 1,
+            c.content.len()
+        );
+        if !packed.is_empty() {
+            let _ = write!(head, " · packed {}", packed.join("+"));
+        } else {
+            let _ = write!(head, " · {}", meta_str(c, "element_type"));
+        }
+        if let Some(p) = split_part {
+            let _ = write!(head, " · split part {p}");
+        }
+        if *skipped {
+            let _ = write!(head, " · SKIPPED (over max_chunk_bytes, on_oversize skip)");
+        }
+        let _ = writeln!(out, "{head}\n{}", c.content);
+    }
+    Ok(out)
 }
 
 // `is_binary` lived here and scanned only for NUL bytes. It is replaced by

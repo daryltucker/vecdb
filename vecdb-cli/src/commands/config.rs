@@ -40,7 +40,13 @@ pub fn run(
 ) -> anyhow::Result<()> {
     match args.command {
         ConfigCommands::Show { collection } => {
-            return show_resolved(config, profile_name, collection.as_deref(), overrides, format);
+            return show_resolved(
+                config,
+                profile_name,
+                collection.as_deref(),
+                overrides,
+                format,
+            );
         }
         ConfigCommands::SetQuantization { collection, r#type } => {
             let q_type: QuantizationType = r#type.into();
@@ -99,9 +105,7 @@ fn show_resolved(
     // half of what this command answers — a consumer that can see 6000 but not
     // `collections.code` cannot tell a deliberate override from a default.
     if matches!(format, vecdb_common::output::OutputFormat::Json) {
-        let setting = |value: serde_json::Value, source: &Source| {
-            serde_json::json!({ "value": value, "source": source.to_string() })
-        };
+        let setting = |value: serde_json::Value, source: &Source| serde_json::json!({ "value": value, "source": source.to_string() });
         let mut out = serde_json::json!({
             "profile": r.profile_name,
             "collection": r.collection,
@@ -252,7 +256,11 @@ fn show_resolved(
                     // A path that does not exist is the single most common
                     // legacy-GPU failure, and it is cheap to catch here rather
                     // than at the first embed.
-                    let missing = if p.is_file() { "" } else { "   ** FILE NOT FOUND **" };
+                    let missing = if p.is_file() {
+                        ""
+                    } else {
+                        "   ** FILE NOT FOUND **"
+                    };
                     println!("  {:<16} {}{}", "onnx runtime", p.display(), missing);
                     println!("  {:<16} <- {origin}", "");
                 }

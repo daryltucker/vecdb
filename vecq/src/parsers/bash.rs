@@ -144,6 +144,38 @@ impl Default for BashParser {
     }
 }
 
+/// Coverage spec: every kind tree-sitter-bash can produce at top level or inside the
+/// wrappers walked (`bodies`), classified. `ts_coverage::complete` emits whatever the
+/// walker above did not; the completeness test fails on any grammar kind missing here.
+pub(crate) const COVERAGE: crate::parsers::ts_coverage::Spec = {
+    use crate::parsers::ts_coverage::Kind::{Comment, Unit};
+    use crate::types::ElementType as E;
+    crate::parsers::ts_coverage::Spec {
+        bodies: &["program"],
+        kinds: &[
+            ("c_style_for_statement", Unit(E::Block)),
+            ("case_statement", Unit(E::Block)),
+            ("command", Unit(E::Block)),
+            ("comment", Comment),
+            ("compound_statement", Unit(E::Block)),
+            ("declaration_command", Unit(E::Variable)),
+            ("for_statement", Unit(E::Block)),
+            ("function_definition", Unit(E::Function)),
+            ("if_statement", Unit(E::Block)),
+            ("list", Unit(E::Block)),
+            ("negated_command", Unit(E::Block)),
+            ("pipeline", Unit(E::Block)),
+            ("redirected_statement", Unit(E::Block)),
+            ("subshell", Unit(E::Block)),
+            ("test_command", Unit(E::Block)),
+            ("unset_command", Unit(E::Variable)),
+            ("variable_assignment", Unit(E::Variable)),
+            ("variable_assignments", Unit(E::Variable)),
+            ("while_statement", Unit(E::Block)),
+        ],
+    }
+};
+
 #[async_trait]
 impl Parser for BashParser {
     fn file_extensions(&self) -> &[&str] {
@@ -170,7 +202,7 @@ impl Parser for BashParser {
         parser
             .set_language(&tree_sitter_bash::LANGUAGE.into())
             .map_err(|e| VecqError::ParseError {
-                file: PathBuf::from("<string>"),
+                file: PathBuf::new(),
                 line: 0,
                 message: format!("Failed to set Bash language: {}", e),
                 source: None,
@@ -179,7 +211,7 @@ impl Parser for BashParser {
         let tree = parser
             .parse(content, None)
             .ok_or_else(|| VecqError::ParseError {
-                file: PathBuf::from("<string>"),
+                file: PathBuf::new(),
                 line: 0,
                 message: "Failed to parse Bash content".to_string(),
                 source: None,
@@ -197,6 +229,18 @@ impl Parser for BashParser {
                 .with_line_count(content)
                 .with_file_type(FileType::Bash),
         );
+        doc.metadata.syntax_errors = crate::parsers::ts_coverage::complete(
+            &mut elements,
+            tree.root_node(),
+            content,
+            &COVERAGE,
+        );
+        doc.module = Some(crate::parsers::ts_refs::attach(
+            &mut elements,
+            tree.root_node(),
+            content,
+            &crate::parsers::ts_refs::BASH,
+        ));
         doc.elements = elements;
 
         Ok(doc)

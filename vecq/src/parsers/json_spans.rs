@@ -41,10 +41,20 @@ pub(crate) struct SpanNode {
     pub start: usize,
     /// Byte offset one past this node's last byte.
     pub end: usize,
+    /// Where the VALUE begins — `{` / `[` for a container. Equals `start`
+    /// except for object members, whose span opens at the key.
+    pub value_start: usize,
     /// Object members, in document order.
     pub fields: Vec<(String, SpanNode)>,
     /// Array elements, in document order.
     pub items: Vec<SpanNode>,
+    /// Comments that belong to this node and lie OUTSIDE its span: those on
+    /// their own lines before it (leading), and those after it on the same line,
+    /// or before the closing bracket when it is the last member (trailing).
+    /// Each is a byte range from the first comment's start to the last one's
+    /// end. Set by `attach_comments`; `None` when there are none.
+    pub leading: Option<(usize, usize)>,
+    pub trailing: Option<(usize, usize)>,
 }
 
 impl SpanNode {
@@ -83,7 +93,132 @@ pub(crate) fn scan(content: &str) -> Option<Vec<SpanNode>> {
     if roots.is_empty() {
         None
     } else {
+        attach_comments(&mut roots, content.as_bytes(), 0, content.len());
         Some(roots)
+    }
+}
+
+/// Comment byte ranges in a gap between values. A gap holds only whitespace,
+/// separators and comments — the scan has already proved that.
+fn comments_in(b: &[u8], from: usize, to: usize) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut i = from;
+    while i < to {
+        match (b[i], b.get(i + 1)) {
+            (b'/', Some(b'/')) => {
+                let start = i;
+                while i < to && b[i] != b'\n' {
+                    i += 1;
+                }
+                out.push((start, i));
+            }
+            (b'/', Some(b'*')) => {
+                let start = i;
+                i += 2;
+                while i + 1 < to && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(to);
+                out.push((start, i));
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// Byte spans of every comment in a scanned document, in order — the gaps
+/// `attach_comments` reads, at every depth. Comments inside strings are never
+/// seen: only gaps between values are read.
+pub(crate) fn all_comments(roots: &[SpanNode], b: &[u8]) -> Vec<(usize, usize)> {
+    fn walk(
+        siblings: &[&SpanNode],
+        b: &[u8],
+        open: usize,
+        close: usize,
+        out: &mut Vec<(usize, usize)>,
+    ) {
+        let n = siblings.len();
+        for i in 0..=n {
+            let from = if i == 0 { open } else { siblings[i - 1].end };
+            let to = if i == n { close } else { siblings[i].start };
+            if from < to {
+                out.extend(comments_in(b, from, to));
+            }
+        }
+        for node in siblings {
+            let (open, close) = (node.value_start + 1, node.end.saturating_sub(1));
+            let kids: Vec<&SpanNode> = if node.fields.is_empty() {
+                node.items.iter().collect()
+            } else {
+                node.fields.iter().map(|(_, v)| v).collect()
+            };
+            if !kids.is_empty() {
+                walk(&kids, b, open, close, out);
+            } else if open < close
+                && (b.get(node.value_start) == Some(&b'{')
+                    || b.get(node.value_start) == Some(&b'['))
+            {
+                // An empty container may still hold a comment: `{ /* none */ }`.
+                out.extend(comments_in(b, open, close));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&roots.iter().collect::<Vec<_>>(), b, 0, b.len(), &mut out);
+    out.sort_unstable();
+    out
+}
+
+fn span_of(ranges: &[(usize, usize)]) -> Option<(usize, usize)> {
+    Some((ranges.first()?.0, ranges.last()?.1))
+}
+
+/// Give every comment an owner among `siblings`, the values between `open`
+/// and `close` (exclusive interior). The rule is the one a reader applies, and
+/// the same in every language: a comment on its own line describes what
+/// FOLLOWS it; one after a value on the same line describes that value; one
+/// before the closing bracket belongs to the last member.
+///
+/// Without this a JSONC comment — usually the only place a setting's REASON is
+/// written — sat outside every span and was never embedded.
+fn attach_comments(siblings: &mut [SpanNode], b: &[u8], open: usize, close: usize) {
+    // The comments BETWEEN siblings (those inside a sibling's value belong to
+    // that value's own members, handled by the recursion below).
+    let n = siblings.len();
+    let mut comments = Vec::new();
+    for i in 0..=n {
+        let gap_start = if i == 0 { open } else { siblings[i - 1].end };
+        let gap_end = if i == n { close } else { siblings[i].start };
+        comments.extend(comments_in(b, gap_start, gap_end));
+    }
+    // Owners by the one shared rule — `super::ownership::comment_owner`.
+    let items: Vec<(usize, usize)> = siblings.iter().map(|s| (s.start, s.end)).collect();
+    let mut leading: Vec<Vec<(usize, usize)>> = vec![Vec::new(); n];
+    let mut trailing: Vec<Vec<(usize, usize)>> = vec![Vec::new(); n];
+    for c in comments {
+        match super::ownership::comment_owner(b, &items, c) {
+            Some(super::ownership::Owner::Next(i)) => leading[i].push(c),
+            Some(super::ownership::Owner::Previous(i)) => trailing[i].push(c),
+            None => {}
+        }
+    }
+    for (i, node) in siblings.iter_mut().enumerate() {
+        node.leading = span_of(&leading[i]);
+        node.trailing = span_of(&trailing[i]);
+    }
+    for node in siblings.iter_mut() {
+        // Interior of a container: after its opening bracket, before its closing one.
+        let (open, close) = (node.value_start + 1, node.end.saturating_sub(1));
+        if !node.fields.is_empty() {
+            let mut members: Vec<SpanNode> = node.fields.iter().map(|(_, v)| v.clone()).collect();
+            attach_comments(&mut members, b, open, close);
+            for ((_, v), m) in node.fields.iter_mut().zip(members) {
+                *v = m;
+            }
+        } else if !node.items.is_empty() {
+            attach_comments(&mut node.items, b, open, close);
+        }
     }
 }
 
@@ -153,6 +288,9 @@ impl<'a> Scanner<'a> {
             start,
             end: self.i,
             fields: Vec::new(),
+            value_start: start,
+            leading: None,
+            trailing: None,
             items: Vec::new(),
         }
     }
@@ -198,6 +336,9 @@ impl<'a> Scanner<'a> {
             start,
             end: self.i,
             fields,
+            value_start: start,
+            leading: None,
+            trailing: None,
             items: Vec::new(),
         })
     }
@@ -226,6 +367,9 @@ impl<'a> Scanner<'a> {
             start,
             end: self.i,
             fields: Vec::new(),
+            value_start: start,
+            leading: None,
+            trailing: None,
             items,
         })
     }
@@ -330,6 +474,21 @@ mod tests {
         let roots = scan(src).expect("scan");
         let b = roots[0].field("b").expect("b");
         assert_eq!(&src[b.start..b.end], "\"b\": 2");
+    }
+
+    #[test]
+    fn every_comment_has_exactly_one_owner() {
+        let src = "{\n  // why a\n  \"a\": 1, // about a\n  /* why b */\n  \"b\": { \"c\": 2 /* about c */ },\n  // dangling\n}\n";
+        let roots = scan(src).expect("scan");
+        let text = |r: Option<(usize, usize)>| r.map(|(s, e)| &src[s..e]);
+        let a = roots[0].field("a").unwrap();
+        let b = roots[0].field("b").unwrap();
+        let c = b.field("c").unwrap();
+        assert_eq!(text(a.leading), Some("// why a"));
+        assert_eq!(text(a.trailing), Some("// about a"));
+        assert_eq!(text(b.leading), Some("/* why b */"));
+        assert_eq!(text(b.trailing), Some("// dangling"));
+        assert_eq!(text(c.trailing), Some("/* about c */"));
     }
 
     #[test]

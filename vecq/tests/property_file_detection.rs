@@ -116,6 +116,7 @@ fn generate_file_content(file_type: FileType) -> BoxedStrategy<Vec<u8>> {
         FileType::Cuda => generate_cuda_content().boxed(),
         FileType::Go => generate_go_content().boxed(),
         FileType::Bash => generate_bash_content().boxed(),
+        FileType::JavaScript => generate_javascript_content().boxed(),
         FileType::Json => generate_json_content().boxed(),
         FileType::Text => generate_text_content().boxed(),
         FileType::Html => generate_html_content().boxed(),
@@ -265,6 +266,15 @@ fn generate_go_content() -> impl Strategy<Value = Vec<u8>> {
     ]
 }
 
+/// Generate realistic JavaScript content
+fn generate_javascript_content() -> impl Strategy<Value = Vec<u8>> {
+    prop_oneof![
+        Just("import fs from \"node:fs\";\n\nexport function main(args) {\n  console.log(args);\n}\n".as_bytes().to_vec()),
+        Just("class Point {\n  constructor(x, y) {\n    this.x = x;\n    this.y = y;\n  }\n}\n\nconst norm = (p) => Math.hypot(p.x, p.y);\n".as_bytes().to_vec()),
+        Just("const path = require(\"path\");\nmodule.exports = { join: path.join };\n".as_bytes().to_vec()),
+    ]
+}
+
 /// Generate realistic Bash script content
 fn generate_bash_content() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![
@@ -386,6 +396,13 @@ fn generate_file_path(file_type: FileType) -> BoxedStrategy<PathBuf> {
             Just(PathBuf::from("utils.go")),
             Just(PathBuf::from("src/parser.go")),
             Just(PathBuf::from("cmd/cli.go")),
+        ]
+        .boxed(),
+        FileType::JavaScript => prop_oneof![
+            Just(PathBuf::from("index.js")),
+            Just(PathBuf::from("src/app.mjs")),
+            Just(PathBuf::from("lib/util.cjs")),
+            Just(PathBuf::from("ui/Button.jsx")),
         ]
         .boxed(),
         FileType::Bash => prop_oneof![

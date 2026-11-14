@@ -45,6 +45,18 @@ pub mod vecq_adapter;
 
 use vecdb_common::FileType;
 
+/// The destination's chunk sizing, as a parser needs it.
+///
+/// Two numbers because they answer two questions: `pack_target_bytes` is how
+/// much belongs in one vector, `max_chunk_bytes` is whether an element fits in
+/// one at all. A parser given only the first cannot tell a record worth keeping
+/// whole from one that must be cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParserSizing {
+    pub pack_target_bytes: usize,
+    pub max_chunk_bytes: usize,
+}
+
 /// Factory for creating parsers (dependency injection interface)
 pub trait ParserFactory: Send + Sync {
     /// Get a parser for a specific file type
@@ -59,7 +71,7 @@ pub trait ParserFactory: Send + Sync {
     fn get_parser_sized(
         &self,
         file_type: FileType,
-        _pack_target_bytes: Option<usize>,
+        _sizing: Option<ParserSizing>,
     ) -> Option<Box<dyn Parser>> {
         self.get_parser(file_type)
     }

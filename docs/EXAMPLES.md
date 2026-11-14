@@ -20,7 +20,7 @@ This guide provides high-level narrative "cookbooks" for the most common workflo
 3.  **Audit Structure**:
     Once `vecdb` points you to `src/auth/jwt.rs`, use `vecq` to see its public API:
     ```bash
-    vecq src/auth/jwt.rs -q '.functions[] | select(.visibility == "pub")'
+    vecq src/auth/jwt.rs -q '.functions[] | select(.attributes.visibility == "pub")'
     ```
 
 ## 🍳 Recipe 2: "The Surgical Fix" (Time Travel & Comparison)

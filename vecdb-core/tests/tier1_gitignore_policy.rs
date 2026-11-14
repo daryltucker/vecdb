@@ -33,14 +33,15 @@ fn options_at(path: &std::path::Path) -> IngestionOptions {
         route_chunking: Default::default(),
         chunk_overlap: 0,
         respect_gitignore: false,
-        ignore_vectorignore: false,
+        bypass_vectorignore: false,
         strategy: "recursive".to_string(),
         tokenizer: "cl100k_base".to_string(),
         git_ref: None,
         extensions: None,
         excludes: None,
-        dry_run: false,
+        dry_run: vecdb_core::ingestion::DryRun::Off,
         metadata: None,
+        route_metadata: None,
         path_rules: vec![],
         max_concurrent_requests: 1,
         gpu_batch_size: 1,
@@ -107,18 +108,18 @@ fn fallback_applies_only_when_no_vectorignore_exists() {
     }
 }
 
-/// `--ignore-vectorignore` switches the indexing policy off deliberately.
+/// `--bypass-vectorignore` switches the indexing policy off deliberately.
 /// Substituting a different policy is the opposite of what was asked.
 #[test]
 fn disabling_vectorignore_does_not_summon_gitignore() {
     let dir = tempfile::tempdir().unwrap();
     let mut opts = options_at(dir.path());
-    opts.ignore_vectorignore = true;
+    opts.bypass_vectorignore = true;
 
     let decision = resolve_gitignore(&opts);
     assert!(
         !decision.respect,
-        "--ignore-vectorignore means no ignore policy, not a different one"
+        "--bypass-vectorignore means no ignore policy, not a different one"
     );
     assert!(!decision.via_fallback);
 }

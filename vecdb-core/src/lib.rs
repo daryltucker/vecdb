@@ -139,6 +139,59 @@ impl CoreServices {
     }
 }
 
+/// List a store's collections, with what each declares about itself, given
+/// only the store — no embedder.
+///
+/// Listing is a question about a Qdrant, not about an embedding model. `vecdb
+/// list` used to build a whole `Core` per store to ask it, which picked an
+/// embedder from the default profile and announced it — "Using embedder …" once
+/// per store, for a command that embeds nothing (operator, 2026-314).
+pub async fn list_store_collections(
+    qdrant_url: &str,
+    api_key: Option<String>,
+) -> Result<Vec<(types::CollectionInfo, types::CollectionGenesis)>> {
+    let backend = QdrantBackend::new(qdrant_url, api_key)?;
+    collections_with_genesis(&backend).await
+}
+
+async fn collections_with_genesis(
+    backend: &(dyn Backend + Send + Sync),
+) -> Result<Vec<(types::CollectionInfo, types::CollectionGenesis)>> {
+    let infos = collection_infos(backend).await?;
+    let mut out = Vec::with_capacity(infos.len());
+    for info in infos {
+        let genesis = backend.read_genesis(&info.name).await.unwrap_or_default();
+        out.push((info, genesis));
+    }
+    Ok(out)
+}
+
+async fn collection_infos(
+    backend: &(dyn Backend + Send + Sync),
+) -> Result<Vec<types::CollectionInfo>> {
+    let names = backend.list_collections().await?;
+    let mut infos = Vec::new();
+
+    for name in names {
+        match backend.get_collection_info(&name).await {
+            Ok(info) => infos.push(info),
+            Err(_) => {
+                // If we can't get info, still include the collection with minimal data
+                infos.push(types::CollectionInfo {
+                    name,
+                    vector_count: None,
+                    vector_size: None,
+                    quantization: None,
+                    vectors_on_disk: None,
+                    payload_on_disk: None,
+                });
+            }
+        }
+    }
+
+    Ok(infos)
+}
+
 impl Core {
     /// Build a Core from a fully-resolved configuration.
     ///
@@ -520,41 +573,11 @@ impl Core {
     pub async fn list_collections_with_genesis(
         &self,
     ) -> Result<Vec<(types::CollectionInfo, types::CollectionGenesis)>> {
-        let infos = self.list_collections().await?;
-        let mut out = Vec::with_capacity(infos.len());
-        for info in infos {
-            let genesis = self
-                .backend
-                .read_genesis(&info.name)
-                .await
-                .unwrap_or_default();
-            out.push((info, genesis));
-        }
-        Ok(out)
+        collections_with_genesis(self.backend.as_ref()).await
     }
 
     pub async fn list_collections(&self) -> Result<Vec<types::CollectionInfo>> {
-        let names = self.backend.list_collections().await?;
-        let mut infos = Vec::new();
-
-        for name in names {
-            match self.backend.get_collection_info(&name).await {
-                Ok(info) => infos.push(info),
-                Err(_) => {
-                    // If we can't get info, still include the collection with minimal data
-                    infos.push(types::CollectionInfo {
-                        name,
-                        vector_count: None,
-                        vector_size: None,
-                        quantization: None,
-                        vectors_on_disk: None,
-                        payload_on_disk: None,
-                    });
-                }
-            }
-        }
-
-        Ok(infos)
+        collection_infos(self.backend.as_ref()).await
     }
 
     /// Delete a collection.
@@ -611,8 +634,7 @@ impl Core {
 /// on the main executable reports argv\[0\], and a bare name (normal PATH
 /// invocation: `vecdb ...`) degrades the anchor to the CWD, where the
 /// libraries never are. The same binary invoked by absolute path (e.g.
-/// `~/.cargo/bin/vecdb`) anchors correctly (BUG-2026-254; both behaviours
-/// verified 2026-09-11).
+/// `~/.cargo/bin/vecdb`) anchors correctly.
 ///
 /// So: if argv\[0\] is bare AND the provider libraries are installed next to
 /// the real executable, replace the process with an absolute-path invocation
@@ -656,8 +678,8 @@ pub fn reexec_for_ort_provider_anchor() {
 ///
 /// `cuda-dynamic` builds deliberately do NOT ask. There the runtime is whatever
 /// `ORT_DYLIB_PATH` names, resolving it means a dlopen, and under ort
-/// 2.0.0-rc.12 an API-version mismatch *hangs* instead of erroring
-/// (BUG-2026-254). `--version` must never be able to hang, so it reports the
+/// 2.0.0-rc.12 an API-version mismatch *hangs* instead of erroring.
+/// `--version` must never be able to hang, so it reports the
 /// contract the binary requires and leaves the concrete answer to `vecdb
 /// status`, which is already allowed to initialize an embedder.
 pub fn get_ort_version() -> String {
@@ -697,7 +719,7 @@ pub fn get_ort_version() -> String {
 /// availability only. A CUDA-enabled build lists `CUDAExecutionProvider` here
 /// even when `libonnxruntime_providers_cuda.so` is absent and every session
 /// runs on CPU. It must never be used to decide whether a session is actually
-/// GPU-accelerated (BUG-2026-254); registration truth comes from creating the
+/// GPU-accelerated; registration truth comes from creating the
 /// session with `error_on_failure` on the dispatch (see `embedders/local.rs`).
 pub fn get_ort_providers() -> Vec<String> {
     #[cfg(feature = "cuda")]

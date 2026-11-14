@@ -2437,7 +2437,7 @@ target_chunk_size = 2000
         assert_eq!(r.collection.as_deref(), Some("notes-archive"));
     }
 
-    // ── Named stores (RFC-2026-255) ──────────────────────────────────────
+    // ── Named stores ──────────────────────────────────────
     //
     // The store is the storage counterpart of [backend.*]: named once,
     // referenced by profiles/collections, exclusive with the inline

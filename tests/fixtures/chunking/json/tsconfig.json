@@ -1,0 +1,10 @@
+{
+  // Strict mode stays on: the 2024 migration found three null bugs.
+  "compilerOptions": {
+    "strict": true,
+    /* ES2022 for top-level await in scripts/ */
+    "target": "ES2022",
+    "paths": { "@app/*": ["src/*"], },
+  },
+  "include": ["src", "scripts"], // scripts are type-checked too
+}

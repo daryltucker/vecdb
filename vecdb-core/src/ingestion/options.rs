@@ -4,6 +4,39 @@ use crate::vecdbrc::Route;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// What a dry run reports. Parsing and chunking always run; embedding and
+/// writing never do.
+///
+/// An enum rather than two bools so "show chunks" without a dry run cannot be
+/// expressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DryRun {
+    /// A real ingest.
+    #[default]
+    Off,
+    /// One line per file: chunk count, bytes, and how many would trip the
+    /// oversize ceiling.
+    Files,
+    /// Every chunk exactly as it would be embedded — after the oversize split,
+    /// labels included — with its crumbtrail, size and line span.
+    ///
+    /// The text is what the model sees; payload keys are not. Without this the
+    /// only way to read a chunk was to ingest into a scratch collection and
+    /// scroll it back out, so chunking defects shipped that one look at the
+    /// output would have caught.
+    Chunks {
+        /// One JSON object per chunk instead of the human listing. Carried
+        /// here because the global output context never sees `--json`.
+        json: bool,
+    },
+}
+
+impl DryRun {
+    pub fn is_on(self) -> bool {
+        self != DryRun::Off
+    }
+}
+
 /// `Clone` so a caller can run the same plan against several destinations —
 /// see `only_collection`. Every field is owned data or a plain value; there is
 /// no shared handle here whose duplication would mean anything.
@@ -83,18 +116,27 @@ pub struct IngestionOptions {
     pub chunk_overlap: usize,
     pub respect_gitignore: bool,
     /// If true, .vectorignore files are NOT respected during file walking
-    pub ignore_vectorignore: bool,
+    pub bypass_vectorignore: bool,
     pub strategy: String,
     pub tokenizer: String,
     pub git_ref: Option<String>,
     // Stank Hunt: Globbing Support
     pub extensions: Option<Vec<String>>, // e.g. ["rs", "md"]
     pub excludes: Option<Vec<String>>,   // e.g. ["*.tmp", "target/"]
-    pub dry_run: bool,                   // If true, list files but do not chunk/embed
+    // If true, list files but do not chunk/embed — corrected: a dry run DOES
+    // parse and chunk (that is how it reports chunk counts); it never embeds
+    // or writes. See `DryRun` for what each mode prints.
+    pub dry_run: DryRun,
     pub metadata: Option<HashMap<String, serde_json::Value>>, // Global metadata for all files
-    pub path_rules: Vec<PathRule>,       // D031: Smart Path Parsing
-    pub max_concurrent_requests: usize,  // Concurrency Limit
-    pub gpu_batch_size: usize,           // GPU Batch Size
+    /// Per-route metadata from `.vecdbrc` routes, keyed by collection name.
+    /// Merged into chunk metadata after global `metadata` but before CLI `-m`
+    /// overrides. The pipeline looks up the metadata for each file's resolved
+    /// collection.
+    pub route_metadata:
+        Option<std::collections::HashMap<String, std::collections::BTreeMap<String, String>>>,
+    pub path_rules: Vec<PathRule>,      // D031: Smart Path Parsing
+    pub max_concurrent_requests: usize, // Concurrency Limit
+    pub gpu_batch_size: usize,          // GPU Batch Size
     pub quantization: Option<QuantizationType>,
     /// Accept writing into a collection whose model matches on architecture and
     /// parameter size but differs in quantization (e.g. Q8_0 into a Q4_K_M
@@ -133,9 +175,123 @@ impl ChunkSpec {
         self.pack_target_bytes
             .unwrap_or(crate::config::DEFAULT_PACK_TARGET_BYTES)
     }
+
+    /// What a parser needs to size chunks for this destination: how much to
+    /// pack, and the ceiling `flush_chunks` will split at.
+    pub fn parser_sizing(&self) -> crate::parsers::ParserSizing {
+        crate::parsers::ParserSizing {
+            pack_target_bytes: self.pack_target(),
+            max_chunk_bytes: self.ceiling(),
+        }
+    }
+}
+
+/// Payload keys vecdb writes itself. User-supplied metadata may not use them.
+///
+/// The ingest path sets these AFTER merging user metadata, so a `.vecdbrc`
+/// route `metadata = { source = "x" }` arrived as `source: "./file.md"` —
+/// silently, with keys vecdb does not set passing through intact beside it.
+/// A value that cannot survive is refused up front rather than dropped. Keys starting `__meta_` belong to the genesis point.
+///
+/// `tier1`'s `reserved_keys_cover_every_key_the_adapter_writes` checks this
+/// list against real chunks, so a new built-in key cannot slip past it.
+pub const RESERVED_PAYLOAD_KEYS: &[&str] = &[
+    "content",
+    "document_id",
+    "path",
+    "full_path",
+    "source",
+    "source_type",
+    "language",
+    "size_bytes",
+    "commit_sha",
+    "git_ref",
+    "element_type",
+    "name",
+    "line_start",
+    "line_end",
+    "file_type",
+    "docstring",
+    "intent",
+    "visibility",
+    "crumbtrail",
+    "context_label",
+    "packed_elements",
+    "packed_element_types",
+    "split_part",
+    "original_chunk_id",
+    "chunk_index",
+    "stream_index",
+    "timestamp",
+    "_model_name",
+];
+
+/// True for a key user metadata may not set — see [`RESERVED_PAYLOAD_KEYS`].
+pub fn is_reserved_payload_key(key: &str) -> bool {
+    key.starts_with("__meta_") || RESERVED_PAYLOAD_KEYS.contains(&key)
+}
+
+/// The check behind [`IngestionOptions::check_user_metadata`], over the three
+/// places user keys come from.
+pub fn check_user_metadata(
+    metadata: Option<&HashMap<String, serde_json::Value>>,
+    route_metadata: Option<&HashMap<String, std::collections::BTreeMap<String, String>>>,
+    path_rules: &[PathRule],
+) -> anyhow::Result<()> {
+    let mut clashes: Vec<String> = Vec::new();
+    if let Some(meta) = metadata {
+        clashes.extend(
+            meta.keys()
+                .filter(|k| is_reserved_payload_key(k))
+                .map(|k| format!("metadata key '{k}'")),
+        );
+    }
+    if let Some(routes) = route_metadata {
+        for (collection, meta) in routes {
+            clashes.extend(
+                meta.keys().filter(|k| is_reserved_payload_key(k)).map(|k| {
+                    format!(".vecdbrc route metadata key '{k}' (collection '{collection}')")
+                }),
+            );
+        }
+    }
+    for rule in path_rules {
+        if let Ok(re) = regex::Regex::new(&rule.pattern) {
+            clashes.extend(
+                re.capture_names()
+                    .flatten()
+                    .filter(|k| is_reserved_payload_key(k))
+                    .map(|k| format!("path rule capture '{k}' (pattern '{}')", rule.pattern)),
+            );
+        }
+    }
+    if clashes.is_empty() {
+        return Ok(());
+    }
+    clashes.sort();
+    anyhow::bail!(
+        "refusing to ingest: user metadata would be silently overwritten by payload \
+         keys vecdb writes itself:\n    {}\nRename them. Reserved: {}, and any key \
+         starting '__meta_'.",
+        clashes.join("\n    "),
+        RESERVED_PAYLOAD_KEYS.join(", ")
+    )
 }
 
 impl IngestionOptions {
+    /// Refuse user metadata that vecdb would overwrite.
+    ///
+    /// Covers every source of user keys: `-m` / tool `metadata`, `.vecdbrc`
+    /// route `metadata`, and path-rule capture group names. Checked before
+    /// anything is written, and names every offender at once.
+    pub fn check_user_metadata(&self) -> anyhow::Result<()> {
+        check_user_metadata(
+            self.metadata.as_ref(),
+            self.route_metadata.as_ref(),
+            &self.path_rules,
+        )
+    }
+
     /// What to record in a collection's genesis: the RESOLVED chunk parameters
     /// for that destination, plus the tokenizer they are denominated in.
     ///
@@ -169,5 +325,47 @@ impl IngestionOptions {
                 max_chunk_bytes: self.max_chunk_bytes,
                 pack_target_bytes: self.pack_target_bytes,
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// REGRESSION: a `.vecdbrc` route `source = …` arrived
+    /// as vecdb's own `source`, silently. A colliding key is now refused, and
+    /// a key vecdb does not write still passes.
+    #[test]
+    fn user_metadata_may_not_shadow_builtin_keys() {
+        let route = |k: &str| {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(k.to_string(), "embedcheck-fixture".to_string());
+            HashMap::from([("ee-smoke".to_string(), m)])
+        };
+
+        let err = check_user_metadata(None, Some(&route("source")), &[]).unwrap_err();
+        assert!(err.to_string().contains("'source'"), "{err}");
+        assert!(check_user_metadata(None, Some(&route("ecosystem")), &[]).is_ok());
+
+        let cli = HashMap::from([("crumbtrail".to_string(), serde_json::json!("x"))]);
+        assert!(check_user_metadata(Some(&cli), None, &[]).is_err());
+        assert!(check_user_metadata(
+            Some(&HashMap::from([(
+                "__meta_vecdb".to_string(),
+                serde_json::json!(1)
+            )])),
+            None,
+            &[]
+        )
+        .is_err());
+
+        let rule = PathRule {
+            pattern: "(?P<language>[a-z]+)/.*".to_string(),
+        };
+        assert!(check_user_metadata(None, None, &[rule]).is_err());
+        let rule = PathRule {
+            pattern: "(?P<year>\\d{4})/.*".to_string(),
+        };
+        assert!(check_user_metadata(None, None, &[rule]).is_ok());
     }
 }

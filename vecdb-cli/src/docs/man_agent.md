@@ -166,7 +166,7 @@ Semantic search against a collection.
 
 ### ingest_path
 Ingest local files or folders.
-`ingest_path(path, collection=null, profile=null, concurrency=null, gpu_concurrency=null, ignore_vectorignore=false)`
+`ingest_path(path, collection=null, profile=null, concurrency=null, gpu_concurrency=null, bypass_vectorignore=false)`
 - **Security**: requires `VECDB_ALLOW_LOCAL_FS="true"`.
 - `.vectorignore` governs what is indexed. `.gitignore` is **not** consulted unless no `.vectorignore` exists anywhere, in which case it is used as a fallback and the output says so.
 
@@ -203,7 +203,7 @@ Query source structure using vecq syntax.
 
 ### project_overview
 Structural summary of a directory tree.
-`project_overview(path, max_depth=null, ignore_patterns=[], respect_gitignore=null, ignore_vectorignore=null, skip_hidden=true)`
+`project_overview(path, max_depth=null, ignore_patterns=[], respect_gitignore=null, bypass_vectorignore=null, skip_hidden=true)`
 
 ### Resources
 `vecdb://collections/<name>` returns `{name, vector_count, vector_size, is_active, is_vecdb, is_compatible, model, reason}`.

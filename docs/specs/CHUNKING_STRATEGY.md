@@ -77,6 +77,11 @@ trait ChunkingStrategy {
 > `original_chunk_id` and real line bounds — and `on_oversize = "skip"` will
 > refuse the insert instead if you prefer the corpus to stay as precise as the
 > source.
+>
+> **Since 2026-10-27,** a line with no newline in the window is cut after its last
+> whitespace rather than mid-word, and a chunk that opens with a label (see
+> `context_label` below) has that label repeated at the top of **every** part, so
+> part 3 of a long section still says which section it is.
 
 ## 4. Metadata Schema
 
@@ -93,9 +98,17 @@ fields that have never existed (`scope`, `node_type`, `symbols_defined`):
 | `language` | Source language | `python`, `rust` |
 | `docstring` / `intent` | Docstring, where the language has one | `"Checks the residency policy."` |
 | `line_start` / `line_end` | Bounds within the file | `0`, `2` |
+| `context_label` | The label the chunk's text opens with — Markdown heading path, or a JSON fragment's key path and identifying fields | `# Guide\n\n## Install` |
 
 > `docstring` is payload only — it is not part of the embedded text, so it is
-> filterable but not matchable.
+> filterable but not matchable. `context_label` is the opposite: it IS in the
+> embedded text, and the payload copy lets a reader separate label from source.
+>
+> These names, and the file-level ones (`path`, `source`, `full_path`,
+> `language`, …), are reserved: `ingest` refuses `-m`, `.vecdbrc` route
+> `metadata` or path-rule captures that reuse one, because the built-in value
+> would silently replace yours. The list is `RESERVED_PAYLOAD_KEYS` in
+> `vecdb-core/src/ingestion/options.rs`.
 
 ## 6. Hybrid Architecture: Small vs. Large
 
@@ -106,6 +119,17 @@ We utilize a bifurcated pipeline based on file size to balance AST precision wit
     alternative here; it was unreachable and has been deleted.
 *   **Redundancy Filtering**: Skips structural "container" nodes (e.g., a class body) if its children already cover >90% of the text. This prevents "Double Counting" where the same code exists as a Class chunk and several Method chunks.
     *   *Exception*: Nodes with docstrings or critical types (Functions, Classes) are always preserved to maintain semantic anchoring.
+    *   *Since 2026-10-27:* a container whose members are emitted contributes only its **frame** — its own text with the members cut out (`impl Foo {`, a class header, members that are not separate elements). No member is embedded twice, and the container's own words are not lost. The ratio above now applies only when `skip_redundant_parents` is off.
+*   **Completeness** *(since 2026-10-27)*: for every tree-sitter language (Rust, C, C++, CUDA, Go, Bash, JavaScript) every node of the parse tree lands in an element — nothing the grammar parsed is dropped. Each language's table classifies every node kind its grammar can produce; a grammar upgrade that adds a kind fails the test suite until it is classified. CUDA is parsed with its own grammar (`tree-sitter-cuda`), so `__qualifiers__` and `<<<…>>>` launches are understood.
+*   **Units are never merged** *(since 2026-10-27)*: a Markdown section or a named code unit (function, method, class, struct, interface, trait) is always its own chunk, whatever the file's size — size caps a unit, it never joins two. A file below the pack target is one chunk only when it has at most one unit (flat prose, a small JSON document, a file with one function). A 2-function file is two chunks, each named for its own function.
+*   **Comments travel with what they describe** *(since 2026-10-27)*: a comment on its own line belongs to the element after it; a comment after code on the same line belongs to that code. A function's doc comment is embedded in the function's chunk, not at the end of the previous one.
+*   **Lossless parse** *(since 2026-10-27)*: for the tree-sitter languages and Markdown, the elements vecq produces, with the whitespace and comments each one owns, reproduce the file byte for byte. Positions live behind the AST (not in `attributes`), so query output is unchanged.
+    *   *Source code only.* **JSON** is never destructured by this ratio — a JSON object's keys are not child nodes, so dropping the object would drop every key. A JSON object or array that fits `max_chunk_bytes` is one chunk, whole, and its values are not embedded again separately. One that does not fit is cut into pieces that render `"key": value` and open with the record's key path and short identifying fields (`[2] {"name": "…", "version": "…"}`).
+    *   **Markdown** blocks nested inside a list, list item, blockquote or footnote are not embedded separately from the block that contains them. Every chunk opens with its heading path, and its `crumbtrail` is that path (`Guide::Install`); a heading always travels with the content under it.
+        *   Two sections never share a chunk, however small; a short section is a short chunk that still opens with its heading path.
+        *   Text is embedded **as written** — backticks, emphasis markers and link URLs included. HTML blocks, front matter and link reference definitions are embedded too.
+        *   A thematic break (`---`) is a **break opportunity**: it changes nothing when the content fits, and when a chunk would overflow, the cut lands at the last `---` rather than wherever the size ran out. The bare `---` line itself is not embedded.
+    *   **JSON** is embedded **as written**: keys in document order, numbers as typed, and JSONC comments included, each with the member it describes.
 *   **Stable IDs**: Uses Uuid v5 derived from `doc_id::crumbtrail::content_hash`. This ensures that renaming a file or moving code within a file (stable trail) maintains the same vector ID if the content is identical.
 
 ### Phase 2: Large Files (> 50MB) - The "Two-Pass" Strategy

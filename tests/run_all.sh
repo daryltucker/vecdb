@@ -18,6 +18,15 @@
 # USAGE:
 #   ./tests/run_all.sh           # Run everything
 #   JOBS=4 ./tests/run_all.sh    # Override parallelism
+#   ./tests/run_all.sh --from T2.6b   # LOCAL ITERATION ONLY — see below
+#
+# --from <label>: resume a failed run at <label> without redoing the hour
+#   before it. Everything earlier is SKIPPED, except what makes the rest
+#   meaningful, which always runs: the isolation guard and test-Qdrant reset
+#   (T0.0, T0.05), fixtures (T0.1), the builds (T1.1, T1.1b) and every binary
+#   provenance check. A --from run is a PARTIAL run: it says so in its results
+#   and is never a release gate result — `make tests` takes no arguments, so
+#   the release path is always the full manifest.
 #
 # ═══════════════════════════════════════════════════════════════════
 
@@ -26,6 +35,22 @@ set -o pipefail
 
 PROJECT_ROOT=$(dirname "$0")/..
 cd "$PROJECT_ROOT"
+
+FROM=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --from) FROM="${2:-}"; shift 2 || { echo "--from needs a label, e.g. --from T2.6b" >&2; exit 2; } ;;
+        --from=*) FROM="${1#--from=}"; shift ;;
+        *) echo "unknown argument: $1 (usage: run_all.sh [--from <label>])" >&2; exit 2 ;;
+    esac
+done
+# A typo must not silently skip the whole suite and report green.
+if [ -n "$FROM" ] && ! grep -q "run_test \"$FROM\" " "tests/run_all.sh"; then
+    echo "--from: no test labelled '$FROM' in tests/run_all.sh. Labels:" >&2
+    grep -oE 'run_test "[^"]+"' tests/run_all.sh | cut -d'"' -f2 | grep -E '^[TP]' | tr '\n' ' ' >&2
+    echo >&2
+    exit 2
+fi
 
 # ═══════════════════════════════════════════════════════════════════
 # PRODUCTION QDRANT LOCKOUT — NON-BYPASSABLE
@@ -60,6 +85,19 @@ export VECDB_CONFIG="$TEST_CONFIG"
 export VECDB_TEST_QDRANT_URL="http://localhost:6336"
 # HTTP REST port (for tests that query Qdrant REST API directly, e.g. tier3_quantization.py).
 export VECDB_TEST_QDRANT_HTTP_URL="http://localhost:6335"
+
+# The revision the binaries must report, handed to vecdb-common/build.rs as a
+# rebuild trigger (`rerun-if-env-changed`). build.rs re-stamps only when HEAD
+# moves; editing a tracked file flips the tree to `-dirty` without touching
+# anything cargo watches, so a tree clean at the last build and dirtied since by
+# a non-Rust edit kept the clean stamp, and T1.1c failed blaming a mid-run
+# rebuild (2026-11-10). Same rule as build.rs and tests/paths.py
+# expected_revision(): short HEAD, `-dirty` if tracked files are modified.
+VECDB_TREE_STATE="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    VECDB_TREE_STATE="${VECDB_TREE_STATE}-dirty"
+fi
+export VECDB_TREE_STATE
 
 # ==========================================
 # RESOURCE MANAGEMENT
@@ -108,9 +146,31 @@ log() {
 # Override for a genuinely slower machine: VECDB_TEST_TIMEOUT=3600 make tests
 TEST_TIMEOUT_SECS="${VECDB_TEST_TIMEOUT:-1800}"
 
+# --from: what still runs before the resume point. Isolation and reset first
+# (a skipped guard is how a resumed run would hit production), fixtures, the
+# builds, and every provenance check — a resumed run must still be about the
+# binary built from this tree.
+ALWAYS_RUN=" T0.0 T0.05 T0.1 T1.1 T1.1b T1.1c T1.6c T3.1b P.0 "
+REACHED=0
+SKIPPED=0
+LAST_SKIPPED=0
+
 run_test() {
     local label="$1"
     shift
+    LAST_SKIPPED=0
+    if [ -n "$FROM" ] && [ "$REACHED" -eq 0 ]; then
+        if [ "$label" = "$FROM" ]; then
+            REACHED=1
+        elif [[ "$ALWAYS_RUN" != *" $label "* ]]; then
+            log "  [$label] skipped (--from $FROM)"
+            # Not run, so neither passed nor counted.
+            LAST_SKIPPED=1
+            SKIPPED=$((SKIPPED + 1))
+            TOTAL=$((TOTAL - 1))
+            return 0
+        fi
+    fi
     log ""
     log "  [$label] $*"
 
@@ -142,7 +202,7 @@ run_test() {
 PASS=0
 TOTAL=0
 count() { TOTAL=$((TOTAL + 1)); }
-passed() { PASS=$((PASS + 1)); }
+passed() { [ "$LAST_SKIPPED" -eq 1 ] || PASS=$((PASS + 1)); }
 
 log "═══════════════════════════════════════════════════════════"
 log "  VECDB-MCP COMPLETE TEST SUITE"
@@ -307,6 +367,21 @@ count; run_test "T1.15" python3 tests/tier1_asm_state_diff.py; passed
 count; run_test "T1.16" python3 tests/tier1_vecdbrc_warning.py; passed
 count; run_test "T1.17" python3 tests/tier1_oversize_policy.py; passed
 count; run_test "T1.18" python3 tests/tier1_dry_run.py; passed
+count; run_test "T1.19" python3 tests/tier1_json_chunk_coverage.py; passed
+count; run_test "T1.20" python3 tests/tier1_markdown_chunk_coverage.py; passed
+count; run_test "T1.21" python3 tests/tier1_unit_boundaries.py; passed
+count; run_test "T1.26" python3 tests/tier1_written_chunk_coverage.py; passed
+# The consumer contracts get their own visible ids, though
+# T1.5.1 runs them again inside `cargo test -p vecq`: a failure here names the
+# contract, not "vecq unit tests".
+count; run_test "T1.22" cargo test -p vecq --test tier1_source_contract; passed
+count; run_test "T1.23" cargo test -p vecq --test tier1_refs; passed
+count; run_test "T1.24" cargo test -p vecq --test tier1_query_errors; passed
+count; run_test "T1.25" cargo test -p vecq --test tier1_agent_manual; passed
+count; run_test "T1.27" cargo test -p vecq --test tier1_map_graph; passed
+# T1.28 — the depth contract: the manual's per-language table of what an agent
+# can reach by selector is what the binary does, in both directions.
+count; run_test "T1.28" cargo test -p vecq --test tier1_depth; passed
 
 # ══════════════════════════════════════════
 # TIER 1.5: RUST UNIT TESTS (cargo test)
@@ -403,6 +478,10 @@ count; run_test "T2.9" python3 tests/tier2_compile.py; passed
 # reader on the machine where the files happen to be present, which is why this
 # asks git rather than the filesystem.
 count; run_test "T2.10" python3 tests/tier2_tracked_paths.py; passed
+# NAME-shaped private references (a work-log id, an RFC number, a planning
+# path) are a disclosure policy, not a property of vecdb, and a check for them
+# inside this repo would have to spell out the names it forbids. They are
+# refused at commit and push time by the host's shared git hooks instead.
 
 log ""
 log "  ┌──────────────────────────────────────────────┐"
@@ -475,9 +554,15 @@ count; run_test "P.3" python3 tests/verify_installed_binary.py; passed
 log ""
 log "═══════════════════════════════════════════════════════════"
 log "  RESULTS: $PASS / $TOTAL tests passed"
+if [ -n "$FROM" ]; then
+    log "  ⚠  PARTIAL RUN (--from $FROM): $SKIPPED test(s) SKIPPED."
+    log "     Not a release gate result. Run the full suite (make tests)."
+fi
 log "═══════════════════════════════════════════════════════════"
 
-if [ "$PASS" -eq "$TOTAL" ]; then
+if [ "$PASS" -eq "$TOTAL" ] && [ -n "$FROM" ]; then
+    log "  ✅ GREEN FROM $FROM ONWARD (partial)"
+elif [ "$PASS" -eq "$TOTAL" ]; then
     log "  ✅ ALL SYSTEMS GREEN"
 else
     log "  ❌ FAILURES DETECTED ($((TOTAL - PASS)) failed)"

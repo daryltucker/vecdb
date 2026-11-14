@@ -14,9 +14,8 @@
  *   qwen3-embedding:0.6b. Nothing in the collection recorded which chunking
  *   produced which points, and the two are indistinguishable after the fact.
  *
- *   This is a prerequisite for RFC-2026-238 (corpus_format). Recording the fact
- *   is what makes a later gate possible; this file only asserts the fact is
- *   recorded, faithfully and completely.
+ *   Recording the fact is what makes a later gate possible; this file only
+ *   asserts the fact is recorded, faithfully and completely.
  */
 
 use vecdb_core::ingestion::options::{ChunkSpec, IngestionOptions};
@@ -42,14 +41,15 @@ fn options_for(collection: &str, target: usize, overlap: usize) -> IngestionOpti
         on_oversize: Default::default(),
         chunk_overlap: overlap,
         respect_gitignore: false,
-        ignore_vectorignore: false,
+        bypass_vectorignore: false,
         strategy: "recursive".to_string(),
         tokenizer: "cl100k_base".to_string(),
         git_ref: None,
         extensions: None,
         excludes: None,
-        dry_run: true,
+        dry_run: vecdb_core::ingestion::DryRun::Files,
         metadata: None,
+        route_metadata: None,
         path_rules: Vec::new(),
         max_concurrent_requests: 1,
         gpu_batch_size: 1,
@@ -159,7 +159,6 @@ fn each_destination_records_its_own_chunking() {
 /// written by a development build that already contained the Python/Go
 /// fidelity fix — the version had not been bumped yet. Anything reasoning from
 /// the version alone would classify it stale and demand a needless re-ingest.
-/// See RFC-2026-238.
 #[test]
 fn the_build_revision_is_recorded_separately_from_the_version() {
     let rev = vecdb_core::types::build_revision();

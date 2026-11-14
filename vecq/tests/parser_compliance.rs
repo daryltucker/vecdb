@@ -23,6 +23,7 @@ fn test_all_parsers_have_fixtures() {
             FileType::Cuda => "cuda",
             FileType::Go => "go",
             FileType::Bash => "bash",
+            FileType::JavaScript => "javascript",
             FileType::Html => "html",
             FileType::Text => "text",
             FileType::Toml => "toml",

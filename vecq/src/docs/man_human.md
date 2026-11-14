@@ -59,7 +59,7 @@
 
 ## EXAMPLES
     Query public functions in a Rust file:
-    `vecq src/main.rs '.functions[] | select(.visibility == "pub")'`
+    `vecq src/main.rs '.functions[] | select(.attributes.visibility == "pub")'`
 
     Pipeline integration:
     `find . -name "*.rs" | xargs vecq --grep-format | grep "pub fn"`

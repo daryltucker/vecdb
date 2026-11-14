@@ -22,7 +22,7 @@ const JS_LANGUAGE_ERROR: &str = "Failed to set JavaScript language";
 const JS_PARSE_ERROR: &str = "Failed to parse JavaScript content";
 const STRING_PLACEHOLDER: &str = "<string>";
 const JS_LANGUAGE_NAME: &str = "JavaScript";
-const JS_FILE_EXTENSIONS: &[&str] = &["js", "mjs", "cjs"];
+const JS_FILE_EXTENSIONS: &[&str] = &["js", "mjs", "cjs", "jsx"];
 
 /// JavaScript parser using tree-sitter
 #[derive(Debug, Clone)]
@@ -55,186 +55,240 @@ impl JavaScriptParser {
         }
     }
 
-    fn extract_functions(
-        &self,
-        content: &str,
-        tree: &tree_sitter::Tree,
-    ) -> VecqResult<Vec<DocumentElement>> {
-        let mut functions = Vec::new();
+    /// The walker: every top-level declaration that names something —
+    /// functions (declared, generator, or a `const f = () => …` binding),
+    /// classes with their methods as children, imports with their module — and
+    /// the same declarations behind `export` / `export default`, which is most
+    /// of modern JavaScript. An exported declaration's element is the whole
+    /// `export …` statement (so editing it keeps the keyword) and carries
+    /// `is_exported` / `is_public`. Everything else is completed by
+    /// `ts_coverage` with its grammar kind.
+    fn walk(&self, content: &str, tree: &tree_sitter::Tree) -> Vec<DocumentElement> {
         let root = tree.root_node();
+        let mut out = Vec::new();
         let mut cursor = root.walk();
-
         for child in root.children(&mut cursor) {
-            // function declarations: function foo() {}
-            if child.kind() == "function_declaration" {
-                if let Some(func) = self.parse_function(content, child) {
-                    functions.push(func);
+            if child.kind() == "export_statement" {
+                let inner = child
+                    .child_by_field_name("declaration")
+                    .or_else(|| child.child_by_field_name("value"));
+                let is_default = {
+                    let mut c = child.walk();
+                    let found = child.children(&mut c).any(|k| k.kind() == "default");
+                    found
+                };
+                if let Some(inner) = inner {
+                    if let Some(mut e) = self.declaration(content, inner, child) {
+                        e = e
+                            .with_attribute("is_exported".to_string(), true)
+                            .with_attribute("is_public".to_string(), true);
+                        if is_default {
+                            e = e.with_attribute("is_default_export".to_string(), true);
+                        }
+                        out.push(e);
+                    }
                 }
+                continue;
             }
-            // arrow functions in variable declarations: const foo = () => {}
-            if child.kind() == "lexical_declaration" || child.kind() == "variable_declaration" {
-                if let Some(func) = self.parse_arrow_function(content, child) {
-                    functions.push(func);
-                }
+            if let Some(e) = self.declaration(content, child, child) {
+                out.push(
+                    e.with_attribute("is_exported".to_string(), false)
+                        .with_attribute("is_public".to_string(), false),
+                );
             }
         }
-
-        Ok(functions)
+        out
     }
 
-    fn parse_function(&self, content: &str, node: tree_sitter::Node) -> Option<DocumentElement> {
-        let mut name = String::new();
-        let mut is_async = false;
-        let mut cursor = node.walk();
-
-        for child in node.children(&mut cursor) {
-            if child.kind() == "async" {
-                is_async = true;
-            }
-            if child.kind() == "identifier" {
-                name = child
-                    .utf8_text(content.as_bytes())
-                    .unwrap_or("")
-                    .to_string();
-            }
-        }
-
-        if name.is_empty() {
-            return None;
-        }
-
-        let element = DocumentElement::new(
-            ElementType::Function,
-            Some(name),
-            node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
-            node.start_position().row + 1,
-            node.end_position().row + 1,
-        )
-        .set_attributes(ElementAttributes::JavaScript(JavaScriptAttributes {
-            is_async,
-            is_arrow: false,
-            other: HashMap::new(),
-        }));
-
-        Some(element)
-    }
-
-    fn parse_arrow_function(
+    /// `node` as a named element whose span is `outer` (the node itself, or
+    /// the `export` statement around it). `None` for anything the walker does
+    /// not name — coverage emits it.
+    fn declaration(
         &self,
         content: &str,
         node: tree_sitter::Node,
+        outer: tree_sitter::Node,
     ) -> Option<DocumentElement> {
-        let text = node.utf8_text(content.as_bytes()).unwrap_or("");
-
-        if !text.contains("=>") {
-            return None;
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "variable_declarator" {
-                let mut decl_cursor = child.walk();
-                for decl_child in child.children(&mut decl_cursor) {
-                    if decl_child.kind() == "identifier" {
-                        let name = decl_child
-                            .utf8_text(content.as_bytes())
-                            .unwrap_or("")
-                            .to_string();
-                        let is_async = text.contains("async");
-
-                        return Some(
-                            DocumentElement::new(
-                                ElementType::Function,
-                                Some(name),
-                                text.to_string(),
-                                node.start_position().row + 1,
-                                node.end_position().row + 1,
-                            )
-                            .set_attributes(
-                                ElementAttributes::JavaScript(JavaScriptAttributes {
-                                    is_async,
-                                    is_arrow: true,
-                                    other: HashMap::new(),
-                                }),
-                            ),
-                        );
-                    }
+        match node.kind() {
+            "function_declaration"
+            | "generator_function_declaration"
+            | "function_expression"
+            | "generator_function" => {
+                let name = self.field_text(content, node, "name");
+                // `export default function () {}` has no name; it is still the
+                // module's default export, named as JavaScript names it.
+                let name = name.or_else(|| {
+                    (outer.kind() == "export_statement").then(|| "default".to_string())
+                })?;
+                Some(self.function(content, node, outer, name, false))
+            }
+            "class_declaration" | "class" => {
+                let name = self.field_text(content, node, "name").or_else(|| {
+                    (outer.kind() == "export_statement").then(|| "default".to_string())
+                })?;
+                Some(self.class(content, node, outer, name))
+            }
+            "lexical_declaration" | "variable_declaration" => {
+                // Only a binding to a function is a function: `const f = () =>
+                // …`. `const xs = a.map(y => y)` is a variable (coverage).
+                let mut c = node.walk();
+                let declarators: Vec<_> = node
+                    .named_children(&mut c)
+                    .filter(|k| k.kind() == "variable_declarator")
+                    .collect();
+                let [declarator] = declarators.as_slice() else {
+                    return None;
+                };
+                let value = declarator.child_by_field_name("value")?;
+                let is_arrow = value.kind() == "arrow_function";
+                if !matches!(
+                    value.kind(),
+                    "arrow_function" | "function_expression" | "generator_function"
+                ) {
+                    return None;
                 }
+                let name = self.field_text(content, *declarator, "name")?;
+                Some(self.function(content, value, outer, name, is_arrow))
             }
-        }
-        None
-    }
-
-    fn extract_classes(
-        &self,
-        content: &str,
-        tree: &tree_sitter::Tree,
-    ) -> VecqResult<Vec<DocumentElement>> {
-        let mut classes = Vec::new();
-        let root = tree.root_node();
-        let mut cursor = root.walk();
-
-        for child in root.children(&mut cursor) {
-            if child.kind() == "class_declaration" {
-                if let Some(cls) = self.parse_class(content, child) {
-                    classes.push(cls);
-                }
-            }
-        }
-
-        Ok(classes)
-    }
-
-    fn parse_class(&self, content: &str, node: tree_sitter::Node) -> Option<DocumentElement> {
-        let mut name: Option<String> = None;
-        let mut cursor = node.walk();
-
-        for child in node.children(&mut cursor) {
-            if child.kind() == "identifier" {
-                name = Some(
-                    child
-                        .utf8_text(content.as_bytes())
-                        .unwrap_or("")
-                        .to_string(),
-                );
-                break;
-            }
-        }
-
-        Some(DocumentElement::new(
-            ElementType::Class,
-            name,
-            node.utf8_text(content.as_bytes()).unwrap_or("").to_string(),
-            node.start_position().row + 1,
-            node.end_position().row + 1,
-        ))
-    }
-
-    fn extract_imports(
-        &self,
-        content: &str,
-        tree: &tree_sitter::Tree,
-    ) -> VecqResult<Vec<DocumentElement>> {
-        let mut imports = Vec::new();
-        let root = tree.root_node();
-        let mut cursor = root.walk();
-
-        for child in root.children(&mut cursor) {
-            if child.kind() == "import_statement" {
-                let text = child.utf8_text(content.as_bytes()).unwrap_or("");
-
-                imports.push(DocumentElement::new(
+            "import_statement" => {
+                let module = node
+                    .child_by_field_name("source")
+                    .map(|s| unquote(&content[s.byte_range()]).to_string());
+                let mut e = DocumentElement::new(
                     ElementType::Import,
-                    None,
-                    text.to_string(),
-                    child.start_position().row + 1,
-                    child.end_position().row + 1,
-                ));
+                    module.clone(),
+                    content[outer.byte_range()].to_string(),
+                    outer.start_position().row + 1,
+                    outer.end_position().row + 1,
+                )
+                .with_attribute("import_type".to_string(), "import");
+                if let Some(m) = module {
+                    // `module` is the key `vecq refs` reads for every language.
+                    e = e.with_attribute("module".to_string(), m);
+                }
+                Some(e)
+            }
+            _ => None,
+        }
+    }
+
+    fn field_text(&self, content: &str, node: tree_sitter::Node, field: &str) -> Option<String> {
+        node.child_by_field_name(field)
+            .map(|n| content[n.byte_range()].to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// The text from the element's start to its body: `async function f(a, b)`,
+    /// `const add = (a, b) =>`, whitespace collapsed.
+    fn signature(
+        &self,
+        content: &str,
+        outer: tree_sitter::Node,
+        func: tree_sitter::Node,
+    ) -> String {
+        let end = func
+            .child_by_field_name("body")
+            .map(|b| b.start_byte())
+            .unwrap_or_else(|| func.end_byte());
+        content[outer.start_byte()..end.max(outer.start_byte())]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn function(
+        &self,
+        content: &str,
+        func: tree_sitter::Node,
+        outer: tree_sitter::Node,
+        name: String,
+        is_arrow: bool,
+    ) -> DocumentElement {
+        let is_async = {
+            let mut c = func.walk();
+            let found = func.children(&mut c).any(|k| k.kind() == "async");
+            found
+        };
+        let mut other = HashMap::new();
+        other.insert(
+            "signature".to_string(),
+            serde_json::Value::String(self.signature(content, outer, func)),
+        );
+        DocumentElement::new(
+            ElementType::Function,
+            Some(name),
+            content[outer.byte_range()].to_string(),
+            outer.start_position().row + 1,
+            outer.end_position().row + 1,
+        )
+        .set_attributes(ElementAttributes::JavaScript(JavaScriptAttributes {
+            is_async,
+            is_arrow,
+            other,
+        }))
+    }
+
+    /// A class, its methods as children (`constructor`, getters/setters,
+    /// `static`, `#private`) — each addressable on its own, as a Rust impl's or
+    /// a Python class's are.
+    fn class(
+        &self,
+        content: &str,
+        node: tree_sitter::Node,
+        outer: tree_sitter::Node,
+        name: String,
+    ) -> DocumentElement {
+        let mut methods = Vec::new();
+        if let Some(body) = node.child_by_field_name("body") {
+            let mut c = body.walk();
+            for member in body.named_children(&mut c) {
+                if member.kind() != "method_definition" {
+                    continue;
+                }
+                let Some(method_name) = self.field_text(content, member, "name") else {
+                    continue;
+                };
+                let mut m = self.function(content, member, member, method_name, false);
+                let is_static = {
+                    let mut mc = member.walk();
+                    let found = member.children(&mut mc).any(|k| k.kind() == "static");
+                    found
+                };
+                m = m.with_attribute("is_static".to_string(), is_static);
+                methods.push(m);
             }
         }
-
-        Ok(imports)
+        let mut other = HashMap::new();
+        other.insert(
+            "signature".to_string(),
+            serde_json::Value::String(self.signature(content, outer, node)),
+        );
+        DocumentElement::new(
+            ElementType::Class,
+            Some(name),
+            content[outer.byte_range()].to_string(),
+            outer.start_position().row + 1,
+            outer.end_position().row + 1,
+        )
+        .set_attributes(ElementAttributes::JavaScript(JavaScriptAttributes {
+            is_async: false,
+            is_arrow: false,
+            other,
+        }))
+        .with_children(methods)
     }
+}
+
+/// A JS string literal's text without its quotes.
+fn unquote(s: &str) -> &str {
+    let s = s.trim();
+    if s.len() >= 2 {
+        let (first, last) = (s.as_bytes()[0], s.as_bytes()[s.len() - 1]);
+        if first == last && matches!(first, b'"' | b'\'' | b'`') {
+            return &s[1..s.len() - 1];
+        }
+    }
+    s
 }
 
 impl Default for JavaScriptParser {
@@ -242,6 +296,49 @@ impl Default for JavaScriptParser {
         Self::new()
     }
 }
+
+/// Coverage spec: every kind tree-sitter-javascript can produce at top level or inside the
+/// wrappers walked (`bodies`), classified. `ts_coverage::complete` emits whatever the
+/// walker above did not; the completeness test fails on any grammar kind missing here.
+pub(crate) const COVERAGE: crate::parsers::ts_coverage::Spec = {
+    use crate::parsers::ts_coverage::Kind::{Comment, Unit};
+    use crate::types::ElementType as E;
+    crate::parsers::ts_coverage::Spec {
+        bodies: &["program"],
+        kinds: &[
+            ("break_statement", Unit(E::Block)),
+            ("class_declaration", Unit(E::Class)),
+            ("comment", Comment),
+            ("continue_statement", Unit(E::Block)),
+            ("debugger_statement", Unit(E::Block)),
+            ("do_statement", Unit(E::Block)),
+            ("empty_statement", Unit(E::Block)),
+            ("export_clause", Unit(E::Import)),
+            ("export_statement", Unit(E::Block)),
+            ("expression_statement", Unit(E::Block)),
+            ("for_in_statement", Unit(E::Block)),
+            ("for_statement", Unit(E::Block)),
+            ("function_declaration", Unit(E::Function)),
+            ("generator_function_declaration", Unit(E::Function)),
+            ("hash_bang_line", Comment),
+            ("html_comment", Comment),
+            ("if_statement", Unit(E::Block)),
+            ("import_statement", Unit(E::Import)),
+            ("labeled_statement", Unit(E::Block)),
+            ("lexical_declaration", Unit(E::Variable)),
+            ("namespace_export", Unit(E::Import)),
+            ("return_statement", Unit(E::Block)),
+            ("statement_block", Unit(E::Block)),
+            ("switch_statement", Unit(E::Block)),
+            ("throw_statement", Unit(E::Block)),
+            ("try_statement", Unit(E::Block)),
+            ("using_declaration", Unit(E::Variable)),
+            ("variable_declaration", Unit(E::Variable)),
+            ("while_statement", Unit(E::Block)),
+            ("with_statement", Unit(E::Block)),
+        ],
+    }
+};
 
 #[async_trait]
 impl Parser for JavaScriptParser {
@@ -284,21 +381,30 @@ impl Parser for JavaScriptParser {
                 source: None,
             })?;
 
-        let functions = self.extract_functions(content, &tree)?;
-        let classes = self.extract_classes(content, &tree)?;
-        let imports = self.extract_imports(content, &tree)?;
-
-        let mut elements = Vec::new();
-        elements.extend(functions);
-        elements.extend(classes);
-        elements.extend(imports);
+        let mut elements = self.walk(content, &tree);
 
         // Extract usage/reference elements if enabled
         if self.enable_usages {
             elements.extend(self.detect_usages(content, &tree, None, &self.current_scope)?);
         }
 
-        let mut doc = ParsedDocument::new(DocumentMetadata::new(PathBuf::new(), 0));
+        let mut doc = ParsedDocument::new(
+            DocumentMetadata::new(PathBuf::from(STRING_PLACEHOLDER), content.len() as u64)
+                .with_line_count(content)
+                .with_file_type(crate::types::FileType::JavaScript),
+        );
+        doc.metadata.syntax_errors = crate::parsers::ts_coverage::complete(
+            &mut elements,
+            tree.root_node(),
+            content,
+            &COVERAGE,
+        );
+        doc.module = Some(crate::parsers::ts_refs::attach(
+            &mut elements,
+            tree.root_node(),
+            content,
+            &crate::parsers::ts_refs::JAVASCRIPT,
+        ));
         doc.elements = elements;
 
         Ok(doc)
@@ -857,6 +963,91 @@ import axios from 'axios';
             .collect();
 
         assert_eq!(imports.len(), 2);
+    }
+
+    /// REGRESSION (2026-314, registering JavaScript): what modern JS is made
+    /// of. Before, `export function` / `export default class` / `export const
+    /// f = () => …` were anonymous blocks, a class's methods were not
+    /// elements, and any declaration whose text contained `=>` was a
+    /// "function" — `const xs = a.map(y => y)` included.
+    #[tokio::test]
+    async fn exports_methods_and_arrow_bindings() {
+        let src = "import { a } from \"./a.js\";\n\
+                   export function f() {}\n\
+                   export const g = async () => 1;\n\
+                   const xs = [1].map((y) => y);\n\
+                   export default class C {\n  constructor() {}\n  static make() {}\n}\n\
+                   export default function () {}\n";
+        let doc = JavaScriptParser::new().parse(src).await.unwrap();
+        let named = |t: ElementType| -> Vec<String> {
+            doc.elements
+                .iter()
+                .filter(|e| e.element_type == t)
+                .filter_map(|e| e.name.clone())
+                .collect()
+        };
+        assert_eq!(named(ElementType::Function), ["f", "g", "default"]);
+        assert_eq!(named(ElementType::Class), ["C"]);
+        assert_eq!(
+            named(ElementType::Variable),
+            ["xs"],
+            "a value, not a function"
+        );
+
+        let f = doc
+            .elements
+            .iter()
+            .find(|e| e.name.as_deref() == Some("f"))
+            .unwrap();
+        assert_eq!(
+            f.content, "export function f() {}",
+            "the element is the export statement"
+        );
+        assert_eq!(
+            f.attributes.get("is_exported"),
+            Some(&serde_json::json!(true))
+        );
+        let g = doc
+            .elements
+            .iter()
+            .find(|e| e.name.as_deref() == Some("g"))
+            .unwrap();
+        let ElementAttributes::JavaScript(ga) = &g.attributes else {
+            panic!()
+        };
+        assert!(ga.is_arrow && ga.is_async);
+
+        let class = doc
+            .elements
+            .iter()
+            .find(|e| e.name.as_deref() == Some("C"))
+            .unwrap();
+        let methods: Vec<_> = class
+            .children
+            .iter()
+            .filter_map(|m| m.name.as_deref())
+            .collect();
+        assert_eq!(methods, ["constructor", "make"]);
+        assert_eq!(
+            class.children[1].attributes.get("is_static"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            class.attributes.get("is_default_export"),
+            Some(&serde_json::json!(true))
+        );
+
+        let import = doc
+            .elements
+            .iter()
+            .find(|e| e.element_type == ElementType::Import)
+            .unwrap();
+        assert_eq!(
+            import.attributes.get("module"),
+            Some(&serde_json::json!("./a.js"))
+        );
+        assert_eq!(doc.metadata.file_type, crate::types::FileType::JavaScript);
+        crate::parsers::ownership::assert_reconstructs("js", &doc.elements, src, |_| true);
     }
 
     #[tokio::test]

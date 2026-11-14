@@ -37,8 +37,11 @@ json5 = { workspace = true }
 serde_yaml_ng = { workspace = true }
 # Event parser used ONLY for source positions: serde_yaml_ng discards them, so
 # without this every YAML node reported the whole document as its line range.
-# Already in the tree via syntect; see parsers/yaml_spans.rs.
-yaml-rust = "0.4.5"
+# saphyr-parser, not yaml-rust (until 2026-314): yaml-rust's events mark only
+# where a node starts, never where it ends, so YAML had lines but no spans
+# — and it is unmaintained (RUSTSEC-2024-0320). yaml-rust
+# stays in the tree via syntect; vecq no longer uses it. See parsers/yaml_spans.rs.
+saphyr-parser = "0.3.3"
 
 # Core dependencies
 serde.workspace = true
@@ -55,13 +58,25 @@ toml = "1.0"
 
 # Parsing dependencies
 pulldown-cmark = "0.13.1"
-rustpython-parser = "0.4.0"
+# `full-lexer`: the tokenizer yields `#` comments (the AST never carries them), so
+# Python comments become owned trivia instead of being dropped.
+# The parser filters them out before parsing; the AST is unchanged.
+rustpython-parser = { version = "0.4.0", features = ["full-lexer"] }
+# The generated AST `Visitor`: Python calls/strings walk EVERY node kind
+# rather than a hand-kept subset of them. Same crate the parser
+# re-exports as `rustpython_parser::ast`; this only turns the feature on.
+rustpython-ast = { version = "0.4.0", features = ["visitor"] }
 tree-sitter = "0.26.6" # Core library - updated to 0.26 for C23 support
 tree-sitter-c = "0.24.1" # Supports C23 language features (v0.24.1)
 tree-sitter-cpp = "0.23.4" # Latest is still 0.23.4
+tree-sitter-cuda = "0.21.2" # CUDA = C++ + `__qualifiers__` + `<<<…>>>` launches (operator-approved 2026-300)
 tree-sitter-go = "0.25.0" # Latest is 0.25.0
 tree-sitter-bash = "0.25.1" # Latest is 0.25.1
 tree-sitter-javascript = "0.25.0" # Latest is 0.25.0
+# HTML on a real HTML grammar: quick-xml is an XML
+# reader, so void tags, text, comments and doctype were dropped, and nested
+# elements carried no exact span.
+tree-sitter-html = "0.23.2"
 toml_edit = "0.25.4"
 indexmap = "2.13.0" # Required for jaq Val::Obj construction
 dirs = "6.0.0"
@@ -81,7 +96,6 @@ proc-macro2 = { version = "1.0.106", features = ["span-locations"] }
 termimad = "0.34.1"
 
 syntect = "5.3.0"
-quick-xml = { version = "0.39.2", features = ["serialize"] }
 tree-sitter-rust = "0.24.0"
 regex = "1.12.3"
 ahash = "0.8.12"

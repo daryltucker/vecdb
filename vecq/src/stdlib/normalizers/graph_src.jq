@@ -11,7 +11,7 @@ def _src_to_graph_single:
     ((.enums // []) | .[] | . + {x_type: "enumeration"}),
     ((.traits // []) | .[] | . + {x_type: "trait"}),
     ((.modules // []) | .[] | . + {x_type: "module"}),
-    ((.impls // []) | .[] | . + {x_type: "implementation"})
+    ((.implementations // []) | .[] | . + {x_type: "implementation"})
   ] as $elements |
   {
     "id": $file_path,

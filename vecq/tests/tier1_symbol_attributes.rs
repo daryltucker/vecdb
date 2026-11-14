@@ -71,6 +71,10 @@ const RUST_SRC: &str = "fn hidden() {}\npub fn shown() {}\npub(crate) fn scoped(
 const PY_SRC: &str =
     "def alpha(a: int, b) -> str:\n    return \"x\"\n\nasync def _fetch(u: str):\n    pass\n";
 const GO_SRC: &str = "package main\n\nfunc Alpha(a int) int {\n\treturn a\n}\n\nfunc beta() {}\n";
+// JavaScript has no visibility modifier: a module's public surface is what it
+// exports, so `is_public` is `export`.
+const JS_SRC: &str =
+    "export function shown() {}\nfunction hidden() {}\nexport const arrow = () => 1;\n";
 
 #[tokio::test]
 async fn python_reports_a_signature() {
@@ -171,6 +175,9 @@ async fn is_public_is_a_bool_and_agrees_across_languages() {
         (FileType::Python, PY_SRC, "_fetch", false),
         (FileType::Go, GO_SRC, "Alpha", true),
         (FileType::Go, GO_SRC, "beta", false),
+        (FileType::JavaScript, JS_SRC, "shown", true),
+        (FileType::JavaScript, JS_SRC, "hidden", false),
+        (FileType::JavaScript, JS_SRC, "arrow", true),
     ];
 
     for (file_type, src, symbol, expected) in cases {

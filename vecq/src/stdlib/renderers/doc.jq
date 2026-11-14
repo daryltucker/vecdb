@@ -80,7 +80,9 @@ def markdown:
     (to_entries 
      | sort_by(.key | _section_priority)
      | .[] 
-     | select(.value | length > 0)
+     # Element groups are arrays; `module` (the module scope)
+     # is an object and is not a section — iterating it broke the whole page.
+     | select(.value | type == "array" and length > 0)
      | select(.key != "metadata" and .key != "file_type" and .key != "elements")
      | (
          ("## " + (.key | _get_header_name) + "\n\n") +

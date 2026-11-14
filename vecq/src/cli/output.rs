@@ -67,6 +67,14 @@ async fn extract_json_from_directory(
     while let Some(entry) = entries.next_entry().await.map_err(VecqError::IoError)? {
         let path = entry.path();
 
+        // Hidden entries (`.git`, `.vecdb`, `.venv`) are not walked into, as
+        // `vecq map` and `vecq refs` already do not; a path named on the
+        // command line is still read. `-R` over a fixture tree
+        // errors stopped being swallowed.
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+
         if path.is_dir() {
             if options.recursive {
                 if let Some(max) = options.max_depth {
@@ -185,12 +193,19 @@ async fn parse_content_to_json(
             return Ok(vals);
         }
         let parsed = if options.enable_usages {
-            parse_file_with_options(content, file_type, true).await?
+            parse_file_with_options(content, file_type, true).await
         } else {
-            vecq::parse_file(content, file_type).await?
+            vecq::parse_file(content, file_type).await
         };
-        let converter =
-            UnifiedJsonConverter::with_default_schemas().with_context_lines(options.context_lines);
+        // The parser saw content only; name the file the caller gave.
+        let parsed = parsed.map_err(|e| match path {
+            Some(p) => e.in_file(p),
+            None => e,
+        })?;
+        let converter = UnifiedJsonConverter::with_default_schemas()
+            .with_context_lines(options.context_lines)
+            .with_source_info(options.source_info)
+            .with_content(!options.no_content);
         vec![converter.convert(parsed)?]
     };
 
@@ -218,10 +233,16 @@ fn inject_file_path_recursive(value: &mut serde_json::Value, path: &str) {
                 }
             }
 
-            // Inject into attributes if present, or create it if it looks like a document element
-            let is_element = map.contains_key("element_type")
-                || map.contains_key("kind")
-                || map.contains_key("type");
+            // Inject into attributes if present, or create it if it looks like a document element.
+            //
+            // An element is what the converter emits: a `type` AND its lines.
+            // Keying on `kind` alone (2026-314) matched every element's
+            // `attributes` map — the coverage pass records `attributes.kind` —
+            // so each got an `attributes.attributes.file_path` nested inside
+            // its own attributes; keying on `type` alone would rewrite any user
+            // object with a `type` field in raw JSON passthrough.
+            let is_element = (map.contains_key("element_type") || map.contains_key("type"))
+                && map.contains_key("line_start");
 
             if is_element {
                 if let Some(attributes) = map.get_mut("attributes") {
@@ -245,7 +266,12 @@ fn inject_file_path_recursive(value: &mut serde_json::Value, path: &str) {
             }
 
             // check for "metadata" at root level if we are at root
-            if !is_element && map.contains_key("elements") {
+            // keyed on `contains_key("elements")` which only
+            // matched because `Schema::new` forced a phantom `elements: []`
+            // into every converted document. With the phantom base field
+            // removed, the root signal is the (always-materialised)
+            // `file_type` group key present in every schema's output.
+            if !is_element && map.contains_key("file_type") {
                 // likely root document
                 if !map.contains_key("metadata") {
                     let mut meta_obj = serde_json::Map::new();

@@ -33,10 +33,10 @@ pub fn resolve_gitignore(options: &IngestionOptions) -> GitignoreDecision {
         };
     }
 
-    // `--ignore-vectorignore` means the operator deliberately switched the
+    // `--bypass-vectorignore` means the operator deliberately switched the
     // indexing policy off. Substituting a different one is the opposite of what
     // they asked for.
-    if options.ignore_vectorignore {
+    if options.bypass_vectorignore {
         return GitignoreDecision {
             respect: false,
             via_fallback: false,
@@ -71,7 +71,7 @@ pub fn build_walker(options: &IngestionOptions) -> WalkBuilder {
         .ignore(respect_gitignore)
         .hidden(false);
 
-    if !options.ignore_vectorignore {
+    if !options.bypass_vectorignore {
         builder.add_custom_ignore_filename(".vectorignore");
     }
 

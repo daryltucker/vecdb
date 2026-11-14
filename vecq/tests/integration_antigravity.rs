@@ -32,7 +32,9 @@ async fn test_antigravity_prompt_parsing() {
         .iter()
         .find(|e| e.name.as_deref() == Some("role"))
         .expect("role tag not found");
-    assert_eq!(role.content, "Assistant");
+    // The element as written; it was the inner text
+    // `Assistant` until 2026-314.
+    assert_eq!(role.content, "<role>Assistant</role>");
 
     let task = doc
         .elements

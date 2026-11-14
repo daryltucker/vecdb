@@ -13,6 +13,7 @@ pub enum FileType {
     Cuda,
     Go,
     Bash,
+    JavaScript,
     Json,
     Html,
     Toml,
@@ -34,6 +35,11 @@ impl FileType {
             "cu" | "cuh" => Some(Self::Cuda),
             "go" => Some(Self::Go),
             "sh" | "bash" => Some(Self::Bash),
+            // ECMAScript source: script, ES module, CommonJS, and JSX (tree-sitter-
+            // javascript parses JSX). TypeScript is a different grammar and is not
+            // claimed here (protocols/language-support.md: a dialect needing another
+            // parser is its own FileType).
+            "js" | "mjs" | "cjs" | "jsx" => Some(Self::JavaScript),
             "json" | "ndjson" | "jsonl" => Some(Self::Json),
             "html" | "htm" | "xml" | "xhtml" => Some(Self::Html),
             "toml" => Some(Self::Toml),
@@ -86,6 +92,7 @@ impl FileType {
             Self::Cuda => vec!["cu", "cuh"],
             Self::Go => vec!["go"],
             Self::Bash => vec!["sh", "bash"],
+            Self::JavaScript => vec!["js", "mjs", "cjs", "jsx"],
             Self::Json => vec!["json", "ndjson", "jsonl"],
             Self::Html => vec!["html", "htm", "xml", "xhtml"],
             Self::Toml => vec!["toml"],
@@ -240,7 +247,8 @@ impl FileType {
             | Self::Cpp
             | Self::Cuda
             | Self::Go
-            | Self::Bash => ParsingCapability::Code,
+            | Self::Bash
+            | Self::JavaScript => ParsingCapability::Code,
 
             Self::Text => ParsingCapability::Simple,
             Self::Unknown => ParsingCapability::Simple, // The Lua fallback
@@ -272,6 +280,7 @@ impl fmt::Display for FileType {
             Self::Cuda => "CUDA",
             Self::Go => "Go",
             Self::Bash => "Bash",
+            Self::JavaScript => "JavaScript",
             Self::Json => "JSON",
             Self::Html => "HTML",
             Self::Toml => "TOML",
@@ -307,6 +316,7 @@ mod extension_table_tests {
         FileType::Cuda,
         FileType::Go,
         FileType::Bash,
+        FileType::JavaScript,
         FileType::Json,
         FileType::Html,
         FileType::Toml,

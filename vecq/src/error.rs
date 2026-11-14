@@ -89,7 +89,13 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum VecqError {
     /// Parse error with file location and context
-    #[error("Parse error in {file} at line {line}: {message}")]
+    ///
+    /// `file` is empty and `line` 0 when unknown, and `Display` then leaves
+    /// them out — a parser sees content, not a path, and the caller that has
+    /// the path adds it with [`VecqError::in_file`]. Every
+    /// Python error used to read "in <string> at line 0", naming no file and
+    /// no line an agent could act on.
+    #[error("{}", parse_error_display(file, *line, message))]
     ParseError {
         file: PathBuf,
         line: usize,
@@ -141,6 +147,17 @@ pub enum VecqError {
     CircuitBreakerTriggered { message: String },
 }
 
+fn parse_error_display(file: &std::path::Path, line: usize, message: &str) -> String {
+    let mut out = String::from("Parse error");
+    if !file.as_os_str().is_empty() {
+        out.push_str(&format!(" in {}", file.display()));
+    }
+    if line > 0 {
+        out.push_str(&format!(" at line {line}"));
+    }
+    format!("{out}: {message}")
+}
+
 /// Result type alias for vecq operations
 pub type VecqResult<T> = Result<T, VecqError>;
 
@@ -155,6 +172,25 @@ impl VecqError {
             line,
             message,
             source: source.map(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
+        }
+    }
+
+    /// Attach the path to a parse error that does not have one. Parsers see
+    /// content only; the caller reading the file knows where it came from.
+    pub fn in_file(self, path: &std::path::Path) -> Self {
+        match self {
+            Self::ParseError {
+                file,
+                line,
+                message,
+                source,
+            } if file.as_os_str().is_empty() => Self::ParseError {
+                file: path.to_path_buf(),
+                line,
+                message,
+                source,
+            },
+            other => other,
         }
     }
 

@@ -43,7 +43,7 @@
 //
 // USAGE:
 //   # Basic file querying
-//   vecq src/main.rs '.functions[] | select(.visibility == "pub")'
+//   vecq src/main.rs '.functions[] | select(.attributes.visibility == "pub")'
 //
 //   # Convert to JSON without querying
 //   vecq --convert README.md

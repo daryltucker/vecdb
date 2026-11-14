@@ -231,7 +231,7 @@ install:
 	@# pair aborts the process with free():invalid pointer), which is why we
 	@# copy the build's own symlinked artifacts (ort's copy-dylibs feature)
 	@# instead of a downloaded release tarball. Without these next to the
-	@# binary, use_gpu=true cannot register the CUDA EP (BUG-2026-254).
+	@# binary, use_gpu=true cannot register the CUDA EP.
 	@for lib in libonnxruntime_providers_shared.so libonnxruntime_providers_cuda.so; do \
 		if [ -e "$(EFFECTIVE_TARGET_DIR)/release/$$lib" ]; then \
 			cp -fL "$(EFFECTIVE_TARGET_DIR)/release/$$lib" "$(INSTALL_ROOT)/bin/$$lib" && \

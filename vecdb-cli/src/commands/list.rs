@@ -1,67 +1,80 @@
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::Arc;
 use vecdb_common::output::OutputFormat;
 use vecdb_core::config::Config;
 use vecdb_core::config::QuantizationType;
-use vecdb_core::parsers::vecq_adapter::VecqParserFactory;
 use vecdb_core::types::{CollectionGenesis, CollectionInfo};
-use vecq::detection::HybridDetector;
 
 pub async fn run(
     config: &Config,
     profile_name: Option<&str>,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    // Performance: Avoid connecting to Ollama/loading local model just to list collections
-    std::env::set_var("VECDB_SKIP_PROBE", "true");
-
-    let file_detector = Arc::new(HybridDetector::new());
-    let parser_factory = Arc::new(VecqParserFactory::default());
-
-    // One resolution per distinct Qdrant endpoint. Listing is about *stores*,
-    // not embedders, so profiles that differ only in which model they use would
-    // enumerate the same collections twice.
-    let mut to_check: Vec<vecdb_core::config::Resolution> = Vec::new();
+    // Every Qdrant the config can name, once each. Listing is about *stores*,
+    // not embedders: no embedder is built or announced here — `vecdb list` used
+    // to construct a whole `Core` per store, which picked the default profile's
+    // embedder and printed "Using embedder …" once per store for a command that
+    // embeds nothing (operator, 2026-314).
+    //
+    // Without a profile: the default resolution's store first, then EVERY
+    // `[store.*]` entry — including one no profile or collection references yet
+    // (it was invisible before) — then any inline `qdrant_url` a profile or
+    // collection sets. A URL reached both ways is listed once, under its store
+    // name.
+    let mut targets: Vec<Target> = Vec::new();
+    let mut add = |url: String, api_key: Option<String>, store: Option<String>| match targets
+        .iter_mut()
+        .find(|t| t.url == url)
+    {
+        Some(t) => {
+            if t.store.is_none() {
+                t.store = store;
+            }
+        }
+        None => targets.push(Target {
+            url,
+            api_key,
+            store,
+        }),
+    };
 
     if let Some(p) = profile_name {
-        to_check.push(config.resolve(Some(p), None)?);
+        let r = config.resolve(Some(p), None)?;
+        add(r.qdrant_url, r.qdrant_api_key, r.store);
     } else {
-        let mut seen = std::collections::HashSet::new();
-        let default_res = config.resolve(None, None)?;
-        seen.insert(default_res.qdrant_url.clone());
-        to_check.push(default_res);
+        let r = config.resolve(None, None)?;
+        add(r.qdrant_url, r.qdrant_api_key, r.store);
+
+        let mut stores: Vec<_> = config.store.iter().collect();
+        stores.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, s) in stores {
+            add(s.url.clone(), s.api_key.clone(), Some(name.clone()));
+        }
 
         for name in config.profiles.keys() {
             if let Ok(r) = config.resolve(Some(name), None) {
-                if seen.insert(r.qdrant_url.clone()) {
-                    to_check.push(r);
-                }
+                add(r.qdrant_url, r.qdrant_api_key, r.store);
             }
         }
-
         // A collection may point at a Qdrant no profile mentions.
         for col_name in config.collections.keys() {
             if let Ok(r) = config.resolve(None, Some(col_name)) {
-                if seen.insert(r.qdrant_url.clone()) {
-                    to_check.push(r);
-                }
+                add(r.qdrant_url, r.qdrant_api_key, r.store);
             }
         }
     }
 
-    let mut results: Vec<(String, Vec<(CollectionInfo, CollectionGenesis)>)> = Vec::new();
+    // (url, configured store name, its collections)
+    type Listed = (
+        String,
+        Option<String>,
+        Vec<(CollectionInfo, CollectionGenesis)>,
+    );
+    let mut results: Vec<Listed> = Vec::new();
 
-    let mut unreachable_backends: Vec<(String, String)> = Vec::new();
+    let mut unreachable_backends: Vec<(String, Option<String>, String)> = Vec::new();
 
-    for resolution in to_check {
-        let services = vecdb_core::CoreServices::from_config(
-            config,
-            file_detector.clone(),
-            parser_factory.clone(),
-        );
-        let core = vecdb_core::Core::new(&resolution, services).await?;
-
+    for target in targets {
         // A backend that cannot be reached is recorded, never swallowed.
         //
         // This previously warned on stderr for human output and said nothing at
@@ -69,7 +82,7 @@ pub async fn run(
         // Qdrant was therefore indistinguishable from an empty one: the caller
         // reads "no collections", concludes the database is empty, and stops.
         // That is the most expensive wrong answer this command can give.
-        match core.list_collections_with_genesis().await {
+        match vecdb_core::list_store_collections(&target.url, target.api_key.clone()).await {
             Ok(cols) => {
                 // `vecdb list` lists vecdb's collections, and nothing else.
                 //
@@ -80,14 +93,20 @@ pub async fn run(
                 // ownership check. Listing them a second time here just puts
                 // another tool's data in vecdb's inventory.
                 let mine: Vec<_> = cols.into_iter().filter(|(_, g)| g.is_vecdb()).collect();
-                results.push((resolution.qdrant_url, mine));
+                results.push((target.url, target.store, mine));
             }
             Err(e) => {
+                // One readable line, not the transport's error chain. A
+                // configured local Qdrant that is simply switched off is
+                // normal — some users never run one, others only sometimes —
+                // and a `tonic::transport::Error(… ConnectError …)` dump read
+                // as a crash (operator, 2026-314). The raw error is kept in
+                // `--json` output (`error`) for anything that needs it.
                 eprintln!(
-                    "Warning: Failed to list collections for {}: {}",
-                    resolution.qdrant_url, e
+                    "Warning: {}",
+                    unreachable_message(&target.url, target.store.as_deref(), &e.to_string())
                 );
-                unreachable_backends.push((resolution.qdrant_url, e.to_string()));
+                unreachable_backends.push((target.url, target.store, e.to_string()));
             }
         }
     }
@@ -132,21 +151,26 @@ pub async fn run(
 
             if profile_name.is_some() {
                 match results.first() {
-                    Some((_, cols)) => serde_json::to_writer(&mut out, &encode(cols))?,
+                    Some((_, _, cols)) => serde_json::to_writer(&mut out, &encode(cols))?,
                     None => serde_json::to_writer(&mut out, &Vec::<serde_json::Value>::new())?,
                 }
             } else {
                 let mut all_cols = HashMap::new();
-                for (url, cols) in &results {
+                for (url, _, cols) in &results {
                     all_cols.insert(url.clone(), encode(cols));
                 }
                 // Unreachable backends appear as an explicit error entry rather
                 // than as a missing key, so "this backend is down" cannot be
                 // read as "this backend has no collections".
-                for (url, err) in &unreachable_backends {
+                for (url, store, err) in &unreachable_backends {
                     all_cols.insert(
                         url.clone(),
-                        vec![serde_json::json!({ "error": err, "unreachable": true })],
+                        vec![serde_json::json!({
+                            "error": err,
+                            "unreachable": true,
+                            "store": store,
+                            "reason": Unreachable::classify(err).as_str(),
+                        })],
                     );
                 }
                 serde_json::to_writer(&mut out, &all_cols)?;
@@ -162,17 +186,19 @@ pub async fn run(
                         out,
                         "No backend could be reached, so nothing could be listed."
                     )?;
-                    for (url, err) in &unreachable_backends {
-                        writeln!(out, "  {url}: {err}")?;
+                    for (url, store, err) in &unreachable_backends {
+                        writeln!(out, "  {}", unreachable_message(url, store.as_deref(), err))?;
                     }
                 }
             } else {
-                for (url, collections) in results {
-                    let is_local = url.contains("localhost")
-                        || url.contains("127.0.0.1")
-                        || url.contains("0.0.0.0");
-                    let location_tag = if is_local { "Local" } else { "Remote" };
-                    writeln!(out, "\nBackend: {} ({})", url, location_tag)?;
+                for (url, store, collections) in results {
+                    // Named by its `[store.*]` entry, as configured. This said
+                    // "Local"/"Remote" by matching `localhost` in the URL — a
+                    // guess that called every LAN store "Remote" (2026-314).
+                    match &store {
+                        Some(name) => writeln!(out, "\nBackend: {url} (store '{name}')")?,
+                        None => writeln!(out, "\nBackend: {url} (inline qdrant_url)")?,
+                    }
 
                     if collections.is_empty() {
                         writeln!(out, "  No collections found.")?;
@@ -271,11 +297,124 @@ pub async fn run(
             "could not reach any configured backend ({})",
             unreachable_backends
                 .iter()
-                .map(|(url, _)| url.as_str())
+                .map(|(url, _, _)| url.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
         );
     }
 
     Ok(())
+}
+
+/// Why a backend could not be listed, as far as the error says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unreachable {
+    /// Nothing is listening: the Qdrant is not running (or the port is wrong).
+    Refused,
+    /// The host name does not resolve.
+    Dns,
+    /// The host did not answer in time.
+    Timeout,
+    /// Connected, but the request failed — reported as-is.
+    Other,
+}
+
+impl Unreachable {
+    /// Read from the error text: the transport error is a nested chain
+    /// (`tonic::transport::Error(Transport, ConnectError(…))`) with no stable
+    /// type reachable through `anyhow`, but its words are stable.
+    fn classify(err: &str) -> Self {
+        let e = err.to_ascii_lowercase();
+        if e.contains("connection refused") {
+            Self::Refused
+        } else if e.contains("dns error") || e.contains("failed to lookup address") {
+            Self::Dns
+        } else if e.contains("timed out") || e.contains("deadline has elapsed") {
+            Self::Timeout
+        } else {
+            Self::Other
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Refused => "connection_refused",
+            Self::Dns => "dns",
+            Self::Timeout => "timeout",
+            Self::Other => "error",
+        }
+    }
+}
+
+/// One Qdrant to list: its URL, its key, and the `[store.*]` name that
+/// declares it (`None` for an inline `qdrant_url`).
+struct Target {
+    url: String,
+    api_key: Option<String>,
+    store: Option<String>,
+}
+
+/// `localhost:6334` from `http://localhost:6334/`.
+fn host_port(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    rest.split('/').next().unwrap_or(rest)
+}
+
+/// The one-line, human account of an unreachable store:
+/// `Could not connect to store 'local' (localhost:6334): connection refused — is it running? Its collections are not listed.`
+///
+/// Named by its `[store.*]` entry — the name the user gave it in config — not
+/// by guessing "local" or "remote" from the URL, which says nothing about a
+/// LAN host, an alias, or `::1`. An inline `qdrant_url` has no name and says
+/// so.
+fn unreachable_message(url: &str, store: Option<&str>, err: &str) -> String {
+    let at = host_port(url);
+    let which = match store {
+        Some(name) => format!("store '{name}' ({at})"),
+        None => format!("the Qdrant at {at} (inline qdrant_url)"),
+    };
+    let why = match Unreachable::classify(err) {
+        Unreachable::Refused => "connection refused — is it running?",
+        Unreachable::Dns => "the host name does not resolve",
+        Unreachable::Timeout => "no answer in time",
+        Unreachable::Other => return format!("Could not list collections on {which}: {err}"),
+    };
+    format!("Could not connect to {which}: {why} Its collections are not listed.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// REGRESSION (operator, 2026-314): a switched-off Qdrant printed the whole
+    /// tonic transport error chain. It must read as one line naming the store
+    /// as configured, its host and port, and the likely cause.
+    #[test]
+    fn refused_connection_is_one_readable_line_naming_the_store() {
+        let err = "Error in the response: Internal error Failed to connect to http://localhost:6334/: \
+                   tonic::transport::Error(Transport, ConnectError(ConnectError(\"tcp connect error\", \
+                   127.0.0.1:6334, Os { code: 111, kind: ConnectionRefused, message: \"Connection refused\" }))) \
+                   MetadataMap { headers: {} }";
+        let msg = unreachable_message("http://localhost:6334", Some("local"), err);
+        assert_eq!(
+            msg,
+            "Could not connect to store 'local' (localhost:6334): connection refused — is it running? Its collections are not listed."
+        );
+        assert!(!msg.contains("tonic"));
+        assert_eq!(Unreachable::classify(err).as_str(), "connection_refused");
+    }
+
+    #[test]
+    fn unnamed_stores_and_other_causes() {
+        let url = "http://qdrant.example.com:6334/";
+        assert!(unreachable_message(url, None, "dns error: failed to lookup address information")
+            .starts_with("Could not connect to the Qdrant at qdrant.example.com:6334 (inline qdrant_url): the host name does not resolve"));
+        assert!(unreachable_message(url, Some("lab"), "operation timed out")
+            .contains("store 'lab' (qdrant.example.com:6334): no answer in time"));
+        // An error we cannot classify is reported, never hidden.
+        assert!(
+            unreachable_message(url, Some("lab"), "collection quota exceeded")
+                .ends_with("collection quota exceeded")
+        );
+    }
 }

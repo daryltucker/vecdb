@@ -1,3 +1,15 @@
+/// Whether `text` carries any meaning worth embedding or keeping as an element:
+/// at least one character that is neither whitespace nor ASCII punctuation.
+///
+/// One definition, shared: vecq's coverage module uses it to decide whether a
+/// wrapper's leftover text (`#ifndef GUARD_H` yes, `};` no) becomes an element,
+/// and vecdb's chunker uses it to decide whether a container frame becomes a
+/// chunk.
+pub fn has_meaning(text: &str) -> bool {
+    text.chars()
+        .any(|c| !c.is_whitespace() && !c.is_ascii_punctuation())
+}
+
 /// Stitches two text fragments by finding the maximum overlapping suffix of `base`
 /// that matches the prefix of `extension`.
 ///
@@ -34,6 +46,15 @@ pub fn stitch_text(base: &str, extension: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn has_meaning_ignores_whitespace_and_punctuation() {
+        assert!(has_meaning("#ifndef GUARD_H"));
+        assert!(has_meaning("impl Foo {"));
+        assert!(!has_meaning("};"));
+        assert!(!has_meaning("  \n\t ////// "));
+        assert!(!has_meaning(""));
+    }
 
     #[test]
     fn test_stitch_text() {

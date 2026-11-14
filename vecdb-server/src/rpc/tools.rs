@@ -455,6 +455,31 @@ async fn handle_ingest_path(
             data: None,
         })?;
 
+    // Load `.vecdbrc` for per-file routing and metadata.
+    // The MCP server previously hardcoded `vecdbrc_routes: None`, which meant
+    // MCP ingests ignored `.vecdbrc` entirely. Now we discover it from the
+    // ingest path and pass routes + metadata through.
+    let vecdbrc = vecdb_core::vecdbrc::VecdbRc::discover(std::path::Path::new(&args.path))
+        .ok()
+        .flatten();
+    let vecdbrc_routes = vecdbrc.as_ref().map(|(_, rc)| rc.routes.clone());
+    let vecdbrc_root = vecdbrc.as_ref().and_then(|(rc_path, _)| {
+        vecdb_core::vecdbrc::VecdbRc::project_root(rc_path).map(|p| p.to_path_buf())
+    });
+    let route_metadata: Option<
+        std::collections::HashMap<String, std::collections::BTreeMap<String, String>>,
+    > = vecdbrc.as_ref().map(|(_, rc)| {
+        rc.routes
+            .iter()
+            .filter_map(|route| {
+                route
+                    .metadata
+                    .as_ref()
+                    .map(|m| (route.collection.clone(), m.clone()))
+            })
+            .collect()
+    });
+
     // Build the options here, as the CLI does, rather than through a convenience
     // wrapper that fills in chunking for us.
     //
@@ -484,16 +509,16 @@ async fn handle_ingest_path(
         strategy: config.ingestion.default_strategy.clone(),
         tokenizer: config.ingestion.tokenizer.clone(),
         respect_gitignore: config.ingestion.respect_gitignore,
-        ignore_vectorignore: args.ignore_vectorignore,
+        bypass_vectorignore: args.bypass_vectorignore,
         path_rules: config.ingestion.path_rules.clone(),
         max_concurrent_requests: args
             .concurrency
             .unwrap_or(config.ingestion.max_concurrent_requests),
         gpu_batch_size: args.gpu_concurrency.unwrap_or(2),
         quantization: resolution.quantization.clone(),
-        // MCP has no `.vecdbrc` routing, no allowlist and no dry run.
-        vecdbrc_routes: None,
-        vecdbrc_root: None,
+        vecdbrc_routes,
+        vecdbrc_root,
+        route_metadata,
         route_chunking: Default::default(),
         only_collection: None,
         route_default_collection: None,
@@ -502,7 +527,7 @@ async fn handle_ingest_path(
         git_ref: None,
         extensions: None,
         excludes: None,
-        dry_run: false,
+        dry_run: vecdb_core::ingestion::DryRun::Off,
         metadata: None,
         allow_quantization_delta: false,
     };
@@ -752,7 +777,7 @@ async fn handle_project_overview(
         max_depth: args.max_depth,
         ignore_patterns: args.ignore_patterns,
         respect_gitignore: args.respect_gitignore.unwrap_or(false),
-        ignore_vectorignore: args.ignore_vectorignore.unwrap_or(false),
+        bypass_vectorignore: args.bypass_vectorignore.unwrap_or(false),
         skip_hidden: args.skip_hidden.unwrap_or(true),
     };
 

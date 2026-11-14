@@ -17,12 +17,21 @@ use vecq::{available_output_formats, supported_file_types, FileType, SchemaRegis
 #[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "jq for source code - convert documents to queryable JSON")]
 #[command(long_about = r#"
-    vecq converts any structured document (source code, markdown, etc.) into queryable JSON
-and enables jq-like querying with natural language support.
+    Not sure of the query? `vecq suggest "functions that call execute"` writes one.
+
+vecq converts any structured document (source code, markdown, etc.) into queryable JSON
+and enables jq-like querying with natural language support. Reach for it before grepping
+for call sites, SQL or string literals, or before writing a script that parses source.
 
 EXAMPLES:
     # Query functions in a Rust file (use -- to separate query from files)
-    vecq src/main.rs -- '.functions[] | select(.visibility == "pub")'
+    vecq src/main.rs -- '.functions[] | select(.attributes.is_public) | .attributes.signature'
+
+    # Every call site and import of a name, across a tree (file:line scope)
+    vecq refs sqlite3.connect src/
+
+    # Every SQL string passed to an execute() call
+    vecq -R src -q '[.. | .calls? // empty | .[] | select(.callee|endswith("execute")) | .args[0].value]'
 
     # Convert file to JSON without querying
     vecq --convert README.md
@@ -36,9 +45,9 @@ EXAMPLES:
     # Pipeline with Unix tools
     find . -name "*.rs" | xargs vecq --grep-format | grep "pub fn"
 
-SUPPORTED FILE TYPES:
-    Rust (.rs), Python (.py), Markdown (.md), C (.c, .h),
-    C++ (.cpp, .hpp), CUDA (.cu), Go (.go), Bash (.sh)
+SUPPORTED FILE TYPES (`vecq --list-types` for every extension):
+    Rust, Python, Go, C, C++, CUDA, Bash — with calls[] and strings[] per scope
+    Markdown, JSON, TOML, YAML, HTML, Text
 
 OUTPUT FORMATS:
     json (default), grep, human
@@ -147,6 +156,18 @@ pub struct Args {
     #[arg(short = 'C', long, default_value = "0")]
     pub context_lines: usize,
 
+    /// Add each element's exact source span and owned trivia as
+    /// `"source": {"start", "end", "leading", "trailing"}` (byte offsets,
+    /// `end` exclusive). For tools that edit files by element.
+    #[arg(long = "source-info")]
+    pub source_info: bool,
+
+    /// Leave every element's `content` out: names, signatures, lines, calls
+    /// and strings only. Function bodies are most of the output when a query
+    /// wants signatures. (`-C` is context lines, so this has no short form.)
+    #[arg(long = "no-content")]
+    pub no_content: bool,
+
     /// Output raw strings, not JSON texts
     #[arg(short = 'r', long = "raw-output")]
     pub raw_output: bool,
@@ -207,6 +228,28 @@ pub enum Commands {
     Elements,
     /// Analyze a directory and produce a structural graph (files, modules, symbols)
     Map(MapArgs),
+    /// Every call site and import of a symbol, with file, span and enclosing scope
+    Refs(RefsArgs),
+}
+
+/// Arguments for `vecq refs`
+#[derive(Parser, Debug, Clone)]
+pub struct RefsArgs {
+    /// The name to find, dotted as written: `alpha`, `sqlite3.connect`,
+    /// `crate::db::open`. Matches a reference whose path ends or begins with
+    /// it, by name — not resolved by type.
+    #[arg(value_name = "SYMBOL")]
+    pub symbol: String,
+
+    /// Files or directories to search (directories recursively, honouring
+    /// .vectorignore). Default: the current directory.
+    #[arg(value_name = "PATH")]
+    pub paths: Vec<PathBuf>,
+
+    /// Emit JSON: `{symbol, references: [{file, kind, name, line, line_end,
+    /// start, end, scope}], files_searched, failed}`
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Output format for `vecq map`
@@ -214,9 +257,9 @@ pub enum Commands {
 pub enum MapOutputFormat {
     /// Mermaid diagram (default)
     Mermaid,
-    /// Full JGF v2 JSON graph
+    /// Full JGF v2 JSON graph: every declaration (functions, impls, enums, traits …)
     Json,
-    /// Pruned architectural graph (files, modules, structs only)
+    /// Pruned architectural graph (files, modules, structs, classes, interfaces only)
     Graph,
     /// Human-readable summary
     Human,
@@ -263,6 +306,8 @@ pub struct ParseOptions {
     pub max_depth: Option<usize>,
     pub enable_usages: bool,
     pub raw_json: bool,
+    pub source_info: bool,
+    pub no_content: bool,
 }
 
 impl From<&Args> for ParseOptions {
@@ -275,6 +320,8 @@ impl From<&Args> for ParseOptions {
             max_depth: args.depth,
             enable_usages: args.enable_usages,
             raw_json: args.raw_json,
+            source_info: args.source_info,
+            no_content: args.no_content,
         }
     }
 }

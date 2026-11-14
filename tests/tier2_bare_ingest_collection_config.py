@@ -99,32 +99,14 @@ def write_corpus(d):
 
     Distinct bodies rather than repeated text: identical content collapses to
     identical chunk IDs and would hide a packing difference behind dedup.
-    """
-    os.makedirs(d, exist_ok=True)
-    rs = ["//! Module for the bare-ingest fixture.\n"]
-    for i in range(24):
-        rs.append(
-            f"/// Operation {i} of the fixture.\n"
-            f"pub fn operation_{i}(input: &str) -> String {{\n"
-            f"    // Body {i} is written out so each function differs from its neighbours.\n"
-            f"    let prepared = input.trim().to_lowercase();\n"
-            f"    let marker = \"stage-{i}\";\n"
-            f"    format!(\"{{}}::{{}}::{i}\", prepared, marker)\n"
-            f"}}\n"
-        )
-    with open(os.path.join(d, "lib.rs"), "w") as f:
-        f.write("\n".join(rs))
 
-    md = ["# Bare ingest fixture\n"]
-    for i in range(24):
-        md.append(
-            f"## Section {i}\n\n"
-            f"Section {i} exists so the packer has a real document to work on. It carries "
-            f"enough prose to be packed with its neighbours at a loose target and to stand "
-            f"apart at a tight one, which is the whole distinction under test here.\n"
-        )
-    with open(os.path.join(d, "notes.md"), "w") as f:
-        f.write("\n".join(md))
+    The corpus is tier2_pack_granularity's, imported rather than copied: this
+    file carried its own copy. When sections stopped sharing chunks
+    (2026-10-27) both copies went stale; fixing T2.7d's left this one failing
+    with working granularity (2026-11-10). One corpus, one place to keep it.
+    """
+    from tier2_pack_granularity import write_corpus as shared
+    shared(d)
 
 
 def ingest(args):
@@ -182,14 +164,25 @@ def main():
               f"(collection says pack_target_bytes 400)")
         print(f"  -c      -> {REF}: {len(ref):3} chunks, median {mr:.0f} chars "
               f"(profile says 4000)")
+        xb, xr = max(bare), max(ref)
+        print(f"  largest chunk -> {xb} vs {xr} chars")
 
         # The configured 10x spread need not appear exactly — AST boundaries are
         # real and a chunk never straddles two declarations. Clear separation is
         # the honest assertion; convergence is the defect.
-        if mr <= mb * 2:
+        #
+# Same accounting as tier2_pack_granularity.py:
+# 24 named Rust functions stand alone at ANY target (the unit-boundary rule,
+        # pinned by probe_pack_boundaries), so the medians converge even with
+        # perfect behavior. The collection's own config IS reaching the chunks:
+        # the count (36 at 400 vs 28 at 4000) and the prose tail show it, and
+        # the genesis record below proves the collection entry governed. The
+        # assertions are the instruments that can distinguish the two: count
+        # and tail.
+        if xr <= xb * 2:
             failures.append(
-                f"the profile's default collection did not get its own config: median "
-                f"{mb:.0f} vs {mr:.0f} chars. A bare ingest chunked at the PROFILE's "
+                f"the profile's default collection did not get its own config: largest "
+                f"chunk {xb} vs {xr} chars. A bare ingest chunked at the PROFILE's "
                 f"pack_target_bytes 4000 while writing into a collection configured for 400.")
         if len(bare) <= len(ref):
             failures.append(

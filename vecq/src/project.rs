@@ -28,7 +28,7 @@ pub struct ProjectOverviewArgs {
     pub ignore_patterns: Vec<String>,
 
     /// Whether to respect .gitignore files (default: false).
-    /// `.vectorignore` is always respected unless `ignore_vectorignore` is true.
+    /// `.vectorignore` is always respected unless `bypass_vectorignore` is true.
     #[serde(default = "default_respect_gitignore")]
     pub respect_gitignore: bool,
 
@@ -36,7 +36,7 @@ pub struct ProjectOverviewArgs {
     /// This is the vecdb standard pattern: default false = respect the ignore file,
     /// set true to opt out.
     #[serde(default)]
-    pub ignore_vectorignore: bool,
+    pub bypass_vectorignore: bool,
 
     /// Whether to skip hidden files/directories (default: true).
     #[serde(default = "default_skip_hidden")]
@@ -64,8 +64,15 @@ pub struct ProjectOverview {
     pub files_skipped: usize,
 
     /// Architectural JGF v2 graph: files, modules, structs, classes, interfaces only.
-    /// Pruned from the full symbol graph for readability. Use `code_query` for full detail.
+    /// Pruned from `graph_full` for readability. Use `code_query` for full detail.
     pub graph: serde_json::Value,
+
+    /// The full JGF v2 symbol graph the architectural graph is pruned from: every
+    /// declaration the parsers emit (functions, implementations, enums, traits …)
+    /// as a node with a `child-of` edge to its file. This is what `vecq map -o json`
+    /// prints; `-o graph` prints `graph`.
+    #[serde(default)]
+    pub graph_full: serde_json::Value,
 
     /// Mermaid diagram generated from the architectural graph.
     pub mermaid: String,
@@ -96,8 +103,8 @@ pub async fn project_overview(args: ProjectOverviewArgs) -> VecqResult<ProjectOv
     builder.git_global(args.respect_gitignore);
 
     // .vectorignore is the primary noise filter — respected by default.
-    // Use ignore_vectorignore: true to bypass (agent opt-out pattern).
-    if !args.ignore_vectorignore {
+    // Use bypass_vectorignore: true to bypass (agent opt-out pattern).
+    if !args.bypass_vectorignore {
         builder.add_custom_ignore_filename(".vectorignore");
     }
 
@@ -174,18 +181,27 @@ pub async fn project_overview(args: ProjectOverviewArgs) -> VecqResult<ProjectOv
             files_analyzed: 0,
             files_skipped,
             graph: serde_json::json!({ "graphs": [] }),
+            graph_full: serde_json::json!({ "graphs": [] }),
             mermaid: String::new(),
         });
     }
 
-    // Apply src_to_architecture (= src_to_graph | graph_to_architecture):
-    // prunes down to files, modules, structs, classes, interfaces.
+    // Two graphs from one pass: `src_to_graph` is the full symbol graph (every
+    // declaration kind a parser emits), `graph_to_architecture` prunes it to
+    // files, modules, structs, classes, interfaces. Both are returned so a
+    // caller asking for "full" is not handed the pruned one.
     let input = serde_json::Value::Array(file_jsons);
-    let arch_results =
-        query_json(&input, "src_to_architecture").map_err(|e| VecqError::ConfigError {
-            message: format!("src_to_architecture failed: {e}"),
-        })?;
-    let graph = arch_results
+    let graph_full = query_json(&input, "src_to_graph")
+        .map_err(|e| VecqError::ConfigError {
+            message: format!("src_to_graph failed: {e}"),
+        })?
+        .into_iter()
+        .next()
+        .unwrap_or(serde_json::json!({ "graphs": [] }));
+    let graph = query_json(&graph_full, "graph_to_architecture")
+        .map_err(|e| VecqError::ConfigError {
+            message: format!("graph_to_architecture failed: {e}"),
+        })?
         .into_iter()
         .next()
         .unwrap_or(serde_json::json!({ "graphs": [] }));
@@ -202,6 +218,7 @@ pub async fn project_overview(args: ProjectOverviewArgs) -> VecqResult<ProjectOv
         files_analyzed,
         files_skipped,
         graph,
+        graph_full,
         mermaid,
     })
 }

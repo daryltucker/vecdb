@@ -82,8 +82,55 @@ def main():
             log(f"FAILURE: dry run changed the instance: {after ^ before}")
             sys.exit(1)
         log("  ok: created nothing")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
-        log("SUCCESS: dry run estimates chunks and writes nothing.")
+    routed_dry_run()
+    log("SUCCESS: dry run estimates chunks and writes nothing.")
+
+
+ROUTED = "test_dry_run_routed_must_not_exist"
+
+
+def routed_dry_run():
+    """A dry run over a `.vecdbrc` that routes files elsewhere creates nothing.
+
+    2026-300: the run flushed its (always empty) buffer to each routed
+    collection on every routing switch, and the embedding worker's first act
+    for a new collection is to create it with a genesis point. The case above
+    has no `.vecdbrc`, so it could not see this.
+    """
+    tmp = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(tmp, ".vecdbrc"), "w") as f:
+            f.write(f'[default]\ncollection = "{COLLECTION}"\n\n'
+                    f'[[routes]]\nglob = "*.json"\ncollection = "{ROUTED}"\n')
+        # Alternate the destinations so the run switches collections.
+        for i in range(3):
+            with open(os.path.join(tmp, f"a{i}.md"), "w") as f:
+                f.write(f"# Doc {i}\n\nSome prose for document {i}.\n")
+            with open(os.path.join(tmp, f"b{i}.json"), "w") as f:
+                f.write(json.dumps({"id": i, "name": f"record {i}"}) + "\n")
+
+        before = collections()
+        for name in (COLLECTION, ROUTED):
+            assert name not in before, f"test collection {name} leaked from a previous run"
+
+        env = {**os.environ, "VECDB_CONFIG": CONFIG}
+        for extra in ([], ["--show-chunks"]):
+            proc = subprocess.run(
+                [BINARY, "ingest", tmp, "--dry-run", *extra],
+                capture_output=True, text=True, env=env,
+            )
+            if proc.returncode != 0:
+                log(f"FAILURE: routed dry run {extra} exited {proc.returncode}\n{proc.stderr[-600:]}")
+                sys.exit(1)
+
+        created = collections() - before
+        if created:
+            log(f"FAILURE: routed dry run CREATED {sorted(created)}.")
+            sys.exit(1)
+        log("  ok: routed dry run created nothing")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

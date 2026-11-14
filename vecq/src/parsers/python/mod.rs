@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use rustpython_parser::{ast, Parse};
 use std::path::PathBuf;
 
+pub(crate) mod refs;
 pub mod usage;
 pub mod visitor;
 
@@ -164,6 +165,18 @@ impl PythonParser {
     }
 }
 
+/// Byte spans of every `#` comment, from rustpython's own tokenizer — the
+/// AST drops comments, the lexer does not. A real tokenizer, so a `#` inside
+/// a string is never mistaken for one.
+fn comment_spans(content: &str) -> Vec<(usize, usize)> {
+    use rustpython_parser::{lexer::lex, Mode, Tok};
+    lex(content, Mode::Module)
+        .filter_map(Result::ok)
+        .filter(|(tok, _)| matches!(tok, Tok::Comment(_)))
+        .map(|(_, r)| (r.start().to_usize(), r.end().to_usize()))
+        .collect()
+}
+
 /// `str::floor_char_boundary` is still unstable, so spell it out.
 fn floor_char_boundary(s: &str, mut index: usize) -> usize {
     if index >= s.len() {
@@ -204,11 +217,16 @@ impl Parser for PythonParser {
 
     async fn parse(&self, content: &str) -> VecqResult<ParsedDocument> {
         // Parse Python AST
+        // this was `line 0` in `<string>`, with the only real
+        // location a byte offset inside the message (rustpython's `Display`
+        // appends "at byte offset N"). The error carries the offset as a
+        // field: report its 1-indexed line, keep the message without the
+        // offset, and leave the file empty for the caller that has the path.
         let ast = ast::Suite::parse(content, "<string>").map_err(|e| {
             VecqError::parse_error(
-                PathBuf::from("<string>"),
-                0,
-                format!("Python parsing failed: {}", e),
+                PathBuf::new(),
+                self.byte_offset_to_line_number(content, u32::from(e.offset) as usize),
+                format!("Python parsing failed: {}", e.error),
                 None::<std::io::Error>,
             )
         })?;
@@ -220,6 +238,33 @@ impl Parser for PythonParser {
         elements.extend(self.extract_classes(content, &ast)?);
         elements.extend(self.extract_imports(content, &ast)?);
         elements.extend(self.extract_variables(content, &ast)?);
+        // capture module-level executable
+        // statements (incl. `if __name__ == "__main__":`) instead of dropping
+        // them — one `.blocks[]` element each (see
+        // `extract_module_statements`). Runs last so it never interferes with
+        // the dedicated extractors' ordering.
+        elements.extend(self.extract_module_statements(content, &ast)?);
+
+        // Lossless: every element leaves with its exact span,
+        // and every byte between elements — blank lines, and the `#` comments
+        // rustpython's AST does not carry — is trivia owned by one of them, by
+        // the shared rule (`parsers::ownership`): a comment on its own line
+        // describes what follows, at the top level and inside a class alike.
+        // Before this every `#` comment was dropped.
+        // Usage elements are added after, so they never own trivia.
+        let lines = vecdb_common::LineCounter::new(content);
+        for element in elements.iter_mut() {
+            element.stamp_source_span(content, &lines);
+            element.tighten_span(content);
+        }
+        let comments = comment_spans(content);
+        super::ownership::assign_trivia(&mut elements, content, &lines, &comments, |_| true);
+        for element in elements.iter_mut() {
+            super::ownership::assign_nested_trivia(element, content, &comments);
+        }
+        // Calls and strings per scope, by span — so before the
+        // usage elements, which are not scopes and carry no spans.
+        let module = super::scopes::assign(&mut elements, refs::extract(content, &ast));
 
         // Extract usage/reference elements if enabled
         if self.enable_usages {
@@ -231,7 +276,9 @@ impl Parser for PythonParser {
             .with_line_count(content);
         metadata.file_type = FileType::Python;
 
-        Ok(ParsedDocument::new(metadata).add_elements(elements))
+        let mut doc = ParsedDocument::new(metadata).add_elements(elements);
+        doc.module = Some(module);
+        Ok(doc)
     }
 }
 
@@ -239,6 +286,50 @@ impl Parser for PythonParser {
 mod tests {
     use super::*;
     use crate::types::ElementType;
+
+    /// REGRESSION: `#` comments were
+    /// dropped — rustpython's AST has none. They are owned trivia now: an
+    /// own-line comment leads what follows it, at top level and inside a class
+    /// (the method owns it, not the class frame), and the file rebuilds byte
+    /// for byte.
+    #[tokio::test]
+    async fn comments_are_owned_and_the_file_reconstructs() {
+        let src = "# about alpha\ndef alpha():\n    return 1  # one\n\n\nclass C:\n    # about m\n    def m(self):\n        pass\n\nX = 5\n";
+        let doc = PythonParser::new().parse(src).await.unwrap();
+        let named = |n: &str| {
+            doc.elements
+                .iter()
+                .find(|e| e.name.as_deref() == Some(n))
+                .unwrap()
+        };
+        assert_eq!(named("alpha").leading_trivia(), "# about alpha\n");
+        let class = named("C");
+        let m = class
+            .children
+            .iter()
+            .find(|c| c.name.as_deref() == Some("m"))
+            .unwrap();
+        assert!(
+            m.leading_trivia().contains("# about m"),
+            "{:?}",
+            m.leading_trivia()
+        );
+        assert!(!class.frame(src).unwrap().contains("# about m"));
+        crate::parsers::ownership::assert_reconstructs("py", &doc.elements, src, |_| true);
+        for (name, src) in [
+            (
+                "complex.py",
+                include_str!("../../../tests/fixtures/python/complex.py"),
+            ),
+            (
+                "module_statements.py",
+                include_str!("../../../tests/fixtures/python/module_statements.py"),
+            ),
+        ] {
+            let doc = PythonParser::new().parse(src).await.unwrap();
+            crate::parsers::ownership::assert_reconstructs(name, &doc.elements, src, |_| true);
+        }
+    }
 
     #[tokio::test]
     async fn test_parse_function() {

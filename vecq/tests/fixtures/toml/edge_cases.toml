@@ -1,0 +1,33 @@
+# Edge cases for the source-span contract: every element
+# spanned, every comment owned, the file rebuilt byte for byte.
+title = "edge"   # same-line comment
+"quoted key" = 'literal # not a comment'
+
+# describes [package]
+[package]
+name = "x"
+metadata.docs.rs = true        # a dotted key, an entry of [package]
+metadata.badge = "ok"
+
+[package.nested]               # a nested header: its own section
+deep = [
+  1, # inside a multi-line array
+  2,
+]
+
+[implicit.child]               # no [implicit] header anywhere
+value = { inline = true, n = 3 }
+
+[[bin]]
+name = "first"
+
+# between two array-of-tables entries
+[[bin]]
+name = "second"
+path = """
+multi-line
+# not a comment
+"""
+
+[empty]
+# a section with no entries, only a comment

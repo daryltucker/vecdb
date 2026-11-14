@@ -67,15 +67,10 @@ impl JsonParser {
         match value {
             serde_json::Value::Object(map) => {
                 element.element_type = ElementType::Block;
-                let mut children = Vec::new();
-                for (k, v) in map {
-                    children.push(Self::process_value(
-                        k.clone(),
-                        v,
-                        span.and_then(|s| s.field(k)),
-                        lines,
-                    ));
-                }
+                let children = Self::members(map, span)
+                    .into_iter()
+                    .map(|(k, v, s)| Self::process_value(k, v, s, lines))
+                    .collect();
                 element = element.with_children(children);
             }
             serde_json::Value::Array(arr) => {
@@ -96,13 +91,48 @@ impl JsonParser {
             }
         }
 
-        element.set_attributes(ElementAttributes::Json(JsonAttributes {
-            other: {
-                let mut other = HashMap::new();
-                other.insert("value".to_string(), value.clone());
-                other
-            },
-        }))
+        let mut other = HashMap::new();
+        other.insert("value".to_string(), value.clone());
+        let mut element = element.set_attributes(ElementAttributes::Json(JsonAttributes { other }));
+        // The node as written, behind the AST in `SourceInfo`. `content` above
+        // is a re-serialisation — keys sorted, comments gone, numbers
+        // reformatted; `vecq::parse_file` replaces it with the span's text
+        // (a pair's content is `"b": {"c": 2}` as written).
+        // The re-serialised VALUE stays queryable as `attributes.value`.
+        //
+        // Trivia — the comments that belong to the node,
+        // the whitespace and separators around it, so the file reconstructs —
+        // is assigned once the whole tree is built (`parse` below).
+        if let Some(s) = span {
+            element.set_source_span(s.start, s.end);
+        }
+        element
+    }
+
+    /// An object's members in DOCUMENT order when spans are known — serde's map
+    /// is alphabetical — each with its span. Keys the scan did not place keep
+    /// serde's order after them.
+    fn members<'a>(
+        map: &'a serde_json::Map<String, serde_json::Value>,
+        span: Option<&'a SpanNode>,
+    ) -> Vec<(String, &'a serde_json::Value, Option<&'a SpanNode>)> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        if let Some(s) = span {
+            for (k, child) in &s.fields {
+                if let Some(v) = map.get(k) {
+                    if seen.insert(k.as_str()) {
+                        out.push((k.clone(), v, Some(child)));
+                    }
+                }
+            }
+        }
+        for (k, v) in map {
+            if !seen.contains(k.as_str()) {
+                out.push((k.clone(), v, span.and_then(|s| s.field(k))));
+            }
+        }
+        out
     }
 }
 
@@ -165,21 +195,17 @@ impl Parser for JsonParser {
         let mut doc = ParsedDocument::new(metadata).with_source(content);
 
         // Byte spans recovered from the raw text; `None` if it did not scan
-        // cleanly, in which case every node falls back to 1..1 as before.
+        // cleanly, in which case nodes carry no span (and fail the contract
+        // gate honestly) rather than an invented one.
         let lines = LineCounter::new(content);
         let roots = json_spans::scan(content);
 
         for (root_idx, json_value) in json_values.into_iter().enumerate() {
             let root = roots.as_ref().and_then(|r| r.get(root_idx));
-            match json_value {
+            match &json_value {
                 serde_json::Value::Object(map) => {
-                    for (k, v) in map {
-                        doc.elements.push(Self::process_value(
-                            k.clone(),
-                            &v,
-                            root.and_then(|s| s.field(&k)),
-                            &lines,
-                        ));
+                    for (k, v, s) in Self::members(map, root) {
+                        doc.elements.push(Self::process_value(k, v, s, &lines));
                     }
                 }
                 serde_json::Value::Array(arr) => {
@@ -200,6 +226,28 @@ impl Parser for JsonParser {
                         &lines,
                     ));
                 }
+            }
+        }
+
+        // Trivia, by the one shared rule (`parsers::ownership`), at every
+        // depth: comments, whitespace and separators each owned by one element,
+        // so the file reconstructs byte for byte. A flattened
+        // root container is never an element itself, so its brackets and its
+        // own comments are owned by its first and last members — which is what
+        // `adopt_root_comments` did for the comments alone.
+        // Ownership of a comment is unchanged: own-line describes what follows,
+        // same-line the value before it, nothing-after the last member.
+        if let Some(roots) = &roots {
+            let comments = json_spans::all_comments(roots, content.as_bytes());
+            super::ownership::assign_trivia(&mut doc.elements, content, &lines, &comments, |_| {
+                true
+            });
+            for element in doc.elements.iter_mut() {
+                super::ownership::assign_nested_trivia(element, content, &comments);
+                // `content` (the pair as written) and lines read off the span here,
+                // not only in `vecq::parse_file`: a bare `Parser::parse` result must
+                // state what its spans say too.
+                element.conform_to_span(content, &lines);
             }
         }
 

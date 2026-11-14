@@ -42,6 +42,7 @@ NOTE FOR REAL CLIENTS
 """
 
 import threading
+import paths  # noqa: F401  (pins the test Qdrant — see paths.py)
 
 
 def drain_stderr(proc):

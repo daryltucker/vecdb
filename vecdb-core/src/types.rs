@@ -462,8 +462,7 @@ pub fn build_revision() -> String {
 ///
 /// A comparison key since 2026-256: `ChunkingIdentity::delta` grades a
 /// difference and `ingestion::ensure_write_target` refuses a granularity
-/// change. Recording the fact is what made the gate possible; RFC-2026-238
-/// specified it.
+/// change. Recording the fact is what made the gate possible.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkingIdentity {
     /// Counted in whatever `tokenizer` counts.
@@ -589,7 +588,7 @@ pub struct CollectionGenesis {
     pub dimension: Option<u64>,
     pub distance: Option<String>,
     /// `None` for collections created before this was recorded (≤ v1.1.0 at the
-    /// time of writing). Absence is itself informative — see RFC-2026-238.
+    /// time of writing). Absence is itself informative.
     pub chunking: Option<ChunkingIdentity>,
     pub created_at: Option<String>,
 }

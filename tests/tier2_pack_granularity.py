@@ -101,14 +101,20 @@ def write_corpus(d):
     with open(os.path.join(d, "lib.rs"), "w") as f:
         f.write("\n".join(rs))
 
+    # Six paragraphs per section (~1.1 KB). Since 2026-10-27 two sections never
+    # share a chunk (docs/specs/CHUNKING_STRATEGY.md), so granularity shows
+    # INSIDE a section: cut into paragraph runs at 400, whole at 4000. With one
+    # paragraph per section, as before, every section was one chunk at any
+    # target and this gate failed with working granularity (2026-11-10).
     md = ["# Granularity fixture\n"]
     for i in range(24):
-        md.append(
-            f"## Section {i}\n\n"
-            f"Section {i} exists so the packer has a real document to work on. It carries "
-            f"enough prose to be packed with its neighbours at a loose target and to stand "
-            f"apart at a tight one, which is the whole distinction under test here.\n"
+        paras = "\n".join(
+            f"Paragraph {p} of section {i} exists so the packer has a real document to "
+            f"work on. It carries enough prose to be packed with its neighbours at a loose "
+            f"target and to stand apart at a tight one, which is the distinction under test.\n"
+            for p in range(6)
         )
+        md.append(f"## Section {i}\n\n{paras}")
     with open(os.path.join(d, "notes.md"), "w") as f:
         f.write("\n".join(md))
 
@@ -139,15 +145,33 @@ def main():
         ms, ml = statistics.median(small), statistics.median(large)
         print(f"  pack_target 400  -> {len(small):3} chunks, median {ms:.0f} chars")
         print(f"  pack_target 4000 -> {len(large):3} chunks, median {ml:.0f} chars")
+        xs, xl = max(small), max(large)
+        print(f"  largest chunk     -> {xs} vs {xl} chars")
 
         # The configured 10x spread need not appear exactly — AST boundaries are
         # real and a chunk never straddles two declarations. A clear separation
         # is the honest assertion; equality is the defect.
-        if ml <= ms * 2:
+        #
+        # 2026-295 CORRECTION — the instrument here used to be the MEDIANS, and
+        # the medians cannot spread for a reason the docstring itself names:
+        # named units (functions, structs, ...) must never merge across
+        # declarations, a boundary rule pinned by the pack-granularity fix and
+        # probe_pack_boundaries.py. 24 singleton Rust functions therefore own
+        # the middle of the distribution at ANY target, and medians converge
+        # even with perfectly working granularity (measured 2026-295:
+        # prose responded — 12 chunks <=496 chars at 400, 4 chunks up to 1698
+        # at 4000 — while both medians stayed 243). The honest instruments are:
+        #   1. chunk COUNT (a tighter target must yield more; passes),
+        #   2. the TAIL (loose prose packs into chunks far larger than the
+        #      tight run's biggest named-unit chunk).
+        # 2026-11-10: "loose prose packs" now means within a section — sections
+        # stopped sharing chunks on 2026-10-27, so the corpus gives each section
+        # several paragraphs (see write_corpus).
+        if xl <= xs * 2:
             failures.append(
-                f"granularity did not reach the chunks: median {ms:.0f} vs {ml:.0f} chars for "
-                f"pack_target_bytes 400 vs 4000. Equal-ish medians mean the configured value "
-                f"is being ignored and some global default is chunking everything.")
+                f"granularity did not reach the chunks: largest chunk {xs} vs {xl} chars for "
+                f"pack_target_bytes 400 vs 4000. Named units may not straddle a chunk "
+                f"boundary, so prose must provide the tail instead — and it did not.")
         if len(small) <= len(large):
             failures.append(
                 f"a tighter target must yield MORE chunks: {len(small)} vs {len(large)}")
@@ -199,10 +223,19 @@ def main():
             mrs, mrl = statistics.median(rs), statistics.median(rl)
             print(f"  routed -> {SMALL}: {len(rs):3} chunks, median {mrs:.0f} chars")
             print(f"  routed -> {LARGE}: {len(rl):3} chunks, median {mrl:.0f} chars")
-            if mrl <= mrs * 2:
+            # Same 2026-295 correction as the direct legs: medians converge by
+            # named-unit design, so the route is judged by the instruments that
+            # CAN distinguish the destinations — chunk counts and the tail.
+            rxs, rxl = max(rs), max(rl)
+            print(f"  routed largest chunk -> {rxs} vs {rxl} chars")
+            if len(rs) <= len(rl):
+                failures.append(
+                    f"routed tight destination must yield MORE chunks than the loose one: "
+                    f"{len(rs)} vs {len(rl)}")
+            if rxl <= rxs * 2:
                 failures.append(
                     f"ONE run, two destinations, granularity did not follow the route: "
-                    f"median {mrs:.0f} vs {mrl:.0f} chars for pack_target_bytes 400 vs 4000. "
+                    f"largest chunk {rxs} vs {rxl} chars for pack_target_bytes 400 vs 4000. "
                     f"A run-level parser chunks every destination identically.")
 
         if failures:

@@ -38,7 +38,7 @@ vecq src/main.rs -q '.functions[]'
 ### Filtering by Attribute
 ```bash
 # Find only public functions
-vecq src/main.rs -q '.functions[] | select(.visibility == "pub")'
+vecq src/main.rs -q '.functions[] | select(.attributes.visibility == "pub")'
 ```
 
 ### Extraction (Raw Output)

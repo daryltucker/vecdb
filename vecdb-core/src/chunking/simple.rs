@@ -62,10 +62,26 @@ impl Chunker for FixedWidthChunker {
 
             // Try to split at last newline before max to avoid mid-line splits
             // We search in [start..end]
+            //
+            // Failing a newline, split after the last whitespace: one long
+            // line of prose (a JSON string value, a Markdown paragraph) used to
+            // be cut mid-word, so each part began and ended on a fragment like
+            // `y API stopped`. Only text with no whitespace
+            // at all in the window is cut at the byte limit.
             let split_point = if end < text.len() {
-                match text[start..end].rfind('\n') {
-                    Some(pos) => start + pos + 1, // +1 to include newline
-                    None => end,
+                let window = &text[start..end];
+                // `pos > 0`: a separator at the very start would yield a part
+                // holding nothing but that separator.
+                match window
+                    .rfind('\n')
+                    .filter(|&p| p > 0)
+                    .or_else(|| window.rfind(char::is_whitespace).filter(|&p| p > 0))
+                {
+                    Some(pos) => {
+                        // +1 char to keep the separator with this part
+                        start + pos + window[pos..].chars().next().map_or(1, char::len_utf8)
+                    }
+                    _ => end,
                 }
             } else {
                 end
@@ -142,5 +158,33 @@ mod tests {
                 chunk
             );
         }
+    }
+
+    /// REGRESSION: one long line of prose is cut between
+    /// words, never inside one. The oversize fixture's parts used to begin
+    /// `y API stopped being served`.
+    #[tokio::test]
+    async fn splits_prose_on_whitespace_not_mid_word() {
+        let chunker = FixedWidthChunker;
+        let text = "the networking API stopped being served ".repeat(40);
+        let params = ChunkParams {
+            target_chunk_size: 100,
+            max_chunk_bytes: Some(100),
+            chunk_overlap: 0,
+            tokenizer: "bytes".to_string(),
+            file_extension: None,
+        };
+
+        let result = chunker.chunk(&text, &params).await.unwrap();
+        assert!(result.len() > 1, "fixture must actually split");
+        let words = ["the", "networking", "API", "stopped", "being", "served"];
+        for part in &result {
+            assert!(part.content.len() <= 100);
+            for w in part.content.split_whitespace() {
+                assert!(words.contains(&w), "part cut mid-word: {:?}", part.content);
+            }
+        }
+        let joined: String = result.iter().map(|c| c.content.as_str()).collect();
+        assert_eq!(joined, text, "splitting must not drop or add bytes");
     }
 }

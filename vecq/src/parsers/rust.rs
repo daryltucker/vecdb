@@ -45,8 +45,7 @@ impl RustParser {
     /// attributes are its name, visibility and doc-comment.
     ///
     /// `enum`, `trait`, `type`, `const`, `static`, `union` and `macro_rules!`
-    /// all share this shape. They were absent from the declaration walker until
-    /// day 240 — see `BUG_RUST_DECLARATION_COVERAGE-2026-241` in the docs repo.
+    /// all share this shape. They were absent from the declaration walker until day 240.
     /// Kinds needing more than this (functions carry a signature, impls a trait
     /// and a type, modules a recursive body) keep their own arms.
     fn simple_declaration(
@@ -617,6 +616,49 @@ impl RustParser {
     }
 }
 
+/// Coverage spec: every kind tree-sitter-rust can produce at top level or in a
+/// declaration body, classified. `ts_coverage::complete` emits whatever the
+/// walker above did not; `tests/tier1_grammar_completeness` fails on any kind
+/// of the grammar missing here.
+pub(crate) const COVERAGE: crate::parsers::ts_coverage::Spec = {
+    use crate::parsers::ts_coverage::Kind::{Comment, Descend, Unit};
+    use ElementType as E;
+    crate::parsers::ts_coverage::Spec {
+        bodies: &["source_file", "declaration_list"],
+        kinds: &[
+            ("associated_type", Unit(E::TypeAlias)),
+            ("attribute_item", Unit(E::Decorator)),
+            ("block_comment", Comment),
+            ("const_item", Unit(E::Constant)),
+            ("doc_comment", Comment),
+            ("empty_statement", Unit(E::Block)),
+            ("enum_item", Unit(E::Enum)),
+            ("expression_statement", Unit(E::Block)),
+            ("extern_crate_declaration", Unit(E::Import)),
+            ("foreign_mod_item", Descend),
+            ("function_item", Unit(E::Function)),
+            ("function_signature_item", Unit(E::Function)),
+            ("impl_item", Unit(E::Implementation)),
+            ("inner_attribute_item", Unit(E::Decorator)),
+            ("inner_doc_comment_marker", Comment),
+            ("let_declaration", Unit(E::Variable)),
+            ("line_comment", Comment),
+            ("macro_definition", Unit(E::Macro)),
+            ("macro_invocation", Unit(E::Block)),
+            ("mod_item", Unit(E::Module)),
+            ("outer_doc_comment_marker", Comment),
+            ("shebang", Comment),
+            ("static_item", Unit(E::Variable)),
+            ("struct_item", Unit(E::Struct)),
+            ("trait_item", Unit(E::Trait)),
+            ("type_item", Unit(E::TypeAlias)),
+            ("union_item", Unit(E::Union)),
+            ("use_declaration", Unit(E::Import)),
+            ("declaration_list", Descend),
+        ],
+    }
+};
+
 #[async_trait]
 impl Parser for RustParser {
     async fn parse(&self, content: &str) -> VecqResult<ParsedDocument> {
@@ -645,13 +687,24 @@ impl Parser for RustParser {
         let source_bytes = content.as_bytes();
         let mut pending_comments = Vec::new();
 
-        let elements = self.process_nodes(root_node, source_bytes, &mut pending_comments);
+        let mut elements = self.process_nodes(root_node, source_bytes, &mut pending_comments);
+        let syntax_errors =
+            crate::parsers::ts_coverage::complete(&mut elements, root_node, content, &COVERAGE);
+        let module = crate::parsers::ts_refs::attach(
+            &mut elements,
+            root_node,
+            content,
+            &crate::parsers::ts_refs::RUST,
+        );
 
-        let metadata = DocumentMetadata::new(PathBuf::from("unknown"), content.len() as u64)
+        let mut metadata = DocumentMetadata::new(PathBuf::from("unknown"), content.len() as u64)
             .with_line_count(content)
             .with_file_type(crate::types::FileType::Rust);
+        metadata.syntax_errors = syntax_errors;
 
-        Ok(ParsedDocument::new(metadata).add_elements(elements))
+        let mut doc = ParsedDocument::new(metadata).add_elements(elements);
+        doc.module = Some(module);
+        Ok(doc)
     }
 
     fn file_extensions(&self) -> &[&str] {

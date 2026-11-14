@@ -28,6 +28,10 @@ jobs:
     name: Build Release
     runs-on: ${{ matrix.os }}
     strategy:
+      # The four targets are independent. Let each one finish so a failure on
+      # one shows every failure at once instead of cancelling three healthy
+      # builds; publish-release still needs all four.
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -53,49 +57,50 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
+        # Pinned, not `stable`, for the same reason ORT_CUDA_VERSION is pinned:
+        # a published binary is a function of the tag, not of whatever the
+        # runner had that week. Concretely: cargo 1.100 moved build-script
+        # output to `target/<profile>/build/<crate>/<hash>/out`, one level
+        # deeper than before, and ort-sys's copy-dylibs walks a fixed number of
+        # ancestors up from OUT_DIR to find the profile directory. On 1.100 it
+        # lands in `build/`, then panics creating `build/examples`, so no
+        # CUDA-provider target builds at all. 1.99.1 is the toolchain the
+        # release gate ran on. Move this only after a release gate on the new
+        # toolchain passes locally.
+        toolchain: 1.99.1
         targets: ${{ matrix.target }}
 
     - name: Install system dependencies
       if: matrix.os == 'ubuntu-latest'
       shell: bash
       run: |
+        # Only the cross toolchain, from the runner's own amd64 archive. No
+        # foreign architecture, no ports.ubuntu.com, no libssl-dev:
+        #
+        # - OpenSSL is built from source (`openssl = { features = ["vendored"] }`
+        #   in vecdb-core), so no target-arch libssl is needed on any target.
+        # - Adding arm64 as a foreign architecture made apt reconcile
+        #   Multi-Arch: same packages (gcc, binutils, libstdc++, libssl) across
+        #   two mirrors that are not in lockstep. When ports.ubuntu.com lags
+        #   the primary archive, the only solution apt finds is to DOWNGRADE
+        #   the runner's own x86 compilers, and `-y` without
+        #   `--allow-downgrades` refuses (exit 100). The release then depends on
+        #   two mirrors being in sync at the minute the tag is pushed.
         if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-          sudo dpkg --add-architecture arm64
-          
-          # Fix for Ubuntu 24.04 (Noble) which uses DEB822 format (.sources files)
-          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-            sudo sed -i 's/Types: deb/Types: deb\nArchitectures: amd64/' /etc/apt/sources.list.d/ubuntu.sources
-          fi
-          
-          # Fix for older Ubuntu formats (.list files)
-          if [ -f /etc/apt/sources.list ]; then
-            sudo sed -i 's/^deb /deb [arch=amd64] /g' /etc/apt/sources.list
-          fi
-
-          # Add ports.ubuntu.com for arm64
-          OS_CODENAME=$(lsb_release -sc)
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $OS_CODENAME main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64-ports.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $OS_CODENAME-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64-ports.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $OS_CODENAME-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64-ports.list
-          
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libssl-dev:arm64
-        else
-          sudo apt-get update && sudo apt-get install -y libssl-dev
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
         fi
 
     - name: Build Release
       shell: bash
       run: |
         if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+          # The vendored OpenSSL and every C dependency compile with this CC;
+          # openssl-sys ignores OPENSSL_*_DIR when the vendored feature is on,
+          # so no sysroot or pkg-config pointers are set here.
           export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
           export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
           export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
-          export PKG_CONFIG_ALLOW_CROSS=1
-          export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
-          export PKG_CONFIG_SYSROOT_DIR=/
-          export OPENSSL_INCLUDE_DIR=/usr/include/aarch64-linux-gnu
-          export OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu
         fi
         cargo build --release --target ${{ matrix.target }}
 
@@ -108,19 +113,39 @@ jobs:
         cp target/${{ matrix.target }}/release/vecdb-server${{ matrix.asset_ext }} dist/
         cp target/${{ matrix.target }}/release/vecq${{ matrix.asset_ext }} dist/
         
-        # NO lib/ BUNDLING — ONNX Runtime is linked statically.
+        # ONNX Runtime itself is linked statically; nothing else is needed for
+        # CPU embedding. The CUDA execution provider is a separate library that
+        # ORT loads at runtime from the directory of the RUNNING BINARY, and it
+        # must come from the exact ORT build the binary links (ort's copy-dylibs
+        # feature symlinks that build's own copies into the target profile dir;
+        # see docs/GPU.md). So the two provider libraries ship at the ARCHIVE
+        # ROOT, next to the binaries — never in a lib/ subdirectory, which ORT
+        # never consults. A prebuilt user then has a GPU-capable install by
+        # extracting the archive; without them use_gpu=true is a hard error.
         #
-        # This used to `find ... -name "libonnxruntime*" -exec cp ... || true`.
-        # It matched nothing and, being `|| true`, silently "succeeded", so every
-        # published archive carried an empty lib/ directory. Verified against the
-        # v1.0.4 artifacts: lib/ is empty on all four targets, and `ldd vecdb`
-        # shows no onnxruntime. The libonnxruntime_providers_*.so strings in the
-        # binary are optional CUDA execution providers `ort` dlopens at runtime,
-        # already covered by the documented CPU fallback.
-        #
-        # If ORT ever links dynamically, restore this deliberately AND drop the
-        # `|| true` — a bundling step that cannot fail cannot be trusted.
-        
+        # Deliberate, and allowed to fail: on x86_64 Linux the CUDA build is the
+        # one this project tests against, so a missing provider there fails the
+        # release. Elsewhere the libraries ship when ORT's prebuilt for that
+        # target has them, and the log says plainly when it does not — an
+        # archive-building step that cannot fail cannot be trusted (an earlier
+        # `find … || true` here matched nothing for four releases).
+        PROFILE_DIR=target/${{ matrix.target }}/release
+        echo "provider libraries in $PROFILE_DIR:"
+        ls -la "$PROFILE_DIR" | grep -i 'onnxruntime_providers' || true
+        shipped=0
+        for lib in "$PROFILE_DIR"/*onnxruntime_providers_shared.* "$PROFILE_DIR"/*onnxruntime_providers_cuda.*; do
+          [ -e "$lib" ] || continue
+          cp -L "$lib" dist/ && shipped=$((shipped + 1))
+          echo "  shipping $(basename "$lib")"
+        done
+        if [ "$shipped" -ne 2 ]; then
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then
+            echo "::error::expected both CUDA execution provider libraries for ${{ matrix.target }}, found $shipped"
+            exit 1
+          fi
+          echo "::warning::no CUDA execution provider shipped for ${{ matrix.target }} ($shipped of 2 libraries present); GPU needs a bring-your-own ONNX Runtime on this target"
+        fi
+
         # Create archive
         cd dist
         if [ "${{ matrix.os }}" = "windows-latest" ]; then

@@ -86,7 +86,7 @@
 // Last Verified: 2025-12-31
 
 use crate::error::{VecqError, VecqResult};
-use crate::types::{DocumentElement, ElementType, FileType, ParsedDocument};
+use crate::types::{refs::MODULE_SCOPE, DocumentElement, ElementType, FileType, ParsedDocument};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 
@@ -118,11 +118,19 @@ impl Schema {
         Self {
             version,
             file_type,
-            required_fields: vec![
-                "file_type".to_string(),
-                "metadata".to_string(),
-                "elements".to_string(),
-            ],
+            // Base required fields cover what every converted document carries.
+            // `metadata` holds file-type/path/size info; the per-file-type
+            // `file_type` string lives inside it (the base `file_type` entry
+            // stays for group-fill parity with the root-doc heuristic in
+            // `cli/output.rs`, which keys on it).
+            //
+            // `elements` was REMOVED here: no parser ever emitted a top-level
+            // `elements` key for code files, so the required-field ensure loop
+            // below was materialising a permanent phantom `elements: []` and
+            // the output heuristic was keying on that phantom. The HTML schema
+            // legitimately re-adds `elements` (real element arrays) via
+            // `register_html_schema()`.
+            required_fields: vec!["file_type".to_string(), "metadata".to_string()],
             element_mappings: HashMap::new(),
             attribute_definitions: HashMap::new(),
         }
@@ -154,11 +162,15 @@ impl Schema {
     }
 
     /// Get JSON field name for element type
+    ///
+    /// Unmapped types fall back to the type's plural `category_key`, never
+    /// its singular `Display` name — that fallback is how one kind came to be
+    /// listed under two keys.
     pub fn get_element_field(&self, element_type: ElementType) -> String {
         self.element_mappings
             .get(&element_type)
             .cloned()
-            .unwrap_or_else(|| element_type.to_string())
+            .unwrap_or_else(|| element_type.category_key().to_string())
     }
 
     /// Get attributes for an element type
@@ -260,7 +272,29 @@ impl SchemaRegistry {
             .with_attribute_definition(ElementType::Function, "is_async".to_string())
             .with_attribute_definition(ElementType::Function, "signature".to_string())
             .with_element_mapping(ElementType::Import, "imports".to_string())
-            .with_attribute_definition(ElementType::Function, "decorators".to_string());
+            .with_attribute_definition(ElementType::Function, "decorators".to_string())
+            // Python rationale:
+            // - `Variable → variables`: the Python parser already extracts
+            //   assignments as `ElementType::Variable` (visitor.rs
+            //   `extract_variables`); without this mapping they fell into the
+            //   generic default group. Mapping to `variables` keeps the
+            //   existing `.variable` selector and prior output keys intact.
+            //   One kind, one key: `variables`, plural like every other list,
+            //   in every language.
+            // - `value` attribute documents the literal-preserving value
+            //   rendering in `visitor.rs` (`ast_to_string` falls back to
+            //   `"..."` for calls/complex exprs); deep elision is a separate
+            //   concern.
+            // - `Module → module`: module-level executable statements (incl.
+            //   `if __name__ == "__main__":` bodies) were emitted as one
+            //   synthetic `.module` scope element instead of being silently
+            //   dropped. Each statement is now a `Block → block` element with
+            //   its `kind`, and `.module` is the module SCOPE object every
+            //   code language emits (calls/strings) — not an element mapping.
+            .with_element_mapping(ElementType::Variable, "variables".to_string())
+            .with_attribute_definition(ElementType::Variable, "value".to_string())
+            .with_element_mapping(ElementType::Block, "blocks".to_string())
+            .with_attribute_definition(ElementType::Block, "kind".to_string());
         // No `ElementType::Decorator` mapping: the Python visitor models
         // decorators as a `decorators` *attribute* on the thing they decorate
         // (`parsers/python/visitor.rs`), which is the more useful shape — a
@@ -278,6 +312,7 @@ impl SchemaRegistry {
             .with_attribute_definition(ElementType::Header, "level".to_string())
             .with_element_mapping(ElementType::CodeBlock, "code_blocks".to_string())
             .with_attribute_definition(ElementType::CodeBlock, "language".to_string())
+            .with_attribute_definition(ElementType::CodeBlock, "code".to_string())
             .with_element_mapping(ElementType::Link, "links".to_string())
             .with_attribute_definition(ElementType::Link, "title".to_string())
             .with_element_mapping(ElementType::Table, "tables".to_string())
@@ -289,7 +324,21 @@ impl SchemaRegistry {
             .with_element_mapping(ElementType::Emphasis, "emphasis".to_string())
             .with_element_mapping(ElementType::Strong, "strong".to_string())
             .with_element_mapping(ElementType::Strikethrough, "strikethrough".to_string())
-            .with_element_mapping(ElementType::FootnoteDefinition, "footnotes".to_string());
+            .with_element_mapping(ElementType::FootnoteDefinition, "footnotes".to_string())
+            .with_element_mapping(ElementType::HtmlBlock, "html_blocks".to_string())
+            .with_element_mapping(ElementType::FrontMatter, "front_matter".to_string())
+            .with_element_mapping(ElementType::Definition, "definitions".to_string())
+            .with_attribute_definition(ElementType::FrontMatter, "format".to_string())
+            // Paragraphs and images had no mapping, so they fell to the
+            // default group under the singular type names `paragraph` /
+            // `image` — not the `paragraphs` / `images` a consumer (ivaldi)
+            // reads. Named once, plural like `headers`
+            // and `list_items`.
+            .with_element_mapping(ElementType::Paragraph, "paragraphs".to_string())
+            .with_attribute_definition(ElementType::Paragraph, "text".to_string())
+            .with_element_mapping(ElementType::Image, "images".to_string())
+            .with_attribute_definition(ElementType::Image, "url".to_string())
+            .with_attribute_definition(ElementType::Link, "url".to_string());
         self.register(markdown_schema);
 
         // Add schemas for other file types
@@ -297,7 +346,7 @@ impl SchemaRegistry {
         self.register_cuda_schema();
         self.register_go_schema();
         self.register_bash_schema();
-        self.register_bash_schema();
+        self.register_javascript_schema();
         self.register_text_schema();
         self.register_toml_schema();
         self.register_yaml_schema();
@@ -313,7 +362,12 @@ impl SchemaRegistry {
             .with_element_mapping(ElementType::Function, "functions".to_string())
             .with_element_mapping(ElementType::Struct, "structs".to_string())
             .with_element_mapping(ElementType::Import, "imports".to_string()) // Standardize C includes
-            .with_element_mapping(ElementType::Macro, "macros".to_string());
+            .with_element_mapping(ElementType::Macro, "macros".to_string())
+            // C files emit `ElementType::Variable` for globals; the schema
+            // never advertised it, so `elements c` hid it and output keys
+            // drifted from the schema. Same field name keeps the `.variable`
+            // selector working. One kind, one key: `variables`, as everywhere.
+            .with_element_mapping(ElementType::Variable, "variables".to_string());
         self.register(c_schema);
 
         // C++ schema
@@ -325,6 +379,14 @@ impl SchemaRegistry {
             .with_element_mapping(ElementType::Class, "classes".to_string())
             .with_element_mapping(ElementType::Namespace, "namespaces".to_string())
             .with_element_mapping(ElementType::Import, "imports".to_string()); // Standardize C++ includes
+                                                                               // C++ files emit `ElementType::Variable` for globals/member
+                                                                               // initialisers; the schema never advertised them, so `elements c++`
+                                                                               // hid them. Same field name keeps the `.variable` selector working.
+                                                                               // One kind, one key: `variables`, and `Struct` mapped as in C
+                                                                               // (unmapped types fall back to their plural `category_key`).
+        let cpp_schema = cpp_schema
+            .with_element_mapping(ElementType::Variable, "variables".to_string())
+            .with_element_mapping(ElementType::Struct, "structs".to_string());
         self.register(cpp_schema);
     }
 
@@ -351,6 +413,29 @@ impl SchemaRegistry {
             .with_element_mapping(ElementType::Package, "package".to_string())
             .with_element_mapping(ElementType::Import, "imports".to_string());
         self.register(go_schema);
+    }
+
+    fn register_javascript_schema(&mut self) {
+        // Every mapping is produced by `tests/fixtures/javascript/` (the
+        // reachability gate in tier1_declaration_coverage). `variables` and
+        // `blocks` are what ts_coverage emits for the rest of the grammar
+        let js_schema = Schema::new("1.0".to_string(), FileType::JavaScript)
+            .with_required_field("functions".to_string())
+            .with_required_field("classes".to_string())
+            .with_required_field("imports".to_string())
+            .with_element_mapping(ElementType::Function, "functions".to_string())
+            .with_attribute_definition(ElementType::Function, "signature".to_string())
+            .with_attribute_definition(ElementType::Function, "is_async".to_string())
+            .with_attribute_definition(ElementType::Function, "is_arrow".to_string())
+            .with_attribute_definition(ElementType::Function, "is_exported".to_string())
+            .with_element_mapping(ElementType::Class, "classes".to_string())
+            .with_attribute_definition(ElementType::Class, "is_exported".to_string())
+            .with_element_mapping(ElementType::Import, "imports".to_string())
+            .with_attribute_definition(ElementType::Import, "module".to_string())
+            .with_element_mapping(ElementType::Variable, "variables".to_string())
+            .with_element_mapping(ElementType::Block, "blocks".to_string())
+            .with_attribute_definition(ElementType::Block, "kind".to_string());
+        self.register(js_schema);
     }
 
     fn register_bash_schema(&mut self) {
@@ -413,6 +498,8 @@ impl SchemaRegistry {
 pub struct UnifiedJsonConverter {
     schema_registry: SchemaRegistry,
     context_lines: usize,
+    source_info: bool,
+    content: bool,
 }
 
 impl UnifiedJsonConverter {
@@ -421,12 +508,37 @@ impl UnifiedJsonConverter {
         Self {
             schema_registry,
             context_lines: 0,
+            source_info: false,
+            content: true,
         }
     }
 
     /// Set number of context lines to include
     pub fn with_context_lines(mut self, lines: usize) -> Self {
         self.context_lines = lines;
+        self
+    }
+
+    /// Put each element's source span and owned trivia in the output, as
+    /// `"source": {"start", "end", "leading", "trailing"}` — byte offsets into
+    /// the file as parsed (UTF-8, `end` exclusive); `leading`/`trailing` omitted
+    /// when empty. On every element at every depth, for every file type
+    /// CLI: `vecq --source-info`.
+    ///
+    /// Off by default: positions are not AST information for an agent reading
+    /// query output; a consumer that edits files by element — ivaldi — asks
+    /// for them explicitly.
+    pub fn with_source_info(mut self, on: bool) -> Self {
+        self.source_info = on;
+        self
+    }
+
+    /// Leave every element's `content` (and context lines) out: names,
+    /// signatures, lines, calls and strings only. A function record carries its
+    /// whole body, which is most of the output when a query wants signatures
+    /// CLI: `vecq --no-content`.
+    pub fn with_content(mut self, on: bool) -> Self {
+        self.content = on;
         self
     }
 
@@ -449,7 +561,9 @@ impl UnifiedJsonConverter {
         if let Some(ref name) = element.name {
             obj.insert("name".to_string(), json!(name));
         }
-        obj.insert("content".to_string(), json!(element.content));
+        if self.content {
+            obj.insert("content".to_string(), json!(element.content));
+        }
         obj.insert("line_start".to_string(), json!(element.line_start));
         obj.insert("line_end".to_string(), json!(element.line_end));
 
@@ -458,7 +572,7 @@ impl UnifiedJsonConverter {
         }
 
         // Context lines
-        if self.context_lines > 0 {
+        if self.content && self.context_lines > 0 {
             let context_before = doc.get_context_before(element.line_start, self.context_lines);
             if !context_before.is_empty() {
                 obj.insert("context_before".to_string(), json!(context_before));
@@ -473,6 +587,21 @@ impl UnifiedJsonConverter {
         // Attributes
         if !element.attributes.is_empty() {
             obj.insert("attributes".to_string(), json!(element.attributes));
+        }
+
+        // A scope's calls and string literals. Present, possibly
+        // empty, on every scope of a language that extracts them, so
+        // `.functions[].calls[]` never trips over a missing key.
+        if let Some(scope) = &element.scope {
+            obj.insert("calls".to_string(), json!(scope.calls));
+            obj.insert("strings".to_string(), json!(scope.strings));
+        }
+
+        // Position and owned trivia, only when asked (see `with_source_info`).
+        if self.source_info {
+            if let Some(source) = &element.source {
+                obj.insert("source".to_string(), json!(source));
+            }
         }
 
         // Children handled by group_elements_by_type for now to avoid double recursion complexity here
@@ -549,7 +678,10 @@ impl UnifiedJsonConverter {
             "modified": metadata.modified,
             "encoding": metadata.encoding,
             "line_count": metadata.line_count,
-            "hash": metadata.hash
+            "hash": metadata.hash,
+            // whether the file parsed cleanly, without walking
+            // the tree. See `DocumentMetadata::syntax_errors`.
+            "syntax_errors": metadata.syntax_errors
         })
     }
 }
@@ -570,6 +702,24 @@ impl JsonConverter for UnifiedJsonConverter {
         // Add grouped elements to result
         for (field_name, elements) in grouped_elements {
             result.insert(field_name, Value::Array(elements));
+        }
+
+        // The module scope: what runs outside every function and class
+        // One object, not an array — a file has one
+        // module. `type`/`line_start` make it an element to `refs` and to the
+        // CLI's `file_path` injection.
+        if let Some(module) = &document.module {
+            result.insert(
+                "module".to_string(),
+                json!({
+                    "type": "module",
+                    "name": MODULE_SCOPE,
+                    "line_start": 1,
+                    "line_end": document.metadata.line_count.max(1),
+                    "calls": module.calls,
+                    "strings": module.strings,
+                }),
+            );
         }
 
         // Ensure all required fields are present (empty arrays if no elements)

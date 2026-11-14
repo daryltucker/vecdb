@@ -1,0 +1,405 @@
+{
+  "catalog": "k8s-removals",
+  "entries": [
+    {
+      "id": "K8S-000",
+      "kind": "api-removal",
+      "since": "1.16",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-0"
+      ]
+    },
+    {
+      "id": "K8S-001",
+      "kind": "api-removal",
+      "since": "1.17",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-1"
+      ]
+    },
+    {
+      "id": "K8S-002",
+      "kind": "api-removal",
+      "since": "1.18",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-2"
+      ]
+    },
+    {
+      "id": "K8S-003",
+      "kind": "api-removal",
+      "since": "1.19",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-3"
+      ]
+    },
+    {
+      "id": "K8S-004",
+      "kind": "api-removal",
+      "since": "1.20",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-0"
+      ]
+    },
+    {
+      "id": "K8S-005",
+      "kind": "api-removal",
+      "since": "1.21",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-1"
+      ]
+    },
+    {
+      "id": "K8S-006",
+      "kind": "api-removal",
+      "since": "1.22",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-2"
+      ]
+    },
+    {
+      "id": "K8S-007",
+      "kind": "api-removal",
+      "since": "1.23",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-3"
+      ]
+    },
+    {
+      "id": "K8S-008",
+      "kind": "api-removal",
+      "since": "1.24",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-0"
+      ]
+    },
+    {
+      "id": "K8S-009",
+      "kind": "api-removal",
+      "since": "1.25",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-1"
+      ]
+    },
+    {
+      "id": "K8S-010",
+      "kind": "api-removal",
+      "since": "1.26",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-2"
+      ]
+    },
+    {
+      "id": "K8S-011",
+      "kind": "api-removal",
+      "since": "1.27",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-3"
+      ]
+    },
+    {
+      "id": "K8S-012",
+      "kind": "api-removal",
+      "since": "1.28",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-0"
+      ]
+    },
+    {
+      "id": "K8S-013",
+      "kind": "api-removal",
+      "since": "1.29",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-1"
+      ]
+    },
+    {
+      "id": "K8S-014",
+      "kind": "api-removal",
+      "since": "1.30",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-2"
+      ]
+    },
+    {
+      "id": "K8S-015",
+      "kind": "api-removal",
+      "since": "1.31",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-3"
+      ]
+    },
+    {
+      "id": "K8S-016",
+      "kind": "api-removal",
+      "since": "1.32",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-0"
+      ]
+    },
+    {
+      "id": "K8S-017",
+      "kind": "api-removal",
+      "since": "1.33",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-1"
+      ]
+    },
+    {
+      "id": "K8S-018",
+      "kind": "api-removal",
+      "since": "1.34",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-2"
+      ]
+    },
+    {
+      "id": "K8S-019",
+      "kind": "api-removal",
+      "since": "1.35",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-3"
+      ]
+    },
+    {
+      "id": "K8S-020",
+      "kind": "api-removal",
+      "since": "1.16",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-0"
+      ]
+    },
+    {
+      "id": "K8S-021",
+      "kind": "api-removal",
+      "since": "1.17",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-1"
+      ]
+    },
+    {
+      "id": "K8S-022",
+      "kind": "api-removal",
+      "since": "1.18",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-2"
+      ]
+    },
+    {
+      "id": "K8S-023",
+      "kind": "api-removal",
+      "since": "1.19",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-3"
+      ]
+    },
+    {
+      "id": "K8S-024",
+      "kind": "api-removal",
+      "since": "1.20",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-0"
+      ]
+    },
+    {
+      "id": "K8S-025",
+      "kind": "api-removal",
+      "since": "1.21",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-1"
+      ]
+    },
+    {
+      "id": "K8S-026",
+      "kind": "api-removal",
+      "since": "1.22",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-2"
+      ]
+    },
+    {
+      "id": "K8S-027",
+      "kind": "api-removal",
+      "since": "1.23",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-3"
+      ]
+    },
+    {
+      "id": "K8S-028",
+      "kind": "api-removal",
+      "since": "1.24",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-0"
+      ]
+    },
+    {
+      "id": "K8S-029",
+      "kind": "api-removal",
+      "since": "1.25",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-1"
+      ]
+    },
+    {
+      "id": "K8S-030",
+      "kind": "api-removal",
+      "since": "1.26",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-2"
+      ]
+    },
+    {
+      "id": "K8S-031",
+      "kind": "api-removal",
+      "since": "1.27",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-3"
+      ]
+    },
+    {
+      "id": "K8S-032",
+      "kind": "api-removal",
+      "since": "1.28",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-0"
+      ]
+    },
+    {
+      "id": "K8S-033",
+      "kind": "api-removal",
+      "since": "1.29",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-1"
+      ]
+    },
+    {
+      "id": "K8S-034",
+      "kind": "api-removal",
+      "since": "1.30",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-2"
+      ]
+    },
+    {
+      "id": "K8S-035",
+      "kind": "api-removal",
+      "since": "1.31",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-3"
+      ]
+    },
+    {
+      "id": "K8S-036",
+      "kind": "api-removal",
+      "since": "1.32",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-0"
+      ]
+    },
+    {
+      "id": "K8S-037",
+      "kind": "api-removal",
+      "since": "1.33",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-1"
+      ]
+    },
+    {
+      "id": "K8S-038",
+      "kind": "api-removal",
+      "since": "1.34",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group. In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-2"
+      ]
+    },
+    {
+      "id": "K8S-039",
+      "kind": "api-removal",
+      "since": "1.35",
+      "summary": "In Kubernetes 1.22, the networking.k8s.io/v1beta1 Ingress API stopped being served; manifests that still name it are rejected by the API server, and the fix is to move to the stable group.",
+      "tags": [
+        "api",
+        "group-3"
+      ]
+    }
+  ]
+}

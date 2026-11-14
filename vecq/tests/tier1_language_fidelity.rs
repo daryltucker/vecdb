@@ -31,9 +31,11 @@
 //! strictest honest contract for an *extractor* — it cannot be satisfied by
 //! summarising, labelling, or reformatting, which is exactly how this bug got
 //! in. Parsers that legitimately transform their input (Markdown, HTML, JSON,
-//! TOML, plain text) are converters rather than extractors and are listed as
-//! such below; the match is exhaustive so a newly added file type cannot join
-//! either group silently.
+//! TOML, plain text) were converters rather than extractors and were listed as
+//! such below — since when every file type reports its
+//! source text and is checked here (the exact-span contract itself is
+//! `tier1_source_contract.rs`). The match is exhaustive so a newly added file
+//! type cannot join either group silently.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,6 +48,13 @@ enum Contract {
     /// Reports spans of the source verbatim. Every language we claim to support.
     Extractor,
     /// Restructures its input into something else; content need not be a span.
+    ///
+    /// No file type is a converter: Markdown paragraphs
+    /// (rendered prose), JSON values (re-serialised), TOML/YAML leaves
+    /// (synthesised `key = value`) and HTML elements (inner text) all report
+    /// their source text now. Kept so that a future converter has to be argued
+    /// for here, by name.
+    #[allow(dead_code)]
     Converter,
 }
 
@@ -59,14 +68,15 @@ fn contract_for(file_type: FileType) -> Contract {
         | FileType::C
         | FileType::Cpp
         | FileType::Cuda
-        | FileType::Bash => Contract::Extractor,
-
-        FileType::Markdown
+        | FileType::Bash
+        | FileType::JavaScript
+        // Converters (see `Contract::Converter`).
+        | FileType::Markdown
         | FileType::Html
         | FileType::Json
         | FileType::Toml
         | FileType::Yaml
-        | FileType::Text => Contract::Converter,
+        | FileType::Text => Contract::Extractor,
 
         other => panic!(
             "File type {other:?} has no fidelity contract. Decide whether its parser \
@@ -187,6 +197,7 @@ fn fixture_dir(file_type: FileType) -> &'static str {
         FileType::Cuda => "cuda",
         FileType::Go => "go",
         FileType::Bash => "bash",
+        FileType::JavaScript => "javascript",
         FileType::Html => "html",
         FileType::Text => "text",
         FileType::Toml => "toml",

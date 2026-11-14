@@ -23,6 +23,23 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# IMPORTING THIS MODULE PINS THE TEST QDRANT. Every test under tests/ imports
+# it (tier0_qdrant_isolation.py fails any that does not), so a test run on its
+# own — `python3 tests/<name>.py`, no run_all.sh — gets exactly the environment the
+# gate forces (run_all.sh, "NEVER HIT PRODUCTION QDRANT"): the absolute test
+# config and the 6335/6336 URLs, overriding whatever the caller's shell had.
+# Every subprocess a test starts inherits it.
+#
+# Why an import and not a convention: "remember to use the test config" was
+# re-discovered the hard way repeatedly. Last time (2026-11-10) a standalone
+# run of tier1_vecdbrc_warning.py defaulted VECDB_CONFIG to a RELATIVE path,
+# ran vecdb from a temp dir where it named nothing, and vecdb fell back to the
+# operator's production config — test_rcwarn_* collections on production.
+TEST_CONFIG = REPO_ROOT / "tests" / "fixtures" / "config.toml"
+os.environ["VECDB_CONFIG"] = str(TEST_CONFIG)
+os.environ["VECDB_TEST_QDRANT_URL"] = "http://localhost:6336"
+os.environ["VECDB_TEST_QDRANT_HTTP_URL"] = "http://localhost:6335"
+
 
 @functools.lru_cache(maxsize=1)
 def target_dir() -> Path:

@@ -1,4 +1,5 @@
 import json
+import paths  # noqa: F401  (pins the test Qdrant — see paths.py)
 import subprocess
 import os
 import sys

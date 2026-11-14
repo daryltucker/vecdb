@@ -52,7 +52,11 @@ pub struct Route {
     pub collection: String,
     /// If true, bypass `.vectorignore` for files matching this route
     #[serde(default)]
-    pub ignore_vector_ignore: bool,
+    pub bypass_vectorignore: bool,
+    /// Per-route metadata key-value pairs, merged into every chunk
+    /// ingested via this route. CLI `-m` flags are applied on top.
+    #[serde(default)]
+    pub metadata: Option<std::collections::BTreeMap<String, String>>,
 }
 
 impl VecdbRc {
@@ -101,7 +105,7 @@ impl VecdbRc {
         for route in &self.routes {
             if let Ok(glob) = glob::Pattern::new(&route.glob) {
                 if glob.matches(rel_path) {
-                    return (route.collection.clone(), route.ignore_vector_ignore);
+                    return (route.collection.clone(), route.bypass_vectorignore);
                 }
             }
         }
@@ -137,7 +141,7 @@ impl VecdbRc {
     /// Returns the target collection if matched, None otherwise.
     pub fn matches_ignore_override(&self, rel_path: &str) -> Option<&str> {
         for route in &self.routes {
-            if route.ignore_vector_ignore {
+            if route.bypass_vectorignore {
                 if let Ok(glob) = glob::Pattern::new(&route.glob) {
                     if glob.matches(rel_path) {
                         return Some(&route.collection);
@@ -167,7 +171,7 @@ pub fn resolve_route(
     for route in routes {
         if let Ok(glob) = glob::Pattern::new(&route.glob) {
             if glob.matches(rel_path) {
-                return (route.collection.clone(), route.ignore_vector_ignore);
+                return (route.collection.clone(), route.bypass_vectorignore);
             }
         }
     }
@@ -177,6 +181,22 @@ pub fn resolve_route(
         }
     }
     ("".to_string(), false)
+}
+
+/// Returns the metadata for the first matching route, if any.
+/// This is a free function for ergonomic use from the ingestion pipeline.
+pub fn resolve_route_metadata<'a>(
+    routes: &'a [Route],
+    rel_path: &str,
+) -> Option<&'a std::collections::BTreeMap<String, String>> {
+    for route in routes {
+        if let Ok(glob) = glob::Pattern::new(&route.glob) {
+            if glob.matches(rel_path) {
+                return route.metadata.as_ref();
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -248,6 +268,42 @@ collection = "everything-else"
     }
 
     #[test]
+    fn test_route_metadata_parsing_and_resolution() {
+        let toml_str = r#"
+[default]
+collection = "src"
+
+[[routes]]
+glob = "data/**"
+collection = "assets"
+[routes.metadata]
+source = "export"
+version = "2"
+
+[[routes]]
+glob = "docs/**"
+collection = "notes-archive"
+"#;
+
+        let rc: VecdbRc = toml::from_str(toml_str).unwrap();
+
+        // Route with metadata
+        let meta = resolve_route_metadata(&rc.routes, "data/foo.md");
+        assert!(meta.is_some());
+        let meta = meta.unwrap();
+        assert_eq!(meta.get("source").unwrap(), "export");
+        assert_eq!(meta.get("version").unwrap(), "2");
+
+        // Route without metadata
+        let meta = resolve_route_metadata(&rc.routes, "docs/bar.md"); // path-ok: routing input, not a reference
+        assert!(meta.is_none());
+
+        // Non-matching path
+        let meta = resolve_route_metadata(&rc.routes, "src/main.rs");
+        assert!(meta.is_none());
+    }
+
+    #[test]
     fn test_cli_flag_fills_unrouted_slot() {
         let toml_str = r#"
 [[routes]]
@@ -272,7 +328,7 @@ collection = "src"
 [[routes]]
 glob = "private/**"
 collection = "secret-stuff"
-ignore_vector_ignore = true
+bypass_vectorignore = true
 "#;
 
         let rc: VecdbRc = toml::from_str(toml_str).unwrap();
@@ -329,12 +385,12 @@ ignore_vector_ignore = true
 [[routes]]
 glob = "private/**"
 collection = "secret"
-ignore_vector_ignore = true
+bypass_vectorignore = true
 
 [[routes]]
 glob = "public/**"
 collection = "open"
-ignore_vector_ignore = false
+bypass_vectorignore = false
 "#;
 
         let rc: VecdbRc = toml::from_str(toml_str).unwrap();
